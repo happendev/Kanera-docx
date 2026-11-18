@@ -1,0 +1,202 @@
+# Folio
+
+`@happendev/folio` converts Word documents (`.docx`) to PDF, aiming to put every line, page break,
+image and border where Word puts it. It is plain TypeScript with **no runtime dependencies**: no
+LibreOffice, no native binaries, no WebAssembly. The same code runs in Node and in the browser.
+
+```ts
+import { docxToPdf } from '@happendev/folio';
+
+const pdf = await docxToPdf('contract.docx'); // Uint8Array
+```
+
+## How it gets close to Word
+
+Matching Word means reproducing its layout rules, not only its formatting:
+
+- **Fonts that measure like Office fonts.** When a document uses Calibri, Cambria, Arial, Times New
+  Roman, Courier New, Georgia, Segoe UI or Roboto and the font isn't available, Folio uses a bundled
+  open font with the same character widths and line metrics (see [Fonts](#fonts)), so lines wrap at
+  the same words. Fonts embedded in the `.docx` are used first.
+- **Word's line model.** Line heights use the Windows (GDI) font metrics Word uses; "multiple" line
+  spacing scales only the text height; text sits at the bottom of the line box; spacing before a
+  paragraph is dropped at the top of a page only after a natural page break.
+- **Word's pagination.** Widow/orphan control (on by default, as in Word), keep-with-next chains,
+  keep-lines-together, page-break-before, table rows that can't split, repeated header rows,
+  footnotes reserved at the page bottom, header and footer heights pushing the body down.
+- **Word's table geometry.** Border widths add to row heights, Word 2013+ vs. older table
+  indentation, vertically merged cells, exact and minimum row heights.
+
+Accuracy is measured against real documents: Word records where it last broke pages
+(`w:lastRenderedPageBreak`) and how many pages it rendered (`docProps/app.xml`). `pnpm corpus`
+compares Folio's output with both for a folder of `.docx` files (see [Development](#development)).
+
+## Install
+
+The package is private. Install it from the GitHub repository:
+
+```bash
+pnpm add github:happendev/kanera-docx
+```
+
+Node 20 or later. In the browser, any engine with ES2022, `fetch` and `TextDecoder`.
+
+## Use
+
+### Node
+
+```ts
+import { convertDocx, docxToPdf } from '@happendev/folio'; // or '@happendev/folio/node'
+
+// A path, Uint8Array, Buffer or ArrayBuffer.
+const pdf = await docxToPdf(await readFile('in.docx'));
+
+// The full result:
+const result = await convertDocx('in.docx', {
+  systemFonts: true, // also use fonts installed on this machine (default false)
+  fonts: [{ data: await readFile('BrandSans.ttf') }], // extra fonts, highest priority
+  info: { title: 'Contract' }, // override PDF metadata
+});
+result.pdf; // Uint8Array
+result.pageCount;
+result.warnings; // e.g. 'Font "Aptos" not available; using Selawik'
+```
+
+`systemFonts` is off by default so the output doesn't depend on which machine runs the
+conversion. Pass `true` to scan the usual font folders, or an array of folders to scan.
+
+### Browser
+
+```ts
+import { docxToPdf } from '@happendev/folio'; // resolves to the browser build
+
+const file = input.files[0]; // File, Blob, Uint8Array or ArrayBuffer
+const pdf = await docxToPdf(file, { fontBaseUrl: '/assets/folio-fonts/' });
+const url = URL.createObjectURL(new Blob([pdf], { type: 'application/pdf' }));
+```
+
+The bundled fonts are fetched on demand, only for the families a document uses, and cached for the
+page's lifetime. Copy `node_modules/@happendev/folio/fonts/` to your static assets and point
+`fontBaseUrl` at that folder. Without a bundler, the default (`fonts/` next to the module) works
+as-is. Pass `fetch` to add caching or auth, or `fontBaseUrl: false` to supply every font yourself
+through `fonts`.
+
+### Core (any runtime)
+
+`@happendev/folio/core` has no font loading of its own: give it every font through `fonts`.
+
+```ts
+import { convertDocx } from '@happendev/folio/core';
+
+const { pdf } = await convertDocx(bytes, { fonts: [{ data: regular }, { data: bold }] });
+```
+
+### CLI
+
+```bash
+folio report.docx                  # writes report.pdf next to it
+folio report.docx out.pdf --font BrandSans.ttf --system-fonts
+```
+
+## Options
+
+| Option          | Where   | Default  | Meaning                                                              |
+| --------------- | ------- | -------- | -------------------------------------------------------------------- |
+| `fonts`         | all     | `[]`     | Fonts to use (`{ data }` or `{ family, bold, italic, load }`). Win over bundled and system fonts. |
+| `embeddedFonts` | all     | `true`   | Use fonts embedded in the `.docx` (including obfuscated `.odttf`).   |
+| `info`          | all     | from doc | PDF title, author, subject, keywords, dates.                         |
+| `compress`      | all     | `true`   | Deflate PDF content streams.                                         |
+| `systemFonts`   | Node    | `false`  | `true` or a list of folders to scan for `.ttf`/`.otf`/`.ttc`.        |
+| `fontDir`       | Node    | package  | Folder holding the bundled fonts.                                    |
+| `fontBaseUrl`   | browser | module   | URL of the bundled fonts folder, or `false`.                         |
+| `fetch`         | browser | global   | Custom fetch for font downloads.                                     |
+
+Font priority: `fonts` → embedded → system → bundled substitutes → generic fallback (Liberation
+Sans, then DejaVu Sans for characters other fonts lack).
+
+## Fonts
+
+| Document font                    | Bundled substitute   | Same metrics |
+| -------------------------------- | -------------------- | ------------ |
+| Calibri                          | Carlito              | yes          |
+| Cambria                          | Caladea              | yes          |
+| Arial, Helvetica                 | Liberation Sans      | yes          |
+| Times New Roman                  | Liberation Serif     | yes          |
+| Courier New                      | Liberation Mono      | yes          |
+| Georgia                          | Gelasio              | yes          |
+| Segoe UI (Light, Semibold)       | Selawik              | yes          |
+| Roboto (Light, Medium)           | Roboto               | same font    |
+| Symbol, Wingdings bullets        | mapped to Unicode    | n/a          |
+| Anything else                    | closest generic      | no, warned   |
+
+Fonts without a metric-compatible substitute (Calibri Light, Aptos, Verdana, Tahoma, Gill Sans,
+Montserrat, ...) still render, but lines may wrap differently from Word, and the result says so in
+`warnings`. Add the real font through `fonts` or `systemFonts` (where you are licensed to) to get
+an exact match.
+
+Fonts are subset into the PDF (TrueType, keeping glyph IDs) with a `ToUnicode` map, so text can be
+selected, searched and copied. CFF-based OpenType fonts are embedded whole. Missing bold or italic
+faces are synthesised the way Word does.
+
+The bundled fonts are under the SIL Open Font License or the Liberation/DejaVu licenses; the
+license texts are in [`fonts/licenses`](fonts/licenses). The fonts are about 13 MB in total, but a
+typical document loads only two or three families.
+
+## What is supported
+
+- Paragraphs: alignment and justification, indents, hanging indents, tabs (left, centre, right,
+  decimal, bar, leaders), spacing and line rules, borders and shading, contextual spacing,
+  keep/widow rules, page and column breaks, soft hyphens.
+- Runs: fonts by script, size, bold, italic, underline styles, strike, double strike, colour,
+  highlight, shading, caps and small caps, superscript/subscript, position, character spacing and
+  scaling, kerning (kern and GPOS pairs), hidden text, outline.
+- Styles: document defaults, paragraph, character, table and linked styles, theme fonts and
+  colours.
+- Numbering: bullets and multi-level lists in every Word number format, restarts, legal numbering,
+  picture bullets, and Symbol/Wingdings bullet characters.
+- Tables: grid and preferred widths (fixed, auto, percent), merged cells both ways, cell and table
+  borders, conditional table-style formatting (header row, banding, first column, ...),
+  cell margins, vertical alignment, nested tables, rows split across pages, repeated header rows.
+- Sections: page size and orientation, margins, gutters, columns, different first/even headers and
+  footers, header and footer inheritance, page number formats and restarts, page borders,
+  continuous, even- and odd-page section breaks.
+- Fields: PAGE, NUMPAGES, SECTIONPAGES, external hyperlinks and internal links to bookmarks (as
+  clickable PDF links); other fields (TOC, dates, references) show the result Word last saved.
+- Footnotes and endnotes with separators.
+- Images: PNG (all colour types, transparency, interlacing), JPEG (including CMYK), GIF and BMP,
+  inline or floating, with cropping, rotation, flips and square/tight/top-and-bottom text wrap.
+- Shapes and text boxes (DrawingML and VML): preset geometries, custom paths, fills, outlines, dash
+  styles, transparency, groups, rotated and vertical text, WordArt text paths and watermarks.
+- Tracked changes render as the final document (insertions shown, deletions hidden).
+
+## Limitations
+
+- EMF, WMF, TIFF and SVG images are not drawn (a warning is added). Word stores a PNG fallback for
+  SVG images, which is used when present.
+- Charts and SmartArt appear only through the fallback picture Word saves with them.
+- Equations render as linear text.
+- No complex-script shaping (Arabic, Hebrew, Indic) or bidirectional reordering; no ligatures.
+- Text in continuous-section columns is not balanced; no automatic hyphenation; frames
+  (`w:framePr`) and drop caps flow as ordinary paragraphs; no line numbers; comments are not shown.
+- Pagination can differ from Word when a document's fonts are missing and have no metric-compatible
+  substitute.
+
+## Development
+
+```bash
+pnpm install
+pnpm test          # unit and end-to-end tests (uses Ghostscript, when installed, to read the PDFs back)
+pnpm typecheck
+pnpm build         # dist/
+
+pnpm render in.docx --out out/ --png       # convert, and rasterise with Ghostscript
+pnpm corpus list.txt --root ~/docs         # compare page counts and breaks with Word for many files
+```
+
+`list.txt` holds one `.docx` path per line (relative to `--root`). Set `BREAKS=1` to print where
+each of Word's recorded page breaks landed. Keep private documents out of this repository.
+
+Code map: `src/docx` reads the package into a document model (styles, numbering, drawing),
+`src/fonts` parses, substitutes and subsets fonts, `src/layout` breaks lines and paginates into
+positioned drawing operations, and `src/pdf` writes those as PDF. `src/util` holds the ZIP reader,
+inflate/deflate and XML parser.
