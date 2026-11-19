@@ -11,12 +11,17 @@ export type GenericFamily = 'serif' | 'sans' | 'mono' | 'cjk' | 'symbol';
 interface SubstituteRule {
   families: string[];
   metricCompatible: boolean;
+  /**
+   * Line metrics of the original font (ascent, descent, line gap in em) for substitutes whose
+   * widths match but whose own vertical metrics differ, so line heights still match Word.
+   */
+  vmetrics?: [number, number, number];
 }
 
 const RULES: Record<string, SubstituteRule> = {
   calibri: { families: ['carlito'], metricCompatible: true },
   'calibri light': { families: ['carlito'], metricCompatible: false },
-  cambria: { families: ['caladea'], metricCompatible: true },
+  cambria: { families: ['caladea'], metricCompatible: true, vmetrics: [1946 / 2048, 455 / 2048, 0] },
   'cambria math': { families: ['caladea'], metricCompatible: false },
   arial: { families: ['liberation sans', 'arimo'], metricCompatible: true },
   'arial mt': { families: ['liberation sans', 'arimo'], metricCompatible: true },
@@ -29,7 +34,7 @@ const RULES: Record<string, SubstituteRule> = {
   'tms rmn': { families: ['liberation serif'], metricCompatible: false },
   'courier new': { families: ['liberation mono', 'cousine'], metricCompatible: true },
   courier: { families: ['liberation mono', 'cousine'], metricCompatible: true },
-  georgia: { families: ['gelasio'], metricCompatible: true },
+  georgia: { families: ['gelasio'], metricCompatible: true, vmetrics: [1878 / 2048, 449 / 2048, 0] },
   'segoe ui': { families: ['selawik'], metricCompatible: true },
   'segoe ui light': { families: ['selawik light', 'selawik'], metricCompatible: true },
   'segoe ui semibold': { families: ['selawik semibold', 'selawik'], metricCompatible: true },
@@ -100,9 +105,9 @@ export function normalizeFamily(name: string): string {
     .trim();
 }
 
-export function substituteFamilies(family: string): { families: string[]; metricCompatible: boolean } | null {
+export function substituteFamilies(family: string): { families: string[]; metricCompatible: boolean; vmetrics?: [number, number, number] } | null {
   const rule = RULES[normalizeFamily(family)];
-  return rule ? { families: rule.families, metricCompatible: rule.metricCompatible } : null;
+  return rule ? { families: rule.families, metricCompatible: rule.metricCompatible, vmetrics: rule.vmetrics } : null;
 }
 
 export interface FontTableHints {

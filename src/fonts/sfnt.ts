@@ -134,6 +134,11 @@ export class SfntFont {
     return this.tables.has('CFF ') || this.tables.has('CFF2');
   }
 
+  /** OS/2 fsSelection USE_TYPO_METRICS: line metrics come from the typo fields, not win. */
+  get useTypoMetrics(): boolean {
+    return this.hasOS2 && (this.fsSelection & 0x80) !== 0;
+  }
+
   get isBold(): boolean {
     if (this.hasOS2) return this.weightClass >= 600 || (this.fsSelection & 0x20) !== 0;
     return (this.macStyle & 1) !== 0;

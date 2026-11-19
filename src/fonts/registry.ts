@@ -54,10 +54,17 @@ export class FontFace {
     this.bold = font.isBold;
     this.italic = font.isItalic;
     const upm = font.unitsPerEm;
-    this.ascent = font.winAscent / upm;
-    this.descent = font.winDescent / upm;
-    const hheaHeight = font.hheaAscender - font.hheaDescender;
-    this.externalLeading = Math.max(0, font.hheaLineGap - (font.winAscent + font.winDescent - hheaHeight)) / upm;
+    if (font.useTypoMetrics) {
+      // Fonts that set USE_TYPO_METRICS (Aptos, for one) are laid out with their typographic metrics.
+      this.ascent = font.typoAscender / upm;
+      this.descent = -font.typoDescender / upm;
+      this.externalLeading = Math.max(0, font.typoLineGap) / upm;
+    } else {
+      this.ascent = font.winAscent / upm;
+      this.descent = font.winDescent / upm;
+      const hheaHeight = font.hheaAscender - font.hheaDescender;
+      this.externalLeading = Math.max(0, font.hheaLineGap - (font.winAscent + font.winDescent - hheaHeight)) / upm;
+    }
   }
 
   get familyName(): string {
@@ -80,6 +87,10 @@ interface PendingFont {
 
 export interface ResolvedFace {
   face: FontFace;
+  /** Line metrics in em: the face's own, or the requested font's when a substitute stands in. */
+  ascent: number;
+  descent: number;
+  externalLeading: number;
   syntheticBold: boolean;
   syntheticItalic: boolean;
   /** Set when characters must be remapped from a legacy symbol font encoding to Unicode. */
@@ -247,9 +258,12 @@ export class FontRegistry {
     return best;
   }
 
-  private styled(face: FontFace, bold: boolean, italic: boolean, symbolMap?: SymbolFontKind): ResolvedFace {
+  private styled(face: FontFace, bold: boolean, italic: boolean, symbolMap?: SymbolFontKind, vmetrics?: [number, number, number]): ResolvedFace {
     return {
       face,
+      ascent: vmetrics ? vmetrics[0] : face.ascent,
+      descent: vmetrics ? vmetrics[1] : face.descent,
+      externalLeading: vmetrics ? vmetrics[2] : face.externalLeading,
       syntheticBold: bold && !face.bold && face.weight < 600,
       syntheticItalic: italic && !face.italic,
       symbolMap,
@@ -270,10 +284,15 @@ export class FontRegistry {
     for (const cand of this.candidateFamilies(family)) {
       const list = this.byFamily.get(cand);
       if (!list || list.length === 0) continue;
-      const face = this.pickStyle(list, styleBold, styleItalic);
+      // Word matches the legacy family name: "Aptos" is Aptos and Aptos Bold, not Aptos Display or
+      // Aptos Light, which only share the typographic family.
+      const legacy = list.filter((f) => normalizeFamily(f.font.names.family) === cand);
+      const face = this.pickStyle(legacy.length ? legacy : list, styleBold, styleItalic);
       // A real symbol font keeps its encoding; any other face needs characters remapped.
       const isRealSymbol = symKind !== null && face.font.symbolCmap;
-      result = this.styled(face, styleBold, styleItalic, symKind && !isRealSymbol ? symKind : undefined);
+      const sub = cand !== norm ? substituteFamilies(norm) : null;
+      const vmetrics = sub?.vmetrics && sub.families.includes(cand) ? sub.vmetrics : undefined;
+      result = this.styled(face, styleBold, styleItalic, symKind && !isRealSymbol ? symKind : undefined, vmetrics);
       if (cand !== norm && symKind === null && !this.isMetricSubstitute(norm, cand)) this.warnings.add(`Font "${family}" not available; using ${face.familyName}`);
       break;
     }

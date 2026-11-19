@@ -4,6 +4,12 @@ import { shapeSimple, shapeText, type ShapedRun } from './shaper.js';
 import type { DrawOp, GlyphOp } from './types.js';
 
 const EPS = 0.01;
+/**
+ * How much of their width the spaces of a justified line may give up so that one more word fits.
+ * Word 2013+ (compatibility mode 15) does this; documents in older modes only ever stretch spaces.
+ * A quarter matched Word's PDFs best (tried 0.2 to 0.4).
+ */
+const SPACE_SHRINK = 0.25;
 
 export interface ParagraphEnv {
   fonts: FontRegistry;
@@ -272,6 +278,10 @@ export class ParagraphLayout {
 
     const finish = (end: number): number => end;
     let end = -1;
+    // Word keeps a word on a justified line when shrinking the line's spaces makes room for it.
+    const shrink = this.para.props.align === 'both' && this.env.settings.compatibilityMode >= 15 ? SPACE_SHRINK : 0;
+    let spaceSum = 0;
+    let beforeSlack = -1; // break candidate when the line first ran past `right`
     for (; i < atoms.length; i++) {
       const a = atoms[i];
       if (a.k === 'br') {
@@ -293,6 +303,7 @@ export class ParagraphLayout {
         if (t.leader !== 'none' && t.width > 0) leaders.push({ x, w: t.width, leader: t.leader, run: a.run });
         x += t.width;
         lastTab = i;
+        spaceSum = 0;
         hasContent = true;
         candidate = i + 1;
         candidateX = x;
@@ -303,6 +314,7 @@ export class ParagraphLayout {
         xs.push(x);
         ws.push(w);
         x += w;
+        if (a.cp === 0x20) spaceSum += w;
         if (this.breakAfter[i]) {
           candidate = i + 1;
           candidateX = x;
@@ -310,9 +322,12 @@ export class ParagraphLayout {
         continue;
       }
       if (w > 0 && x + w > right + EPS && hasContent) {
-        if (candidate > start) end = candidate;
-        else end = i; // emergency break inside a word
-        break;
+        if (x + w > right + shrink * spaceSum + EPS) {
+          if (candidate > start) end = candidate;
+          else end = i; // emergency break inside a word
+          break;
+        }
+        if (beforeSlack < 0) beforeSlack = candidate;
       }
       xs.push(x);
       ws.push(w);
@@ -324,6 +339,8 @@ export class ParagraphLayout {
       }
     }
     if (end < 0) end = finish(i);
+    // The last line is not justified, so its spaces cannot shrink: break before the overflowing word.
+    if (end >= atoms.length && beforeSlack > start && !brk) end = beforeSlack;
     if (end <= start && start < atoms.length) end = start + 1; // always make progress
     xs.length = end - start;
     ws.length = end - start;
@@ -420,7 +437,19 @@ export class ParagraphLayout {
     // The paragraph mark only sizes a line that has no text of its own (an empty paragraph, or a
     // line holding just an inline object). Word ignores a larger mark on a non-empty last line;
     // counting it made 8pt clauses with 16pt heading marks run two pages long.
-    if (!measured || textAscent + textDescent === 0) add(this.markRun.ascent, this.markRun.descent, this.markRun.extLeading);
+    const mark = this.markRun;
+    if (!measured) add(mark.ascent, mark.descent, mark.extLeading);
+    else if (textAscent + textDescent === 0) {
+      // A line holding only inline pictures is as tall as the taller of the pictures and the mark's
+      // text height: a picture taller than the text leaves no descent below it (measured against
+      // Word's PDFs). "Multiple" spacing still adds the mark's extra.
+      const top = Math.max(ascent, mark.ascent);
+      descent = Math.max(descent, mark.ascent + mark.descent - top);
+      ascent = top;
+      ext = Math.max(ext, mark.extLeading);
+      textAscent = mark.ascent;
+      textDescent = mark.descent;
+    }
     const { height, baseline } = lineHeight(ascent, descent, ext, this.para.props, this.env.gridPitch, textAscent + textDescent + ext);
 
     // Alignment and justification.
@@ -431,7 +460,7 @@ export class ParagraphLayout {
     const justify = { from: start, perGap: 0, perChar: 0 };
     const endsWithLineBreak = brk === 'line';
     const justifyThis = (p.align === 'both' && !isLast && !(endsWithLineBreak && this.env.settings.doNotExpandShiftReturn)) || p.align === 'distribute';
-    if (justifyThis && used < avail) {
+    if (justifyThis && (used < avail || (p.align === 'both' && used > avail + EPS))) {
       const extra = avail - used;
       // Only spaces after the last tab stretch.
       let from = start;
@@ -722,8 +751,8 @@ export class ParagraphLayout {
     const font = run.face.face.font;
     const em = run.size / font.unitsPerEm;
     const yBase = baseline - run.baselineShift;
-    const asc = run.face.face.ascent * run.size;
-    const desc = run.face.face.descent * run.size;
+    const asc = run.face.ascent * run.size;
+    const desc = run.face.descent * run.size;
     if (props.highlight) back.push({ kind: 'rect', x: x1, y: yBase - asc, w: x2 - x1, h: asc + desc, fill: props.highlight });
     else if (props.shading) back.push({ kind: 'rect', x: x1, y: yBase - asc, w: x2 - x1, h: asc + desc, fill: props.shading });
     const color = props.color ?? '000000';
@@ -823,9 +852,9 @@ function emptyRun(props: RunProps, fonts: FontRegistry): ShapedRun {
     props,
     glyphs: [],
     baselineShift: 0,
-    ascent: face.face.ascent * props.size,
-    descent: face.face.descent * props.size,
-    extLeading: face.face.externalLeading * props.size,
+    ascent: face.ascent * props.size,
+    descent: face.descent * props.size,
+    extLeading: face.externalLeading * props.size,
     scaleX: 1,
   };
 }
@@ -856,5 +885,8 @@ export function lineHeight(
     const base = Math.max(natural, gridPitch);
     height = Math.ceil(base / gridPitch - 0.01) * gridPitch * p.line;
   }
+  // Extra "multiple" spacing goes below the text; exact and at-least heights keep the text at the
+  // bottom of the line box.
+  if (p.lineRule !== 'exact' && p.lineRule !== 'atLeast') return { height, baseline: natural - descent };
   return { height, baseline: height - descent };
 }

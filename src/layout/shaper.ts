@@ -64,11 +64,17 @@ function fontFor(cp: number, p: RunProps): FontChoice {
   return { family: p.fontHAnsi, bold: p.bold, italic: p.italic, size: p.size };
 }
 
-/** Effective glyph size and baseline shift for superscript/subscript. */
+/**
+ * Effective glyph size and baseline shift for superscript/subscript. Word works in half-points:
+ * the script size is two thirds of the run's half-points rounded down, and a superscript rises by
+ * the rest (11pt: 7pt raised 4pt; 10pt: 6.5pt raised 3.5pt, as in Word's PDFs).
+ */
 export function scriptMetrics(size: number, vertAlign: RunProps['vertAlign']): { size: number; shift: number } {
-  if (vertAlign === 'superscript') return { size: size * (2 / 3), shift: size * 0.33 };
-  if (vertAlign === 'subscript') return { size: size * (2 / 3), shift: -size * 0.14 };
-  return { size, shift: 0 };
+  if (vertAlign === 'baseline') return { size, shift: 0 };
+  const half = Math.round(size * 2);
+  const small = Math.max(1, Math.floor((half * 2) / 3 + 1e-9)) / 2;
+  if (vertAlign === 'superscript') return { size: small, shift: size - small };
+  return { size: small, shift: -size * 0.14 };
 }
 
 export interface ShapeOptions {
@@ -110,9 +116,11 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
         props,
         glyphs: [],
         baselineShift: sm.shift + props.position,
-        ascent: face.ascent * glyphSize,
-        descent: face.descent * glyphSize,
-        extLeading: face.externalLeading * glyphSize,
+        // Superscript and subscript text sizes the line as if it were neither smaller nor shifted
+        // (Word's rows of x¹ marks line up with plain cells); a w:position raise still counts.
+        ascent: resolved.ascent * size - sm.shift,
+        descent: resolved.descent * size + sm.shift,
+        extLeading: resolved.externalLeading * size,
         scaleX: scale,
         link,
       };

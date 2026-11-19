@@ -293,7 +293,7 @@ function renderTextBox(d: Drawing, x: number, y: number, w: number, h: number, e
   const content: DrawOp[] = [];
   for (const it of box.items) content.push(...it.ops);
   const ops: DrawOp[] = [];
-  ops.push({ kind: 'clip', x, y, w, h });
+  if (!tb.unclipped) ops.push({ kind: 'clip', x, y, w, h });
   if (vertical) {
     const ox = x + (w - h) / 2;
     const oy = y + (h - w) / 2;
@@ -302,7 +302,7 @@ function renderTextBox(d: Drawing, x: number, y: number, w: number, h: number, e
     ops.push(...resolveBoxFloats(translateOps(content, ox + tb.insetL, oy + tb.insetT + dy), env));
     ops.push({ kind: 'restore' });
   } else ops.push(...resolveBoxFloats(translateOps(content, x + tb.insetL, y + tb.insetT + dy), env));
-  ops.push({ kind: 'restore' });
+  if (!tb.unclipped) ops.push({ kind: 'restore' });
   return ops;
 }
 

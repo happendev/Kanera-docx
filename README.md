@@ -19,24 +19,30 @@ Matching Word means reproducing its layout rules, not only its formatting:
   open font with the same character widths and line metrics (see [Fonts](#fonts)), so lines wrap at
   the same words. Fonts embedded in the `.docx` are used first.
 - **Word's line model.** Line heights use the Windows (GDI) font metrics Word uses; "multiple" line
-  spacing scales only the text height; text sits at the bottom of the line box; spacing before a
-  paragraph is dropped at the top of a page only after a natural page break.
+  spacing adds its extra space below the text, and that space may hang into the bottom margin;
+  spacing before a paragraph is dropped at the top of a page only after a natural page break.
+  Superscripts and subscripts are sized in whole half-points as Word does and don't change the line
+  height.
+- **Word's line breaking.** Justified lines in Word 2013+ documents shrink their spaces by up to a
+  quarter to keep one more word, as Word does; older documents only stretch.
 - **Word's pagination.** Widow/orphan control (on by default, as in Word), keep-with-next chains,
   keep-lines-together, page-break-before, table rows that can't split, repeated header rows,
   footnotes reserved at the page bottom, header and footer heights pushing the body down.
 - **Word's table geometry.** Border widths add to row heights, Word 2013+ vs. older table
   indentation, vertically merged cells, exact and minimum row heights.
 
-Accuracy is measured against real documents: Word records where it last broke pages
-(`w:lastRenderedPageBreak`) and how many pages it rendered (`docProps/app.xml`). `pnpm corpus`
-compares Folio's output with both for a folder of `.docx` files (see [Development](#development)).
+Accuracy is measured against real documents: against PDFs Word exported from them, word by word,
+and against where Word last broke pages (`w:lastRenderedPageBreak`) and how many pages it rendered
+(`docProps/app.xml`). `pnpm corpus` runs the second comparison for a folder of `.docx` files (see
+[Development](#development)).
 
 ## Install
 
-The package is private. Install it from the GitHub repository:
+The package is private. Install it from the GitHub repository with npm (installing from git with
+pnpm 11 can hang):
 
 ```bash
-pnpm add github:happendev/kanera-docx
+npm install github:happendev/kanera-docx
 ```
 
 Node 20 or later. In the browser, any engine with ES2022, `fetch` and `TextDecoder`.
@@ -156,12 +162,14 @@ typical document loads only two or three families.
   picture bullets, and Symbol/Wingdings bullet characters.
 - Tables: grid and preferred widths (fixed, auto, percent), merged cells both ways, cell and table
   borders, conditional table-style formatting (header row, banding, first column, ...),
-  cell margins, vertical alignment, nested tables, rows split across pages, repeated header rows.
+  cell margins, vertical alignment, nested tables, rows split across pages, repeated header rows,
+  row-level property exceptions, and floating tables (`w:tblpPr`) with text wrapping beside them.
 - Sections: page size and orientation, margins, gutters, columns, different first/even headers and
   footers, header and footer inheritance, page number formats and restarts, page borders,
   continuous, even- and odd-page section breaks.
 - Fields: PAGE, NUMPAGES, SECTIONPAGES, external hyperlinks and internal links to bookmarks (as
-  clickable PDF links); other fields (TOC, dates, references) show the result Word last saved.
+  clickable PDF links), legacy form checkboxes; other fields (TOC, dates, references) show the
+  result Word last saved.
 - Footnotes and endnotes with separators.
 - Images: PNG (all colour types, transparency, interlacing), JPEG (including CMYK), GIF and BMP,
   inline or floating, with cropping, rotation, flips and square/tight/top-and-bottom text wrap.
@@ -176,6 +184,8 @@ typical document loads only two or three families.
 - Charts and SmartArt appear only through the fallback picture Word saves with them.
 - Equations render as linear text.
 - No complex-script shaping (Arabic, Hebrew, Indic) or bidirectional reordering; no ligatures.
+- A floating table taller than the space left on its page is laid out inline (Word splits it
+  across pages and keeps it floating).
 - Text in continuous-section columns is not balanced; no automatic hyphenation; frames
   (`w:framePr`) and drop caps flow as ordinary paragraphs; no line numbers; comments are not shown.
 - Pagination can differ from Word when a document's fonts are missing and have no metric-compatible

@@ -396,6 +396,8 @@ export interface TextBox {
   vAlign: 'top' | 'center' | 'bottom';
   autoFit: boolean;
   vertical?: string;
+  /** Draw content past the box edges (floating tables, whose border halves sit outside the grid). */
+  unclipped?: boolean;
 }
 
 export interface Drawing {

@@ -8,7 +8,8 @@ export interface BoxItem {
   height: number;
   ops: DrawOp[];
   notes?: Line['notes'];
-  /** Forced break after this item (page/column breaks inside table cells are ignored by Word). */
+  /** A table row split may not fall just before this line (widow/orphan control, keep lines together). */
+  keepWithPrev?: boolean;
 }
 
 export interface BoxResult {
@@ -38,8 +39,9 @@ export function gapBetween(prev: Paragraph | null, next: Paragraph | null, prevA
     if (prev.props.contextualSpacing) after = 0;
     if (next.props.contextualSpacing) before = 0;
   }
-  // HTML auto spacing collapses like CSS margins.
-  if (prev?.props.spaceAfterAuto && next?.props.spaceBeforeAuto) return { after: Math.max(after, before), before: 0 };
+  // Word does not add one paragraph's space after to the next one's space before: the larger of
+  // the two separates them (measured against Word's own PDF output and its recorded page breaks).
+  if (prev && next) return { after: Math.max(after, before), before: 0 };
   return { after, before };
 }
 
@@ -154,6 +156,12 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv): BoxRe
         lines.push(line);
         items.push(item);
         y += line.height;
+      }
+      // Word applies widow/orphan control and keep-lines-together when it splits a table row across
+      // pages: a two- or three-line paragraph in a cell moves whole rather than leave one line behind.
+      const n = lines.length;
+      for (let k = 1; k < n; k++) {
+        if (block.props.keepLines || (block.props.widowControl && (k === 1 || k === n - 1))) items[items.length - n + k].keepWithPrev = true;
       }
       if (deco && items.length) {
         // Decorations are attached per line so the box can split between lines.
@@ -284,7 +292,8 @@ export function measureTable(table: Table, avail: number, env: BoxEnv): TableLay
     if (cells.every((c) => c.cell.vMerge)) for (const c of cells) if (c.cell.vMerge === 'continue') h = Math.max(h, c.cell.margins.top + c.cell.margins.bottom);
     if (cells.length === 0) h = 0;
     if (row.heightRule === 'exact' && row.height > 0) h = row.height;
-    else if (row.height > 0) h = Math.max(h, row.height);
+    // A minimum row height leaves out the row's top border, as content heights do.
+    else if (row.height > 0) h = Math.max(h, row.height + borderTop);
     rows.push({ row, cells, height: h, borderTop });
   }
   // The table's bottom border sits below the last row's content.

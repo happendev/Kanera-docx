@@ -69,6 +69,10 @@ interface FieldFrame {
   link?: Link;
   inline?: Inline & { type: 'field' };
   cached: string;
+  /** A TOC field showing its result (the entries). */
+  toc?: boolean;
+  /** State of a legacy form checkbox field. */
+  checkbox?: boolean;
 }
 
 const DEFAULT_SECTION_TWIPS = { w: 12240, h: 15840, margin: 1440, header: 720, footer: 720 };
@@ -246,7 +250,11 @@ class DocxParser {
   parseBlocks(container: XmlElement, pctx: PartContext): Block[] {
     const out: Block[] = [];
     this.collectBlocks(container, pctx, out);
-    return out;
+    // Word does not lay out an empty paragraph whose mark is hidden (it joins the next paragraph).
+    // The last paragraph of the body, a cell or a note stays: it closes its container.
+    return out.filter(
+      (b, i) => i === out.length - 1 || b.type !== 'paragraph' || !b.markProps.hidden || b.sectPr || !b.content.every((c) => c.type === 'renderedPageBreak'),
+    );
   }
 
   private collectBlocks(container: XmlElement, pctx: PartContext, out: Block[]): void {
@@ -425,7 +433,11 @@ class DocxParser {
 
   private runProps(rPr: XmlElement | undefined, styleId: string | undefined, pctx: PartContext, tableOverridesSize: boolean): RunProps {
     const direct = parseRunDelta(rPr, this.ctx);
-    const delta = this.styles.runDelta({ paraStyle: styleId, charStyle: direct.styleId, tableRun: pctx.table?.tableRun, direct, tableOverridesSize });
+    let charStyle = direct.styleId;
+    // Word shows table-of-contents entries in their TOC paragraph styles: the Hyperlink character
+    // style that the TOC field's \h switch puts on every entry is not drawn (the link still works).
+    if (charStyle && this.styles.styles.get(charStyle)?.name.toLowerCase() === 'hyperlink' && this.fieldStack.some((f) => f.toc)) charStyle = undefined;
+    const delta = this.styles.runDelta({ paraStyle: styleId, charStyle, tableRun: pctx.table?.tableRun, direct, tableOverridesSize });
     const props = finalizeRun(delta);
     props.styleId = direct.styleId;
     return props;
@@ -472,6 +484,9 @@ class DocxParser {
 
   private parseRun(r: XmlElement, para: Paragraph, pctx: PartContext, styleId: string | undefined, tableOverridesSize: boolean): void {
     const props = this.runProps(child(r, 'w:rPr'), styleId, pctx, tableOverridesSize);
+    // Breaks, tabs and pictures are measured with the run's font too, so load it even when the
+    // run has no text.
+    this.noteFonts(props, '');
     const visible = () => !this.suppressed() && !props.hidden;
     const items = children(r);
     for (let idx = 0; idx < items.length; idx++) {
@@ -544,13 +559,20 @@ class DocxParser {
         }
         case 'w:fldChar': {
           const type = el.attrs['w:fldCharType'];
-          if (type === 'begin') this.fieldStack.push({ instr: '', phase: 'instr', cached: '' });
+          if (type === 'begin') {
+            // Legacy form checkboxes (FORMCHECKBOX) keep their state in the field's form data.
+            const box = child(child(el, 'w:ffData'), 'w:checkBox');
+            const state = child(box, 'w:checked') ?? child(box, 'w:default');
+            const checked = state ? !['0', 'false', 'off'].includes(state.attrs['w:val'] ?? '1') : false;
+            this.fieldStack.push({ instr: '', phase: 'instr', cached: '', checkbox: box ? checked : undefined });
+          }
           else if (type === 'separate') {
             const f = this.fieldStack[this.fieldStack.length - 1];
             if (f && f.phase === 'instr') {
               const info = analyzeField(f.instr);
               f.phase = 'result';
               f.link = info.link;
+              f.toc = /^TOC\b/i.test(f.instr.trim());
               if (info.kind) {
                 f.kind = info.kind;
                 f.format = info.format;
@@ -565,6 +587,7 @@ class DocxParser {
             }
           } else if (type === 'end') {
             const f = this.fieldStack.pop();
+            if (f?.checkbox !== undefined && !this.suppressed()) this.pushText(para, f.checkbox ? '\u2612' : '\u2610', props);
             if (f) {
               if (f.phase === 'instr') {
                 // Field without a result: dynamic fields still render.
@@ -686,6 +709,12 @@ class DocxParser {
         gridAfter: trD.gridAfter ?? 0,
         cells: [],
       };
+      // Row-level exceptions to the table properties (w:tblPrEx) override borders, shading and
+      // cell margins for this row's cells.
+      const ex = parseTblDelta(child(tr, 'w:tblPrEx'), this.ctx);
+      const rowBorders: TableBordersDelta = ex.borders ? { ...tableBorders, ...ex.borders } : tableBorders;
+      const rowShading = ex.shading !== undefined ? ex.shading : tblD.shading;
+      const rowMargins: CellMargins = ex.cellMargins ? { ...margins, ...ex.cellMargins } : margins;
       let col = row.gridBefore;
       const tcs = cellEls(tr);
       for (const tc of tcs) {
@@ -725,11 +754,11 @@ class DocxParser {
         const isLeft = startCol === 0;
         const isRight = endCol >= nCols;
         const pick = (b: Border | null | undefined, fallback: Border | null | undefined) => (b !== undefined ? b : fallback);
-        let top = isTop ? tableBorders.top : tableBorders.insideH;
-        let bottom = isBottom ? tableBorders.bottom : tableBorders.insideH;
-        let left = isLeft ? tableBorders.left : tableBorders.insideV;
-        let right = isRight ? tableBorders.right : tableBorders.insideV;
-        let shading = tblD.shading;
+        let top = isTop ? rowBorders.top : rowBorders.insideH;
+        let bottom = isBottom ? rowBorders.bottom : rowBorders.insideH;
+        let left = isLeft ? rowBorders.left : rowBorders.insideV;
+        let right = isRight ? rowBorders.right : rowBorders.insideV;
+        let shading = rowShading;
         for (const c of conds) {
           const cf = ts.cond.get(c.type);
           if (!cf) continue;
@@ -776,7 +805,7 @@ class DocxParser {
           width: tcDirect.width ?? { type: 'auto', value: 0 },
           borders,
           shading: tcD.shading !== undefined ? tcD.shading : (shading ?? null),
-          margins: { ...margins, ...(tcD.margins ?? {}) },
+          margins: { ...rowMargins, ...(tcD.margins ?? {}) },
           vAlign: tcD.vAlign ?? 'top',
           noWrap: !!tcD.noWrap,
           textDirection: tcD.textDirection ?? 'lrTb',

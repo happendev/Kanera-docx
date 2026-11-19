@@ -126,6 +126,11 @@ class Paginator {
   private y = 0;
   /** Nothing has been placed in the current column yet. */
   private atTop = true;
+  /** Page count right after a page break that ended a paragraph (see startSection). */
+  private breakOpenedPage = -1;
+  /** Floating tables (w:tblpPr), as floats anchored to the paragraph that follows them. */
+  private tableFloats = new Map<Paragraph, Drawing[]>();
+  private floatedTables = new Set<Table>();
   /** Why the current column started: suppress space-before only after automatic breaks. */
   private topKind: 'hard' | 'soft' = 'hard';
   private prevPara: Paragraph | null = null;
@@ -284,6 +289,14 @@ class Paginator {
     if (section.type === 'nextColumn' && samePage && this.col + 1 < this.page.cols.length) {
       this.breakColumn('hard');
       return;
+    }
+    // A page break that ends the previous section's last paragraph keeps the paragraph mark (and
+    // its section break) on the page before; the section break then starts the next page itself,
+    // so the empty page the break opened is not kept.
+    if (this.breakOpenedPage === this.pages.length && this.atTop && this.page.body.length === 0 && this.page.floats.length === 0 && this.pages.length > 1) {
+      this.pages.pop();
+      this.page = this.pages[this.pages.length - 1];
+      this.y = Math.max(...this.page.colBottoms);
     }
     this.newPage(true);
     if (section.type === 'evenPage' || section.type === 'oddPage') {
@@ -489,6 +502,21 @@ class Paginator {
       cps[i] = this.checkpoint();
       this.blockIndex = this.sectionBlockBase + i;
       const next = blocks[i + 1] ?? null;
+      if (block.type === 'table' && block.props.floating) {
+        // Word anchors a floating table to the next paragraph and wraps text around it.
+        let k = i + 1;
+        while (blocks[k]?.type === 'table' && (blocks[k] as Table).props.floating) k++;
+        const anchor = blocks[k];
+        const float = anchor?.type === 'paragraph' ? this.tableFloat(block) : null;
+        // A floating table too long for the rest of the page breaks across pages like an inline one.
+        if (anchor?.type === 'paragraph' && float && this.floatFits(float)) {
+          if (!this.tableFloats.has(anchor)) this.tableFloats.set(anchor, []);
+          if (!this.floatedTables.has(block)) this.tableFloats.get(anchor)!.push(float);
+          this.floatedTables.add(block);
+          i++;
+          continue;
+        }
+      }
       const moved = block.type === 'paragraph' ? this.placeParagraph(block, next, blocks[i - 1] ?? null) : this.placeTable(block);
       // Keep with next: when this block's start moved to a new column, take the chain of
       // keep-with-next paragraphs before it along, unless the chain already starts a column.
@@ -515,6 +543,10 @@ class Paginator {
   /** Returns true when the paragraph's first line was pushed into a new column. */
   private placeParagraph(para: Paragraph, next: Block | null, prevBlock: Block | null): boolean {
     let moved = false;
+    // An empty paragraph that only carries a new-page section break, landing on a page that a page
+    // break just opened, takes no room there: Word starts the next section on that page instead
+    // of leaving it blank (see startSection).
+    if (para.sectPr && para.sectPr.type !== 'continuous' && para.content.length === 0 && this.atTop && this.breakOpenedPage === this.pages.length) return false;
     if (para.props.pageBreakBefore && !this.atTop) this.breakPage('hard');
     const layout = new ParagraphLayout(para, this.env);
     const nextPara = next?.type === 'paragraph' ? next : null;
@@ -538,7 +570,8 @@ class Paginator {
       let estimate = layout.markRun.ascent + layout.markRun.descent;
       for (;;) {
         if (!floatsPlaced) {
-          this.placeFloats(layout.floatDrawings, this.column, this.y);
+          const tables = this.tableFloats.get(para);
+          this.placeFloats(tables ? [...tables, ...layout.floatDrawings] : layout.floatDrawings, this.column, this.y);
           floatsPlaced = true;
         }
         const snap = layout.snapshot();
@@ -548,7 +581,12 @@ class Paginator {
         const { line, y, left } = placed;
         estimate = line.height;
         const noteH = this.notesHeight(line.notes);
-        const fits = y + line.height + noteH <= this.colBottom + EPS;
+        // The extra space of "multiple" line spacing sits below the text, and Word lets it hang into
+        // the bottom margin: only the text of the line has to fit. A footer tall enough to push the
+        // body up is not margin, so above one the whole line box has to fit.
+        const intoMargin = this.page!.bottom >= this.page!.height - this.page!.section.marginBottom - EPS;
+        const need = intoMargin ? Math.min(line.height, line.baseline + line.descent) : line.height;
+        const fits = y + need + noteH <= this.colBottom + EPS;
         if (!fits && !this.atTop) {
           layout.restore(snap);
           this.restore(lineCp);
@@ -617,6 +655,7 @@ class Paginator {
         linesHere++;
         if (line.brk === 'page') {
           this.breakPage('hard');
+          if (line.last) this.breakOpenedPage = this.pages.length;
           startedHere = false;
           linesHere = 0;
           lineCps = [];
@@ -765,6 +804,60 @@ class Paginator {
       y2: y + d.height + d.effectB + a.distB,
       wrap: a.wrap,
       side: a.wrapText,
+    };
+  }
+
+  /** Whether a float placed from the current position ends above the bottom of the page body. */
+  private floatFits(d: Drawing): boolean {
+    const pos = this.floatPosition(d, this.page, this.column, this.column.x, this.y);
+    return pos.y + d.height <= this.colBottom + EPS;
+  }
+
+  /** A floating table as a borderless text box positioned by its w:tblpPr, wrapping text on both sides. */
+  private tableFloat(table: Table): Drawing {
+    const f = table.props.floating!;
+    // Inside the box the table starts at the box's left edge: its own indent and alignment give way to
+    // the float position (before Word 2013 the indent measured the first cell's text, not its border).
+    const first = table.rows[0]?.cells[0];
+    const indent = this.env.compatibilityMode < 15 ? (first?.margins.left ?? table.props.cellMargins.left) : 0;
+    const inner: Table = { ...table, props: { ...table.props, floating: null, indent, align: 'left' } };
+    const width = measureTable(inner, this.column.w, this.env).width;
+    const height = layoutBlocks([inner], width, this.env).height;
+    const horz = f.horzAnchor === 'page' ? 'page' : f.horzAnchor === 'margin' ? 'margin' : 'column';
+    const vert = f.vertAnchor === 'page' ? 'page' : f.vertAnchor === 'margin' ? 'margin' : 'paragraph';
+    const xAlign = f.xAlign && f.xAlign !== 'inline' ? f.xAlign : undefined;
+    const yAlign = f.yAlign && f.yAlign !== 'inline' ? f.yAlign : undefined;
+    return {
+      kind: 'shape',
+      inline: false,
+      width,
+      height,
+      effectL: 0,
+      effectT: 0,
+      effectR: 0,
+      effectB: 0,
+      rotation: 0,
+      flipH: false,
+      flipV: false,
+      geometry: 'rect',
+      fill: null,
+      line: null,
+      textBox: { blocks: [inner], insetL: 0, insetT: 0, insetR: 0, insetB: 0, vAlign: 'top', autoFit: false, unclipped: true },
+      hidden: false,
+      anchor: {
+        behindDoc: false,
+        wrap: 'square',
+        wrapText: 'bothSides',
+        distT: f.topFromText,
+        distB: f.bottomFromText,
+        distL: f.leftFromText,
+        distR: f.rightFromText,
+        posH: { relativeFrom: horz, align: xAlign, offset: f.x },
+        posV: { relativeFrom: vert, align: yAlign, offset: f.y },
+        layoutInCell: true,
+        allowOverlap: false,
+        zIndex: 0,
+      },
     };
   }
 
@@ -980,7 +1073,9 @@ class Paginator {
       let to = from;
       if (!c.cell.vMerge) {
         while (to < items.length && items[to].y - shift + items[to].height <= inner + EPS) to++;
-        if (force && to === from && to < items.length) to++;
+        const fits = to;
+        while (to > from && to < items.length && items[to].keepWithPrev) to--;
+        if (to === from) to = force ? Math.max(fits, Math.min(from + 1, items.length)) : from;
       }
       if (to > from) advanced = true;
       slices.set(c, { from, to, shift });
