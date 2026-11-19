@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Standalone DOCX to PDF renderer in TypeScript. Runs in Node and the browser; no LibreOffice, no native binaries.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "private": true,
   "sideEffects": false,
   "engines": {

@@ -213,3 +213,7 @@ Code map: `src/docx` reads the package into a document model (styles, numbering,
 `src/fonts` parses, substitutes and subsets fonts, `src/layout` breaks lines and paginates into
 positioned drawing operations, and `src/pdf` writes those as PDF. `src/util` holds the ZIP reader,
 inflate/deflate and XML parser.
+
+## License
+
+[Apache License 2.0](LICENSE). The bundled fonts keep their own licenses (see [Fonts](#fonts)).
