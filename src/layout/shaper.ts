@@ -1,6 +1,5 @@
 import { fontFor } from '../fonts/script.js';
 import type { FontFace, FontRegistry, ResolvedFace } from '../fonts/registry.js';
-import { mapSymbolChar } from '../fonts/symbol-map.js';
 import type { Link, RunProps } from '../docx/model.js';
 
 export interface ShapedGlyph {
@@ -69,7 +68,7 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
     let size = choice.size;
     if (small) size *= 0.8;
     const sm = scriptMetrics(size, props.vertAlign);
-    const resolved: ResolvedFace = fonts.faceForChar(choice.family, choice.bold, choice.italic, cp);
+    const resolved: ResolvedFace = fonts.faceForChar(choice.family, choice.bold, choice.italic, cp, props.eastAsiaLang, props.drawn);
     const glyphSize = sm.size;
     if (!cur || cur.face !== resolved || cur.size !== glyphSize) {
       const face: FontFace = resolved.face;
@@ -90,7 +89,7 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
       out.push(cur);
     }
     const font = resolved.face.font;
-    const mapped = resolved.symbolMap ? mapSymbolChar(resolved.symbolMap, cp) : cp;
+    const mapped = resolved.char ?? (resolved.symbolMap ? fonts.symbolChar(resolved.symbolMap, cp) : cp);
     let gid = font.glyphId(mapped);
     let advanceCp = mapped;
     if (ZERO_WIDTH.has(cp)) {
@@ -118,7 +117,7 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
       if (prev.gid > 0 && gid > 0) prev.advance += (font.kerning(prev.gid, gid) / font.unitsPerEm) * glyphSize * scale;
     }
     // Symbol-font characters (Wingdings, Symbol PUA codes) copy as the Unicode they were mapped to.
-    const text = mapped !== cp && (mapped < 0xe000 || mapped > 0xf8ff) ? String.fromCodePoint(mapped) : display;
+    const text = mapped !== cp && !resolved.char && (mapped < 0xe000 || mapped > 0xf8ff) ? String.fromCodePoint(mapped) : display;
     cur.glyphs.push({ gid, text, cp, advance });
   }
   return out;

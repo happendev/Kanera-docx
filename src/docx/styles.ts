@@ -102,9 +102,21 @@ export class StyleSheet {
       if (isDefault && type === 'character' && !this.defaultCharacterStyle) this.defaultCharacterStyle = id;
       if (isDefault && type === 'table' && !this.defaultTableStyle) this.defaultTableStyle = id;
     }
+    // Without a style marked as the default, Word still applies the paragraph style named Normal.
+    if (!this.defaultParagraphStyle) {
+      const normal = [...this.styles.values()].find((d) => d.type === 'paragraph' && (d.id === 'Normal' || d.name.toLowerCase() === 'normal'));
+      if (normal) this.defaultParagraphStyle = normal.id;
+    }
     // Word supplies Normal spacing for a named default paragraph style when the
-    // document specifies run defaults alone. Style and direct overrides still win.
-    if (this.defaultParagraphStyle && dd && !paraDefault) this.defaultsPara = { line: 1.15, spaceAfter: 8 };
+    // document specifies run defaults alone, or no defaults at all. Style and direct overrides still win.
+    if (this.defaultParagraphStyle && !paraDefault) this.defaultsPara = { line: 1.15, spaceAfter: 8 };
+  }
+
+  /** The style with this name: built-in styles keep their English names whatever their ids. */
+  byName(name: string): StyleDef | undefined {
+    const n = name.toLowerCase();
+    for (const d of this.styles.values()) if (d.name.toLowerCase() === n) return d;
+    return undefined;
   }
 
   get(id: string | undefined): StyleDef | undefined {

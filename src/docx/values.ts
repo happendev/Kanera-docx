@@ -238,9 +238,10 @@ export function parseBorder(el: XmlElement | undefined, themeColor: (name: strin
   const style = el.attrs['w:val'] ?? 'single';
   if (style === 'nil' || style === 'none') return null;
   const sz = num(el.attrs['w:sz']) ?? 4;
-  let width = sz / 8;
-  if (style.startsWith('triple') || style === 'double') width = Math.max(width, 0.75);
-  width = Math.max(0.25, Math.min(width, 12));
+  let width = Math.max(0.25, Math.min(sz / 8, 12));
+  // A double border is two lines of the given width with as wide a gap between them.
+  if (style === 'double') width *= 3;
+  else if (style.startsWith('triple')) width = Math.max(width, 0.75);
   const space = num(el.attrs['w:space']) ?? 0;
   let color = hexColor(el.attrs['w:color']);
   const tc = el.attrs['w:themeColor'];

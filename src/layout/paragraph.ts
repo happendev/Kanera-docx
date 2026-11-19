@@ -1,15 +1,37 @@
 import type { FontRegistry } from '../fonts/registry.js';
+import { arabicForms, bidiClass, bidiLevels, visualOrder } from './bidi.js';
 import type { DocSettings, Drawing, FieldInline, Link, Paragraph, RunProps, TabStop } from '../docx/model.js';
 import { shapeSimple, shapeText, type ShapedRun } from './shaper.js';
 import type { DrawOp, GlyphOp } from './types.js';
 
 const EPS = 0.01;
 /**
+ * Full-width punctuation that Word's punctuation compression squeezes, in equal shares, by up to
+ * 0.3 em each when a line overflows: opening brackets lose their blank left half, closing ones
+ * their right half, and centred commas and stops some of both.
+ */
+const OPENING = new Set([...'（「『【〈《〔〖〘［｛'].map((c) => c.codePointAt(0)!));
+const CLOSING = new Set([...'）」』】〉》〕〗〙］｝'].map((c) => c.codePointAt(0)!));
+const COMPRESSIBLE = new Set([...OPENING, ...CLOSING, ...[...'、。，．：；'].map((c) => c.codePointAt(0)!)]);
+const PUNCT_SQUEEZE = 0.3;
+/** Full-width punctuation that may not start a line and so hangs past the right edge (w:overflowPunct). */
+const HANGING = new Set([...CLOSING, ...[...'、。，．'].map((c) => c.codePointAt(0)!)]);
+/**
  * How much of their width the spaces of a justified line may give up so that one more word fits.
  * Word 2013+ (compatibility mode 15) does this; documents in older modes only ever stretch spaces.
  * A quarter matched Word's PDFs best (tried 0.2 to 0.4).
  */
 const SPACE_SHRINK = 0.25;
+/** Word keeps the word on a justified line only when shrinking the spaces takes less than this
+ * share of the stretch (per unit of space width) the line would need without the word (fitted to
+ * about 3,500 measured Word line breaks). */
+const SQUEEZE_VS_STRETCH = 0.5;
+/**
+ * WordPerfect justification (compat wpJustification) keeps a word on the line when compressing the
+ * line by up to this share of its natural width makes room, taking it out of every character's
+ * spacing (measured: Word compresses lines by up to 4.26% and wraps lines that would need 4.5%).
+ */
+const WP_COMPRESS = 0.0435;
 
 export interface ParagraphEnv {
   fonts: FontRegistry;
@@ -20,11 +42,13 @@ export interface ParagraphEnv {
   noteNumberText?: string;
   /** Line pitch when the section uses a "lines" document grid. */
   gridPitch?: number;
+  /** Extra width per character when the section uses a character grid. */
+  charGrid?: number;
   drawInline(drawing: Drawing, x: number, y: number, w: number, h: number): DrawOp[];
 }
 
 type Atom =
-  | { k: 'g'; run: ShapedRun; gi: number; w: number; cp: number; field?: FieldInline }
+  | { k: 'g'; run: ShapedRun; gi: number; w: number; cp: number; field?: FieldInline; grid?: number; aspace?: number }
   | { k: 'tab'; run: ShapedRun; label?: boolean }
   | { k: 'ptab'; run: ShapedRun; alignment: 'left' | 'center' | 'right'; relativeTo: 'margin' | 'indent'; leader: TabStop['leader'] }
   | { k: 'br'; type: 'line' | 'page' | 'column'; run: ShapedRun }
@@ -67,6 +91,12 @@ function isSpaceCp(cp: number): boolean {
   return cp === 0x20 || cp === 0x3000 || (cp >= 0x2000 && cp <= 0x2006) || cp === 0x2008 || cp === 0x2009 || cp === 0x200a || cp === 0x205f;
 }
 
+/** Spaces that may hang past the right margin at a line break. Word wraps en, em and the other
+ * fixed-width spaces like text instead (the blank of a FORMTEXT field moves to the next line). */
+function hangs(cp: number): boolean {
+  return cp === 0x20 || cp === 0x3000;
+}
+
 const NO_BREAK_BEFORE = new Set(
   [...'、。，．：；？！）」』】〕〉》’”ー々ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ…‥・゛゜ヽヾゝゞ〟｝］｠｡｣､﹐﹑﹒﹔﹕﹖﹗!%),.:;?]}¢°’”‰℃'].map((c) => c.codePointAt(0)!),
 );
@@ -76,6 +106,24 @@ function isIdeographic(cp: number): boolean {
   return (cp >= 0x2e80 && cp <= 0x9fff) || (cp >= 0xac00 && cp <= 0xd7af) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xff00 && cp <= 0xffef) || (cp >= 0x20000 && cp <= 0x2fa1f);
 }
 
+/** Ideographs, kana and hangul: the East Asian text Word spaces apart from Latin text (its
+ * full-width punctuation and forms take no such space). */
+function isEastAsianText(cp: number): boolean {
+  return (
+    (cp >= 0x2e80 && cp <= 0x2fdf) ||
+    (cp >= 0x3040 && cp <= 0x30ff) ||
+    (cp >= 0x3130 && cp <= 0x318f) ||
+    (cp >= 0x31f0 && cp <= 0x9fff) ||
+    (cp >= 0xac00 && cp <= 0xd7af) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0x20000 && cp <= 0x2fa1f)
+  );
+}
+
+function isLatinLetter(cp: number): boolean {
+  return (cp >= 0x41 && cp <= 0x5a) || (cp >= 0x61 && cp <= 0x7a) || (cp >= 0xc0 && cp <= 0x24f && cp !== 0xd7 && cp !== 0xf7) || (cp >= 0x370 && cp <= 0x4ff);
+}
+
 function isAlnum(cp: number): boolean {
   return (cp >= 0x30 && cp <= 0x39) || (cp >= 0x41 && cp <= 0x5a) || (cp >= 0x61 && cp <= 0x7a) || (cp >= 0xc0 && cp <= 0x24f) || (cp >= 0x370 && cp <= 0x52f);
 }
@@ -83,12 +131,16 @@ function isAlnum(cp: number): boolean {
 export class ParagraphLayout {
   readonly atoms: Atom[] = [];
   private breakAfter: boolean[] = [];
+  /** Bidi embedding level per atom, when the paragraph has right-to-left text. */
+  private levels: number[] | null = null;
   pos = 0;
   private firstLine = true;
   readonly markRun: ShapedRun;
   /** Width the numbering label is shifted left by (lvlJc right/center). */
   private labelShift = 0;
   private labelEnd = 0;
+  /** Atoms before the label: page or column breaks opening the paragraph. */
+  private labelStart = 0;
   private hasLabel = false;
   readonly tabs: TabStop[];
 
@@ -175,12 +227,112 @@ export class ParagraphLayout {
           break;
       }
     }
+    if (this.hasLabel) this.moveLabelPastBreaks();
+    this.shapeArabic();
+    this.autoSpace();
     this.computeBreaks();
+    const base = para.props.bidi ? 1 : 0;
+    const classes = this.atoms.map((a) => (a.k === 'g' ? bidiClass(a.cp) : 'N'));
+    if (base || classes.some((c) => c === 'R' || c === 'AL')) {
+      this.levels = bidiLevels(classes, this.atoms.map((a) => a.k === 'g' && a.run.props.rtl), base);
+    }
+  }
+
+  /** Arabic letters take their joining forms from the letters around them. */
+  private shapeArabic(): void {
+    const atoms = this.atoms;
+    const cps = atoms.map((a) => (a.k === 'g' ? a.cp : -1));
+    if (!cps.some((cp) => cp >= 0x621 && cp <= 0x64a)) return;
+    const forms = arabicForms(cps);
+    for (let i = 0; i < atoms.length; i++) {
+      const a = atoms[i];
+      if (a.k !== 'g' || forms[i] === cps[i] || forms[i] === 0) continue;
+      const g = a.run.glyphs[a.gi];
+      const font = a.run.face.face.font;
+      const gid = font.glyphId(forms[i]);
+      if (g.gid < 0 || gid <= 0) continue;
+      const scale = (a.run.size * a.run.scaleX) / font.unitsPerEm;
+      g.advance += (font.advance(gid) - font.advance(g.gid)) * scale;
+      g.gid = gid;
+      a.w = g.advance;
+      // A lam-alef ligature draws the alef too.
+      if (forms[i] >= 0xfef5 && forms[i] <= 0xfefc) {
+        for (let k = i + 1; k < atoms.length; k++) {
+          const b = atoms[k];
+          if (b.k !== 'g' || forms[k] !== 0) continue;
+          const bg = b.run.glyphs[b.gi];
+          g.text += bg.text;
+          bg.gid = -1;
+          bg.advance = 0;
+          b.w = 0;
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * Word sets East Asian text a quarter em apart from Latin letters (w:autoSpaceDE) and digits
+   * (w:autoSpaceDN), both on unless a paragraph turns them off. The space trails the first of the
+   * pair, so like a space it can hang past the margin, and justification stretches it first.
+   */
+  private autoSpace(): void {
+    const { autoSpaceDE, autoSpaceDN } = this.para.props;
+    if (!autoSpaceDE && !autoSpaceDN) return;
+    const atoms = this.atoms;
+    const kind = (cp: number): number => (isEastAsianText(cp) ? 1 : cp >= 0x30 && cp <= 0x39 ? (autoSpaceDN ? 2 : 0) : isLatinLetter(cp) ? (autoSpaceDE ? 2 : 0) : 0);
+    for (let i = 0; i < atoms.length; i++) {
+      const a = atoms[i];
+      if (a.k !== 'g' || (i >= this.labelStart && i < this.labelEnd) || a.run.glyphs[a.gi].gid === -1) continue;
+      const ka = kind(a.cp);
+      if (!ka) continue;
+      let j = i + 1;
+      while (j < atoms.length && (atoms[j].k === 'bm' || atoms[j].k === 'rpb' || atoms[j].k === 'note')) j++;
+      const b = atoms[j];
+      if (!b || b.k !== 'g' || (j >= this.labelStart && j < this.labelEnd) || b.run.glyphs[b.gi].gid === -1) continue;
+      const kb = kind(b.cp);
+      if (!kb || ka === kb || (ka !== 1 && kb !== 1)) continue;
+      const gap = (ka === 1 ? a.run.size : b.run.size) / 4;
+      a.run.glyphs[a.gi].advance += gap;
+      a.w += gap;
+      a.aspace = gap;
+    }
+  }
+
+  /**
+   * A numbered paragraph that opens with a page or column break shows its number after the break,
+   * with the text on the new page (Word's PDFs), so the label atoms move behind the break.
+   */
+  private moveLabelPastBreaks(): void {
+    const atoms = this.atoms;
+    let lead = this.labelEnd;
+    for (let k = this.labelEnd; k < atoms.length; k++) {
+      const a = atoms[k];
+      if (a.k === 'br' && a.type !== 'line') lead = k + 1;
+      else if (a.k !== 'bm' && a.k !== 'rpb') break;
+    }
+    if (lead === this.labelEnd) return;
+    // With nothing after the break, Word shows no number on either page.
+    if (atoms.slice(lead).every((a) => a.k === 'bm' || a.k === 'rpb')) {
+      atoms.splice(0, this.labelEnd);
+      this.labelEnd = 0;
+      this.labelShift = 0;
+      this.hasLabel = false;
+      return;
+    }
+    const label = atoms.slice(0, this.labelEnd);
+    const breaks = atoms.slice(this.labelEnd, lead);
+    atoms.splice(0, lead, ...breaks, ...label);
+    this.labelStart = breaks.length;
+    this.labelEnd = breaks.length + label.length;
   }
 
   private pushGlyph(run: ShapedRun, gi: number, field?: FieldInline): void {
     const g = run.glyphs[gi];
-    this.atoms.push({ k: 'g', run, gi, w: g.advance, cp: g.cp, field });
+    // A character grid (w:docGrid linesAndChars) widens every character by the grid's spacing.
+    const grid = this.env.charGrid && this.para.props.snapToGrid && run.props.snapToGrid !== false && g.advance > 0 ? this.env.charGrid : 0;
+    g.advance += grid;
+    this.atoms.push({ k: 'g', run, gi, w: g.advance, cp: g.cp, field, grid: grid || undefined });
   }
 
   private computeBreaks(): void {
@@ -205,8 +357,9 @@ export class ParagraphLayout {
       while (j < n && atoms[j].k !== 'g' && atoms[j].k !== 'tab' && atoms[j].k !== 'obj' && atoms[j].k !== 'br' && atoms[j].k !== 'ptab') j++;
       const next = cpAt(j);
       if (isSpaceCp(cp)) {
-        // Break after the last space of a run of spaces.
-        this.breakAfter[i] = !(next >= 0 && isSpaceCp(next));
+        // Break after the last space of a run of spaces. A run of fixed-width spaces after ordinary
+        // ones wraps as a unit, like a word.
+        this.breakAfter[i] = !(next >= 0 && isSpaceCp(next) && (!hangs(cp) || hangs(next)));
       } else if (cp === 0xad || cp === 0x200b) {
         this.breakAfter[i] = true;
       } else if (cp === 0x2d || cp === 0x2010 || cp === 0x2013 || cp === 0x2014) {
@@ -237,6 +390,15 @@ export class ParagraphLayout {
   }
 
   /** Line-breaking state, so the flow can retry a line with different bounds. */
+  /** True when the line holds nothing but a break (and bookmarks). */
+  onlyBreak(line: Line): boolean {
+    for (let k = line.start; k < line.end; k++) {
+      const a = this.atoms[k];
+      if (a.k !== 'br' && a.k !== 'bm' && a.k !== 'rpb') return false;
+    }
+    return true;
+  }
+
   snapshot(): { pos: number; firstLine: boolean; pendingMarkLine: boolean } {
     return { pos: this.pos, firstLine: this.firstLine, pendingMarkLine: this.pendingMarkLine };
   }
@@ -257,8 +419,10 @@ export class ParagraphLayout {
   /** Left/right edges of the next line inside an area of `areaWidth`, from the paragraph indents. */
   lineBounds(areaWidth: number): { left: number; right: number } {
     const p = this.para.props;
-    const left = p.indLeft + (this.firstLine ? p.indFirstLine : 0);
-    return { left, right: areaWidth - p.indRight };
+    const first = this.firstLine ? p.indFirstLine : 0;
+    // A right-to-left paragraph's lines start on the right.
+    if (p.bidi) return { left: p.indLeft, right: areaWidth - p.indRight - first };
+    return { left: p.indLeft + first, right: areaWidth - p.indRight };
   }
 
   /**
@@ -267,6 +431,11 @@ export class ParagraphLayout {
    */
   nextLine(left: number, right: number, areaWidth: number): Line | null {
     const atoms = this.atoms;
+    // A horizontal rule given as a share of the column takes it from the text width.
+    for (let k = this.pos; k < atoms.length; k++) {
+      const a = atoms[k];
+      if (a.k === 'obj' && a.drawing.hr && a.drawing.hr.pct > 0) a.w = a.drawing.width = a.drawing.hr.pct * Math.max(0, right - left);
+    }
     if (this.pos >= atoms.length && !this.firstLine && !this.pendingMarkLine) return null;
     const start = this.pos;
     const first = this.firstLine;
@@ -281,12 +450,27 @@ export class ParagraphLayout {
     let brk: Line['brk'] = null;
     let hasContent = false;
     let lastTab = -1;
+    // Where text must wrap; a right tab past the right indent moves it out to the tab.
+    let limit = right;
 
     const finish = (end: number): number => end;
     let end = -1;
-    // Word keeps a word on a justified line when shrinking the line's spaces makes room for it.
-    const shrink = this.para.props.align === 'both' && this.env.settings.compatibilityMode >= 15 ? SPACE_SHRINK : 0;
+    // Word keeps a word on a justified line when shrinking the line's spaces makes room for it
+    // (Word 2013+). WordPerfect justification instead compresses every character a little.
+    const wp = this.para.props.align === 'both' && this.env.settings.wpJustification;
+    const shrink = this.para.props.align === 'both' && !wp && this.env.settings.compatibilityMode >= 15 ? SPACE_SHRINK : 0;
+    const compress = wp ? WP_COMPRESS : 0;
+    const lineStart = x;
     let spaceSum = 0;
+    // End of the last visible atom and the space width before it, now and at the break candidate.
+    let inkX = x;
+    let inkSpaces = 0;
+    let candInkX = x;
+    let candInkSpaces = 0;
+    // Room East Asian punctuation can give up when the line would otherwise overflow.
+    const punctOn = !!this.env.settings.compressPunctuation;
+    let punct = 0;
+    let hungAt = -1;
     for (; i < atoms.length; i++) {
       const a = atoms[i];
       if (a.k === 'br') {
@@ -298,24 +482,29 @@ export class ParagraphLayout {
         break;
       }
       if (a.k === 'tab' || a.k === 'ptab') {
-        const t = a.k === 'tab' ? this.resolveTab(i, x, first, areaWidth, a.label === true) : this.resolvePTab(i, x, a, areaWidth);
-        if (t.overflow && hasContent && right - left > 1) {
+        const t: { width: number; leader: TabStop['leader']; overflow: boolean; reach?: number } = a.k === 'tab' ? this.resolveTab(i, x, first, areaWidth, a.label === true) : this.resolvePTab(i, x, a, areaWidth);
+        // A line of nothing but tabs keeps them all, past the margin.
+        if (t.overflow && hasContent && right - left > 1 && !this.blank(start, i)) {
           end = candidate > start ? candidate : i;
           break;
         }
+        limit = Math.max(right, t.reach ?? right);
         xs.push(x);
         ws.push(t.width);
         if (t.leader !== 'none' && t.width > 0) leaders.push({ x, w: t.width, leader: t.leader, run: a.run });
         x += t.width;
         lastTab = i;
         spaceSum = 0;
+        punct = 0;
         hasContent = true;
         candidate = i + 1;
         candidateX = x;
+        inkX = candInkX = x;
+        inkSpaces = candInkSpaces = 0;
         continue;
       }
       const w = atomWidth(a);
-      if (a.k === 'g' && isSpaceCp(a.cp)) {
+      if (a.k === 'g' && hangs(a.cp)) {
         xs.push(x);
         ws.push(w);
         x += w;
@@ -323,21 +512,42 @@ export class ParagraphLayout {
         if (this.breakAfter[i]) {
           candidate = i + 1;
           candidateX = x;
+          candInkX = inkX;
+          candInkSpaces = inkSpaces;
         }
         continue;
       }
-      if (w > 0 && x + w > right + shrink * spaceSum + EPS && hasContent) {
-        if (candidate > start) end = candidate;
-        else end = i; // emergency break inside a word
-        break;
+      // Shrinking the spaces wins only when it changes them less than half as much as stretching
+      // them would if the word wrapped instead.
+      let squeeze = shrink * spaceSum;
+      if (squeeze > 0 && candidate > start && candInkSpaces > 0) squeeze = Math.min(squeeze, SQUEEZE_VS_STRETCH * ((right - candInkX) / candInkSpaces) * spaceSum);
+      // A character's grid spacing and the space after it before Latin text may hang past the margin.
+      const tail = a.k === 'g' ? (a.grid ?? 0) + (a.aspace ?? 0) : 0;
+      const room = limit + squeeze + compress * (x + w - lineStart) + punct + EPS;
+      if (w > 0 && x + w - tail > room && hasContent) {
+        // Word lets one closing punctuation mark that starts inside the line hang past its edge
+        // rather than wrap it with the character before it.
+        if (hungAt < 0 && this.para.props.overflowPunct && a.k === 'g' && HANGING.has(a.cp) && x <= room) hungAt = i;
+        else {
+          if (candidate > start) end = candidate;
+          else end = i; // emergency break inside a word
+          break;
+        }
       }
       xs.push(x);
       ws.push(w);
       x += w;
+      if (punctOn && a.k === 'g' && COMPRESSIBLE.has(a.cp) && (i < this.labelStart || i >= this.labelEnd)) punct += (w - (a.grid ?? 0)) * PUNCT_SQUEEZE;
       if (w > 0 || a.k === 'obj') hasContent = true;
+      if (w > 0) {
+        inkX = x;
+        inkSpaces = spaceSum;
+      }
       if (this.breakAfter[i]) {
         candidate = i + 1;
         candidateX = x;
+        candInkX = inkX;
+        candInkSpaces = inkSpaces;
       }
     }
     if (end < 0) end = finish(i);
@@ -375,16 +585,44 @@ export class ParagraphLayout {
       }
     }
 
-    // Visible extent (exclude trailing spaces).
+    // Visible extent (exclude trailing spaces). Only ordinary spaces trail: Word centres or
+    // right-aligns a line with its trailing en or em spaces.
     let contentRight = left;
     for (let k = end - 1; k >= start; k--) {
       const a = atoms[k];
-      if (a.k === 'g' && isSpaceCp(a.cp)) continue;
+      if (a.k === 'g' && (a.cp === 0x20 || a.cp === 0x3000)) continue;
       if (a.k === 'br') continue;
       if ((a.k === 'g' || a.k === 'obj' || a.k === 'tab' || a.k === 'ptab' || a.k === 'sep') && ws[k - start] >= 0) {
-        contentRight = xs[k - start] + ws[k - start];
+        contentRight = xs[k - start] + ws[k - start] - (a.k === 'g' ? (a.aspace ?? 0) : 0);
         break;
       }
+    }
+
+    // A line whose last mark hangs keeps its natural spacing.
+    const hung = hungAt >= start && hungAt < end;
+    // An overfull line takes the overflow out of its East Asian punctuation.
+    if (punctOn && !hung && contentRight > right + EPS) {
+      const amounts: number[] = [];
+      let total = 0;
+      for (let k = start; k < end; k++) {
+        const a = atoms[k];
+        const amt = a.k === 'g' && COMPRESSIBLE.has(a.cp) && (k < this.labelStart || k >= this.labelEnd) && xs[k - start] + ws[k - start] <= contentRight ? (ws[k - start] - (a.grid ?? 0)) * PUNCT_SQUEEZE : 0;
+        amounts.push(amt);
+        total += amt;
+      }
+      const over = Math.min(contentRight - right, total);
+      let shift = 0;
+      for (let k = start; total > 0 && k < end; k++) {
+        const c = (amounts[k - start] / total) * over;
+        const cp = (atoms[k] as { cp: number }).cp;
+        // The part of the squeeze taken before the glyph moves it left; the rest narrows it.
+        const before = c > 0 ? (OPENING.has(cp) ? c : CLOSING.has(cp) ? 0 : c / 2) : 0;
+        shift += before;
+        xs[k - start] -= shift;
+        ws[k - start] -= c - before;
+        shift += c - before;
+      }
+      contentRight -= over;
     }
 
     // Metrics
@@ -413,23 +651,29 @@ export class ParagraphLayout {
     let labelAscent = 0;
     for (let k = start; k < end; k++) {
       const a = atoms[k];
-      if (k < this.labelEnd && (a.k === 'g' || a.k === 'tab')) {
+      if (k >= this.labelStart && k < this.labelEnd && (a.k === 'g' || a.k === 'tab')) {
         if (a.k === 'tab' || a.run.glyphs[a.gi].gid !== -1) labelAscent = Math.max(labelAscent, a.run.ascent + (a.k === 'g' ? a.run.baselineShift : 0));
         continue;
       }
       switch (a.k) {
         case 'g':
           if (a.run.glyphs[a.gi].gid === -1) break;
+          // Spaces and tabs never size a line: Word sizes it by its text, and a line of nothing
+          // but spaces and tabs by the paragraph mark.
+          if (isSpaceCp(a.cp)) break;
           add(a.run.ascent + a.run.baselineShift, a.run.descent - a.run.baselineShift, a.run.extLeading);
           break;
         case 'tab':
         case 'ptab':
+          break;
         case 'br':
         case 'sep':
           add(a.run.ascent, a.run.descent, a.run.extLeading);
           break;
         case 'obj':
           add(a.h + a.props.position, Math.max(0, -a.props.position), 0, false);
+          // A horizontal rule's line is as tall as its run's text.
+          if (a.drawing.hr) add(a.run.ascent, a.run.descent, a.run.extLeading);
           break;
         case 'float':
           floats.push(a.drawing);
@@ -458,8 +702,10 @@ export class ParagraphLayout {
       textAscent = mark.ascent;
       textDescent = mark.descent;
     }
-    ascent = Math.max(ascent, labelAscent);
-    textAscent = Math.max(textAscent, labelAscent);
+    // The label's ascent competes with the text's ascent plus its leading: Symbol's "•" in a Times
+    // line adds only what its ascent exceeds Times' ascent and line gap. "Multiple" spacing scales
+    // the text's height only, not what a larger label adds.
+    ascent = Math.max(ascent, labelAscent - ext);
     const { height, baseline } = lineHeight(ascent, descent, ext, this.para.props, this.env.gridPitch, textAscent + textDescent + ext);
 
     // Alignment and justification.
@@ -472,23 +718,26 @@ export class ParagraphLayout {
     const justifyThis = (p.align === 'both' && !isLast && !(endsWithLineBreak && this.env.settings.doNotExpandShiftReturn)) || p.align === 'distribute';
     // A justified line that kept its last word by shrinking its spaces stays shrunk, even when it
     // is the paragraph's last line (which otherwise isn't justified).
-    if ((justifyThis && used < avail) || (p.align === 'both' && used > avail + EPS)) {
+    if ((justifyThis && used < avail) || (p.align === 'both' && !hung && used > avail + EPS)) {
       const extra = avail - used;
       // Only spaces after the last tab stretch.
       let from = start;
       for (let k = start; k < end; k++) if (atoms[k].k === 'tab' || atoms[k].k === 'ptab') from = k + 1;
-      if (first && this.hasLabel) from = Math.max(from, start + this.labelEnd);
+      if (first && this.hasLabel) from = Math.max(from, this.labelEnd);
       let lastVisible = end - 1;
       while (lastVisible >= from && atoms[lastVisible].k === 'g' && isSpaceCp((atoms[lastVisible] as { cp: number }).cp)) lastVisible--;
       let gaps = 0;
       let chars = 0;
       for (let k = from; k <= lastVisible; k++) {
         const a = atoms[k];
-        if (a.k === 'g' && (a.cp === 0x20 || a.cp === 0x3000)) gaps++;
+        if (stretches(a, k < lastVisible)) gaps++;
         if (a.k === 'g' || a.k === 'obj') chars++;
       }
       justify.from = from;
-      if (p.align === 'distribute') {
+      if (extra < 0 && this.env.settings.wpJustification) {
+        // WordPerfect justification takes the overflow out of every character's spacing.
+        if (chars > 0) justify.perChar = extra / chars;
+      } else if (p.align === 'distribute') {
         if (chars > 1) justify.perChar = extra / (chars - 1);
       } else if (gaps > 0) justify.perGap = extra / gaps;
       else {
@@ -503,7 +752,17 @@ export class ParagraphLayout {
       (justify as { last?: number }).last = lastVisible;
     } else if (p.align === 'center') alignShift = (avail - used) / 2;
     else if (p.align === 'right') alignShift = avail - used;
+    // A horizontal rule sits by its own alignment.
+    let hr: Drawing['hr'];
+    for (let k = start; k < end; k++) if (atoms[k].k === 'obj') hr = (atoms[k] as { drawing: Drawing }).drawing.hr ?? hr;
+    if (hr) {
+      justify.perGap = justify.perChar = 0;
+      alignShift = hr.align === 'center' ? (avail - used) / 2 : hr.align === 'right' ? avail - used : 0;
+    }
 
+    // The breaks before a moved label leave the next line the paragraph's first, with the label.
+    const breakLine = first && this.labelStart > 0 && end <= this.labelStart;
+    if (breakLine) this.firstLine = true;
     return {
       start,
       end,
@@ -518,7 +777,7 @@ export class ParagraphLayout {
       baseline,
       brk,
       last: isLast,
-      first,
+      first: first && (breakLine || this.labelStart === 0 || start < this.labelStart),
       floats,
       notes,
       renderedPageBreak: rpb,
@@ -526,6 +785,30 @@ export class ParagraphLayout {
       alignShift,
       tabLeaders: leaders,
     };
+  }
+
+  /**
+   * Widest unbreakable stretch of the paragraph (its spaces hang, so they don't count): the
+   * narrowest an autofit table column can make it without breaking a word.
+   */
+  minContentWidth(): number {
+    let best = 0;
+    let seg = 0;
+    for (let i = 0; i < this.atoms.length; i++) {
+      const a = this.atoms[i];
+      if (a.k === 'br' || a.k === 'tab' || a.k === 'ptab') {
+        best = Math.max(best, seg);
+        seg = 0;
+        continue;
+      }
+      if (!(a.k === 'g' && hangs(a.cp))) seg += atomWidth(a);
+      if (this.breakAfter[i]) {
+        best = Math.max(best, seg);
+        seg = 0;
+      }
+    }
+    const p = this.para.props;
+    return Math.max(best, seg) + Math.max(0, p.indLeft) + Math.max(0, p.indRight);
   }
 
   // -------------------------------------------------------------------------------------------
@@ -548,7 +831,7 @@ export class ParagraphLayout {
     return w;
   }
 
-  private resolveTab(i: number, x: number, first: boolean, areaWidth: number, isLabelTab: boolean): { width: number; leader: TabStop['leader']; overflow: boolean } {
+  private resolveTab(i: number, x: number, first: boolean, areaWidth: number, isLabelTab: boolean): { width: number; leader: TabStop['leader']; overflow: boolean; reach?: number } {
     const p = this.para.props;
     let stop: TabStop | null = null;
     for (const t of this.tabs) {
@@ -573,12 +856,27 @@ export class ParagraphLayout {
     let target = stop.pos;
     if (stop.type === 'right' || stop.type === 'center' || stop.type === 'decimal') {
       const seg = this.segmentWidth(i, stop.type === 'decimal');
-      if (stop.type === 'right' || stop.type === 'decimal') target = stop.pos - seg;
-      else target = stop.pos - seg / 2;
+      // Since Word 2013, a right tab past the margin aligns its text at the margin instead.
+      const pos = stop.type === 'right' && this.env.settings.compatibilityMode >= 15 ? Math.min(stop.pos, areaWidth) : stop.pos;
+      if (stop.type === 'right' || stop.type === 'decimal') target = pos - seg;
+      else target = pos - seg / 2;
+      // Text aligned on a right tab may run past the right indent up to the tab (contents page
+      // numbers hang into the indent that wraps their titles).
+      if (stop.type === 'right') return { width: Math.max(0, target - x), leader: stop.leader, overflow: false, reach: pos };
     }
     const width = Math.max(0, target - x);
     const overflow = isDefault ? stop.pos > right + EPS : stop.type === 'left' && stop.pos > Math.max(right, areaWidth) + EPS;
     return { width, leader: stop.leader, overflow };
+  }
+
+  /** Are the atoms from `from` up to `to` only tabs, spaces and bookmarks? */
+  private blank(from: number, to: number): boolean {
+    for (let k = from; k < to; k++) {
+      const a = this.atoms[k];
+      if (a.k === 'tab' || a.k === 'bm' || a.k === 'rpb' || (a.k === 'g' && isSpaceCp(a.cp))) continue;
+      return false;
+    }
+    return true;
   }
 
   private resolvePTab(i: number, x: number, a: Extract<Atom, { k: 'ptab' }>, areaWidth: number): { width: number; leader: TabStop['leader']; overflow: boolean } {
@@ -594,6 +892,30 @@ export class ParagraphLayout {
 
   // -------------------------------------------------------------------------------------------
   // Rendering
+
+  /**
+   * Move a line's characters into visual order: right-to-left stretches run from right to left.
+   * Trailing spaces stay at the line's end.
+   */
+  private reorder(line: Line, positions: number[], widthOf: (k: number) => number): void {
+    const atoms = this.atoms;
+    let end = line.end;
+    while (end > line.start) {
+      const a = atoms[end - 1];
+      if (a.k === 'g' && isSpaceCp(a.cp)) end--;
+      else if (a.k === 'br' || a.k === 'bm' || a.k === 'rpb') end--;
+      else break;
+    }
+    if (end - line.start < 2) return;
+    const levels = this.levels!.slice(line.start, end);
+    if (!levels.some((l) => l > 0)) return;
+    const order = visualOrder(levels);
+    let x = positions[0];
+    for (const i of order) {
+      positions[i] = x;
+      x += widthOf(line.start + i);
+    }
+  }
 
   /** Draw ops for a line whose top-left area origin is (ox, top). */
   renderLine(line: Line, ox: number, top: number): DrawOp[] {
@@ -616,15 +938,18 @@ export class ParagraphLayout {
         }
       }
       positions.push(x);
-      if (k >= line.justify.from && k <= jlast && line.justify.perGap && a.k === 'g' && (a.cp === 0x20 || a.cp === 0x3000)) shift += line.justify.perGap;
+      if (k >= line.justify.from && k <= jlast && line.justify.perGap && stretches(a, k < jlast)) shift += line.justify.perGap;
     }
     const widthOf = (k: number): number => {
       const a = atoms[k];
       let w = line.ws[k - line.start];
-      if (k >= line.justify.from && k <= jlast && line.justify.perGap && a.k === 'g' && (a.cp === 0x20 || a.cp === 0x3000)) w += line.justify.perGap;
+      if (k >= line.justify.from && k <= jlast && line.justify.perGap && stretches(a, k < jlast)) w += line.justify.perGap;
       return w;
     };
+    if (this.levels) this.reorder(line, positions, widthOf);
 
+    const p = this.para.props;
+    const lineX = !this.levels && !line.alignShift && (p.align === 'left' || p.align === 'both') ? positions[0] : undefined;
     // Glyph runs
     let cur: GlyphOp | null = null;
     let curRun: ShapedRun | null = null;
@@ -663,6 +988,7 @@ export class ParagraphLayout {
             scaleX: run.scaleX,
             outline: run.props.outline || undefined,
           };
+          if (lineX !== undefined) cur.lineX = lineX;
           ops.push(cur);
         }
         cur.gids.push(a.cp === 0xad ? run_hyphen(a.run) : g.gid);
@@ -844,6 +1170,12 @@ function run_hyphen(run: ShapedRun): number {
   return run.face.face.font.glyphId(0x2d);
 }
 
+/** Whether justification widens the space this atom carries: a space, or the space before Latin
+ * text inside an East Asian line (`inside`: not the line's last visible atom). */
+function stretches(a: Atom, inside: boolean): boolean {
+  return a.k === 'g' && (a.cp === 0x20 || a.cp === 0x3000 || (inside && !!a.aspace));
+}
+
 function atomWidth(a: Atom): number {
   switch (a.k) {
     case 'g':
@@ -895,8 +1227,12 @@ export function lineHeight(
   // "Multiple" spacing scales the text height only: inline pictures are not stretched.
   else height = natural + textHeight * (p.line - 1);
   if (gridPitch && p.snapToGrid && p.lineRule === 'auto' && gridPitch > 0) {
-    const base = Math.max(natural, gridPitch);
-    height = Math.ceil(base / gridPitch - 0.01) * gridPitch * p.line;
+    // The grid lines a line takes count the font height without its external leading.
+    const base = Math.max(ascent + descent, gridPitch);
+    const snapped = Math.ceil(base / gridPitch - 0.01) * gridPitch;
+    height = snapped * p.line;
+    // The document grid centres the text in the grid lines it takes.
+    return { height, baseline: (snapped - natural) / 2 + natural - descent };
   }
   // Extra "multiple" spacing goes below the text; exact and at-least heights keep the text at the
   // bottom of the line box.

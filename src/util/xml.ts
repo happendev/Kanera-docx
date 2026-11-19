@@ -42,6 +42,7 @@ const NS: Record<string, string> = {
   'http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing': 'wp14',
   'http://schemas.microsoft.com/office/drawing/2010/main': 'a14',
   'http://schemas.microsoft.com/office/drawing/2016/SVG/main': 'asvg',
+  'http://www.w3.org/2000/svg': 'svg',
   'http://schemas.openxmlformats.org/package/2006/relationships': 'pr',
   'http://schemas.openxmlformats.org/package/2006/content-types': 'ct',
   'http://schemas.openxmlformats.org/package/2006/metadata/core-properties': 'cp',

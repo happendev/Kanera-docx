@@ -1,3 +1,4 @@
+import type { InflateBytes } from '../util/compression.js';
 import { ZipArchive, type ArchiveLimits } from '../util/zip.js';
 import { children, parseXml, type XmlElement } from '../util/xml.js';
 
@@ -14,8 +15,8 @@ export class OpcPackage {
   private xmlCache = new Map<string, XmlElement | null>();
   private relsCache = new Map<string, Map<string, Relationship>>();
 
-  constructor(data: Uint8Array, limits?: ArchiveLimits) {
-    this.zip = new ZipArchive(data, limits);
+  constructor(data: Uint8Array, inflateRaw: InflateBytes, limits?: ArchiveLimits) {
+    this.zip = new ZipArchive(data, inflateRaw, limits);
   }
 
   xml(part: string): XmlElement | undefined {

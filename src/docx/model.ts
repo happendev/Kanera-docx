@@ -17,6 +17,8 @@ export interface FontRequest {
   bold: boolean;
   italic: boolean;
   codePoints: Set<number>;
+  /** East Asian language of the text, which picks the region of East Asian fallback fonts. */
+  lang?: string;
 }
 
 export interface RunProps {
@@ -25,6 +27,10 @@ export interface RunProps {
   fontEastAsia: string;
   fontCs: string;
   hint?: string;
+  /** w:lang w:eastAsia: the language of East Asian text (zh-CN, ja-JP, ko-KR...). */
+  eastAsiaLang?: string;
+  /** Text standing in for a shape Word draws itself (a legacy form check box), not a font glyph. */
+  drawn?: boolean;
   size: number;
   sizeCs: number;
   bold: boolean;
@@ -47,6 +53,8 @@ export interface RunProps {
   hidden: boolean;
   kern: number;
   rtl: boolean;
+  /** Whether the text follows the section's character grid (w:snapToGrid). */
+  snapToGrid?: boolean;
   cs: boolean;
   border: Border | null;
   outline: boolean;
@@ -82,6 +90,9 @@ export interface ParaProps {
   indFirstLine: number;
   spaceBefore: number;
   spaceAfter: number;
+  /** Spacing given in lines (w:beforeLines, w:afterLines), which the section's line grid sizes. */
+  spaceBeforeLines?: number;
+  spaceAfterLines?: number;
   spaceBeforeAuto: boolean;
   spaceAfterAuto: boolean;
   /** For 'auto' this is a multiplier (1 = single); otherwise points. */
@@ -98,6 +109,11 @@ export interface ParaProps {
   outlineLevel: number | null;
   bidi: boolean;
   snapToGrid: boolean;
+  /** Space between East Asian text and Latin letters (w:autoSpaceDE) or digits (w:autoSpaceDN). */
+  autoSpaceDE: boolean;
+  autoSpaceDN: boolean;
+  /** Whether full-width punctuation may hang past the right edge instead of wrapping (w:overflowPunct). */
+  overflowPunct: boolean;
   suppressAutoHyphens: boolean;
   textAlignment: string;
   frame: FrameProps | null;
@@ -127,6 +143,8 @@ export interface NumberingLabel {
   align: 'left' | 'center' | 'right';
   /** Picture bullet image, when the level uses one. */
   picture?: ImageRef;
+  /** The list (w:numId) the paragraph belongs to. */
+  numId: string;
 }
 
 export interface Link {
@@ -167,8 +185,10 @@ export interface DrawingInline {
 }
 export interface FieldInline {
   type: 'field';
-  field: 'page' | 'numpages' | 'sectionpages';
+  field: 'page' | 'numpages' | 'sectionpages' | 'pageref';
   format?: string;
+  /** Bookmark whose page a page reference shows. */
+  bookmark?: string;
   props: RunProps;
   /** Word's cached result, used for measuring before the value is known. */
   cached: string;
@@ -290,6 +310,10 @@ export interface TableRow {
   isHeader: boolean;
   gridBefore: number;
   gridAfter: number;
+  /** Space around each cell of the row (w:tblCellSpacing), so adjacent cells sit twice it apart. */
+  cellSpacing: number;
+  /** The row carries revision ids (w:rsidR and the like), which Word stamps on rows it saves. */
+  stamped: boolean;
   cells: TableCell[];
 }
 
@@ -350,6 +374,8 @@ export interface Section {
   vAlign: 'top' | 'center' | 'both' | 'bottom';
   gridType: string;
   gridLinePitch: number;
+  /** Extra width per character of a "linesAndChars" grid (w:charSpace), in points. */
+  gridCharSpace: number;
   pageBorders: PageBorders | null;
   footnoteRestart: 'continuous' | 'eachSect' | 'eachPage';
   footnoteStart: number;
@@ -360,6 +386,7 @@ export interface ImageRef {
   id: string;
   data: Uint8Array;
   contentType?: string;
+  svg?: ImageRef;
 }
 
 export interface Fill {
@@ -441,6 +468,11 @@ export interface Drawing {
   textPath?: { text: string; font: string; bold: boolean; italic: boolean; color: Color; alpha: number };
   hidden: boolean;
   name?: string;
+  /**
+   * A VML horizontal rule (o:hr): aligned on its own line whatever the paragraph's alignment, and
+   * when `pct` is set, that share of the text column wide.
+   */
+  hr?: { align: 'left' | 'center' | 'right'; pct: number };
 }
 
 export interface Note {
@@ -458,17 +490,29 @@ export interface DocumentInfo {
 
 export interface DocSettings {
   defaultTabStop: number;
+  /** Word updates the document's fields when it opens it (w:updateFields). */
+  updateFields?: boolean;
   evenAndOddHeaders: boolean;
   mirrorMargins: boolean;
   compatibilityMode: number;
   doNotExpandShiftReturn: boolean;
+  /** WordPerfect justification (compat wpJustification): justified lines may also compress spaces. */
+  wpJustification: boolean;
+  /** East Asian punctuation may give up its blank half to fit a line (w:characterSpacingControl). */
+  compressPunctuation?: boolean;
   /** Word 2013+ table-style rule (compat setting overrideTableStyleFontSizeAndJustification). */
   overrideTableStyleFontSizeAndJustification: boolean;
   autoHyphenation: boolean;
   displayBackgroundShape: boolean;
   doNotUseHTMLParagraphAutoSpacing: boolean;
+  /** Lines in table cells snap to the document grid too (compat adjustLineHeightInTable). */
+  adjustLineHeightInTable: boolean;
   footnotePosition: string;
   endnotePosition: string;
+  /** Style id of paragraphs without a style (Normal), which Word's table row-end marks also take. */
+  defaultParagraphStyle?: string;
+  /** The settings carry no revision ids (w:rsids): another tool wrote the file, not Word. */
+  generated?: boolean;
 }
 
 export interface DocxDocument {

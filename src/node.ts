@@ -3,10 +3,11 @@ import { readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { convertDocx as convertCore, type ConvertOptions, type ConvertResult, type FontProvider } from './core.js';
-import { BUNDLED_FONTS } from './fonts/bundled.js';
+import { nodeCompression } from './util/node-compression.js';
+import { convertWithCompression, type ConvertOptions, type ConvertResult, type FontProvider } from './core.js';
+import { FULL_FONTS } from './fonts/bundled.js';
 import type { FontRegistry, FontSource } from './fonts/registry.js';
-import { SfntFont } from './fonts/sfnt.js';
+import { collectionSize, isFontCollection, MAX_FONT_FACES, SfntFont } from './fonts/sfnt.js';
 import { buildSfnt } from './fonts/subset.js';
 
 export type { ConvertOptions, ConvertResult, FontSource, LayoutStats } from './core.js';
@@ -17,14 +18,14 @@ export interface NodeConvertOptions extends ConvertOptions {
    * host). `true` scans the usual font folders; an array scans those folders instead.
    */
   systemFonts?: boolean | string[];
-  /** Folder holding the bundled fonts (defaults to the package's `fonts/`). */
+  /** Folder holding the full font pack (defaults to the package's `fonts/`). */
   fontDir?: string;
 }
 
 function bundledProvider(dir: string): FontProvider {
   return {
     register(registry: FontRegistry) {
-      for (const b of BUNDLED_FONTS) {
+      for (const b of FULL_FONTS) {
         registry.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load: () => readFile(join(dir, b.file)) }, 'bundled');
       }
     },
@@ -67,8 +68,9 @@ function describeFontFile(path: string): FontSource[] {
     const u32 = (d: Uint8Array, o: number) => ((d[o] << 24) | (d[o + 1] << 16) | (d[o + 2] << 8) | d[o + 3]) >>> 0;
     const u16 = (d: Uint8Array, o: number) => (d[o] << 8) | d[o + 1];
     let dirs = [0];
-    if (head[0] === 0x74 && head[1] === 0x74 && head[2] === 0x63 && head[3] === 0x66) {
-      const n = u32(head, 8);
+    if (isFontCollection(head)) {
+      const n = collectionSize(head, size);
+      if (n > MAX_FONT_FACES) throw new Error('Font collection face limit exceeded');
       const offs = read(12, n * 4);
       dirs = [...Array(n).keys()].map((i) => u32(offs, i * 4));
     }
@@ -145,7 +147,7 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | string, opti
     });
   }
   providers.push(bundledProvider(options.fontDir ?? packageFontDir()));
-  return convertCore(data instanceof Uint8Array ? data : new Uint8Array(data), options, providers);
+  return convertWithCompression(data, options, providers, nodeCompression);
 }
 
 /** Convert a .docx (bytes or a file path) to PDF bytes. */

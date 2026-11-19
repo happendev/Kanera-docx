@@ -217,6 +217,32 @@ function cardinal(n: number): string {
   return String(n);
 }
 
+/**
+ * East Asian counting numerals below ten thousand: 二十一, 一百零五. `zero` fills a skipped place
+ * (empty in Japanese); `legal` keeps the leading one before ten (壹拾).
+ */
+function counting(n: number, digits: string, units: string, zero: string, legal = false): string {
+  if (n <= 0 || n >= 10000) return String(n);
+  const places = [Math.floor(n / 1000), Math.floor(n / 100) % 10, Math.floor(n / 10) % 10, n % 10];
+  const unit = [units[2], units[1], units[0], ''];
+  let s = '';
+  let gap = false;
+  for (let i = 0; i < 4; i++) {
+    const d = places[i];
+    if (d === 0) {
+      if (s) gap = true;
+      continue;
+    }
+    if (gap) s += zero;
+    gap = false;
+    // 十 alone stands for ten at the start of a number (十一, not 一十一); Japanese also drops
+    // the one before 百 and 千.
+    const bare = d === 1 && i < 3 && !legal && (zero === '' || (i === 2 && !s));
+    s += bare ? unit[i] : digits[d] + unit[i];
+  }
+  return s;
+}
+
 function ordinalSuffix(n: number): string {
   const m100 = n % 100;
   if (m100 >= 11 && m100 <= 13) return 'th';
@@ -270,6 +296,31 @@ export function formatNumber(n: number, fmt: string): string {
       return `${n}.`;
     case 'chicago':
       return ['*', '†', '‡', '§'][(n - 1) % 4].repeat(Math.floor((n - 1) / 4) + 1);
+    case 'decimalFullWidth':
+    case 'decimalFullWidth2':
+      return String(n).replace(/\d/g, (d) => String.fromCodePoint(0xff10 + Number(d)));
+    case 'ideographDigital':
+    case 'japaneseDigitalTenThousand':
+      return String(n).replace(/\d/g, (d) => '〇一二三四五六七八九'[Number(d)]);
+    case 'ideographEnclosedCircle':
+      return n >= 1 && n <= 10 ? String.fromCodePoint(0x3220 + n - 1) : counting(n, '〇一二三四五六七八九', '十百千', '零');
+    case 'chineseCounting':
+    case 'chineseCountingThousand':
+    case 'taiwaneseCounting':
+    case 'taiwaneseCountingThousand':
+      return counting(n, '〇一二三四五六七八九', '十百千', '零');
+    case 'japaneseCounting':
+      return counting(n, '〇一二三四五六七八九', '十百千', '');
+    case 'ideographLegalTraditional':
+      return counting(n, '零壹貳參肆伍陸柒捌玖', '拾佰仟', '零', true);
+    case 'chineseLegalSimplified':
+      return counting(n, '零壹贰叁肆伍陆柒捌玖', '拾佰仟', '零', true);
+    case 'japaneseLegal':
+      return counting(n, '〇壱弐参四伍六七八九', '拾百阡', '', true);
+    case 'ideographTraditional':
+      return n >= 1 ? '甲乙丙丁戊己庚辛壬癸'[(n - 1) % 10] : String(n);
+    case 'ideographZodiac':
+      return n >= 1 ? '子丑寅卯辰巳午未申酉戌亥'[(n - 1) % 12] : String(n);
     case 'none':
       return '';
     default:

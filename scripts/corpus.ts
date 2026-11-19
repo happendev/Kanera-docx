@@ -4,6 +4,7 @@
  * Compares page counts with Word's (docProps/app.xml) and our page breaks with the breaks Word
  * recorded when it last saved (w:lastRenderedPageBreak).
  */
+import { nodeCompression } from '../src/util/node-compression.js';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { ZipArchive, decodeXmlText } from '../src/util/zip.js';
@@ -33,7 +34,7 @@ for (const rel of files) {
   const data = readFileSync(path);
   let wordPages: number | null = null;
   try {
-    const zip = new ZipArchive(new Uint8Array(data));
+    const zip = new ZipArchive(new Uint8Array(data), nodeCompression.inflateRaw);
     const app = zip.read('docProps/app.xml');
     const m = app ? /<Pages>(\d+)<\/Pages>/.exec(decodeXmlText(app)) : null;
     if (m) wordPages = Number(m[1]);

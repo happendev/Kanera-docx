@@ -1,15 +1,22 @@
 import type { DocumentInfo, ImageRef, Link } from '../docx/model.js';
+import type { Compression } from '../util/compression.js';
 import type { FontFace } from '../fonts/registry.js';
 import { buildSfnt, subsetTrueType } from '../fonts/subset.js';
-import { toPdfImage, type PdfImage } from '../image/image.js';
+import { ImageBudget, type ImageLimits } from '../image/budget.js';
+import { sniffImage, toPdfImage, type PdfImage } from '../image/image.js';
 import type { DrawOp, GlyphOp, Page, PathSeg } from '../layout/types.js';
 import { latin1, num, PdfObjects, pdfName, textString } from './objects.js';
 
 export interface PdfOptions {
   info?: DocumentInfo;
+  imageLimits?: ImageLimits;
+  imageQuality?: number | false;
+  additionalLinkSchemes?: readonly string[];
   producer?: string;
   /** Compress content streams (on by default). */
   compress?: boolean;
+  /** Snap text sizes, baselines (from the page top) and line starts to this grid, in points. */
+  paintGrid?: number;
 }
 
 interface FontUse {
@@ -31,16 +38,24 @@ interface ImageUse {
 const ITALIC_SKEW = 0.2126; // tan(12°), the slant Word uses for synthetic italics
 
 /** Write laid-out pages as a PDF file. */
-export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string[] = []): Uint8Array<ArrayBuffer> {
-  const pdf = new PdfObjects();
+export async function renderPdf(pages: Page[], compression: Compression, opts: PdfOptions = {}, warnings: string[] = []): Promise<Uint8Array<ArrayBuffer>> {
+  const quality = opts.imageQuality;
+  if (quality !== undefined && quality !== false && (!Number.isInteger(quality) || quality < 1 || quality > 100)) {
+    throw new RangeError('Image quality must be an integer from 1 to 100 or false');
+  }
+  const pdf = new PdfObjects(compression.deflateZlib);
   const catalog = pdf.alloc();
   const pagesNum = pdf.alloc();
   const fonts = new Map<FontFace, FontUse>();
+  const imageBudget = new ImageBudget(opts.imageLimits);
+  const schemes = new Set(['https', 'http', 'mailto', ...(opts.additionalLinkSchemes ?? []).map((s) => s.toLowerCase())]);
   const images = new Map<string, ImageUse | null>();
   const alphas = new Map<string, string>();
   const anchors = new Map<string, { page: number; x: number; y: number }>();
   const pageNums = pages.map(() => pdf.alloc());
   const compress = opts.compress !== false;
+  const grid = opts.paintGrid;
+  const snap = (v: number) => (grid ? Math.round(v / grid) * grid : v);
 
   // Bookmark destinations first, so links can point forward.
   pages.forEach((page, pi) => {
@@ -57,17 +72,38 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
     return use;
   };
 
-  const imageFor = (ref: ImageRef): ImageUse | null => {
-    if (images.has(ref.id)) return images.get(ref.id)!;
-    const img = toPdfImage(ref.data);
+  const imageFor = (ref: ImageRef): ImageUse | null | undefined => {
+    if (ref.svg && images.get(ref.svg.id) !== null) return images.get(ref.svg.id);
+    return images.get(ref.id);
+  };
+
+  const loadSvg = async (ref: ImageRef): Promise<void> => {
+    const { svgToPdfForm } = await import('./svg.js');
+    const form = svgToPdfForm(ref.data);
+    images.set(ref.id, form === null ? null : {
+      resName: `Im${images.size + 1}`,
+      objNum: pdf.addStream('/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << >>', latin1(form), compress),
+    });
+  };
+
+  const loadImage = async (ref: ImageRef): Promise<void> => {
+    if (ref.svg) {
+      if (!images.has(ref.svg.id)) await loadSvg(ref.svg);
+      if (imageFor(ref) !== undefined) return;
+    }
+    if (/\.svg$/i.test(ref.id) || sniffImage(ref.data) === 'svg') {
+      await loadSvg(ref);
+      if (!images.get(ref.id)) warnings.push(`Image ${ref.id} uses unsupported SVG features and was skipped`);
+      return;
+    }
+    const img = await toPdfImage(ref.data, compression, imageBudget, quality);
     if (!img) {
       warnings.push(`Image ${ref.id} uses an unsupported format and was skipped`);
       images.set(ref.id, null);
-      return null;
+      return;
     }
     const use = { resName: `Im${images.size + 1}`, objNum: writeImage(pdf, img) };
     images.set(ref.id, use);
-    return use;
   };
 
   const alphaFor = (a: number): string => {
@@ -80,7 +116,7 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
     return name;
   };
 
-  pages.forEach((page, pi) => {
+  for (const [pi, page] of pages.entries()) {
     const H = page.height;
     const out: string[] = [];
     const usedFonts = new Set<FontUse>();
@@ -118,14 +154,16 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
       const save = alpha || stroked || th !== 1;
       if (alpha) out.push(`q /${alphaFor(op.alpha!)} gs`);
       else if (save) out.push('q');
-      let s = `BT /${use.resName} ${num(op.size)} Tf `;
+      // On a paint grid only the drawn size snaps; glyphs keep their laid-out positions.
+      const size = grid ? Math.max(grid, snap(op.size)) : op.size;
+      let s = `BT /${use.resName} ${num(size)} Tf `;
       if (th !== 1) s += `${num(th * 100)} Tz `;
       s += color(op.color, false) + ' ';
       if (stroked) {
         s += `${color(op.color, true)} ${num(op.size * (op.outline ? 0.02 : 0.03))} w ${op.outline ? 1 : 2} Tr `;
       }
-      const x0 = op.x + op.xs[0];
-      s += `1 0 ${op.syntheticItalic ? ITALIC_SKEW : 0} 1 ${num(x0)} ${num(Y(op.y))} Tm [`;
+      const x0 = op.x + op.xs[0] + (grid && op.lineX !== undefined ? snap(op.lineX) - op.lineX : 0);
+      s += `1 0 ${op.syntheticItalic ? ITALIC_SKEW : 0} 1 ${num(x0)} ${num(Y(grid ? snap(op.y) : op.y))} Tm [`;
       for (let i = 0; i < op.gids.length; i++) {
         const gid = op.gids[i];
         const code = characterCode(use, gid, op.texts[i] ?? '');
@@ -133,7 +171,7 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
         if (i + 1 < op.gids.length) {
           const w = font.advance(gid) * toPdfUnits;
           const d = op.xs[i + 1] - op.xs[i];
-          const adj = w - (d * 1000) / (op.size * th);
+          const adj = w - (d * 1000) / (size * th);
           if (Math.abs(adj) > 0.05) s += num(adj);
         }
       }
@@ -162,7 +200,7 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
           const path = pathOps(op.segs);
           if (op.fill) {
             const a = op.fillAlpha !== undefined && op.fillAlpha < 1;
-            out.push(`${a ? `q /${alphaFor(op.fillAlpha!)} gs ` : ''}${color(op.fill, false)} ${path}f*${a ? ' Q' : ''}`);
+            out.push(`${a ? `q /${alphaFor(op.fillAlpha!)} gs ` : ''}${color(op.fill, false)} ${path}${op.nonzero ? 'f' : 'f*'}${a ? ' Q' : ''}`);
           }
           if (op.stroke) {
             const a = op.strokeAlpha !== undefined && op.strokeAlpha < 1;
@@ -195,14 +233,14 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
           break;
         }
         case 'clip':
-          if (op.segs) out.push(`q ${pathOps(op.segs)}W* n`);
+          if (op.segs) out.push(`q ${pathOps(op.segs)}${op.nonzero ? 'W' : 'W*'} n`);
           else out.push(`q ${num(op.x)} ${num(Y(op.y + op.h))} ${num(op.w)} ${num(op.h)} re W n`);
           break;
         case 'restore':
           out.push('Q');
           break;
         case 'link': {
-          const action = linkAction(op.link, anchors, pageNums);
+          const action = linkAction(op.link, anchors, pageNums, schemes);
           if (!action) break;
           annots.push(`<< /Type /Annot /Subtype /Link /Rect [${num(op.x)} ${num(Y(op.y + op.h))} ${num(op.x + op.w)} ${num(Y(op.y))}] /Border [0 0 0] ${action} >>`);
           break;
@@ -212,7 +250,12 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
           break;
       }
     };
-    for (const layer of [page.behind, page.headerFooter, page.body, page.front]) for (const op of layer) draw(op);
+    for (const layer of [page.behind, page.headerFooter, page.body, page.front]) {
+      for (const op of layer) {
+        if (op.kind === 'image' && imageFor(op.image) === undefined) await loadImage(op.image);
+        draw(op);
+      }
+    }
 
     const content = pdf.addStream('', latin1(out.join('\n')), compress);
     const fontRes = [...usedFonts].map((f) => `/${f.resName} ${f.objNum} 0 R`).join(' ');
@@ -223,7 +266,7 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
       pageNums[pi],
       `<< /Type /Page /Parent ${pagesNum} 0 R /MediaBox [0 0 ${num(page.width)} ${num(page.height)}] /Resources << /ProcSet [/PDF /Text /ImageB /ImageC /ImageI]${fontRes ? ` /Font << ${fontRes} >>` : ''}${imgRes ? ` /XObject << ${imgRes} >>` : ''}${gsRes ? ` /ExtGState << ${gsRes} >>` : ''} >> /Contents ${content} 0 R${annotNums.length ? ` /Annots [${annotNums.map((n) => `${n} 0 R`).join(' ')}]` : ''} >>`,
     );
-  });
+  }
 
   let fi = 0;
   for (const use of fonts.values()) writeFont(pdf, use, fi++, compress);
@@ -240,14 +283,17 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
   return pdf.finish(catalog, infoNum);
 }
 
-function linkAction(link: Link, anchors: Map<string, { page: number; x: number; y: number }>, pageNums: number[]): string | null {
-  if (link.anchor) {
-    const a = anchors.get(link.anchor);
+function linkAction(link: Link, anchors: Map<string, { page: number; x: number; y: number }>, pageNums: number[], schemes: ReadonlySet<string>): string | null {
+  const bookmark = link.anchor || (link.url?.startsWith('#') ? link.url.slice(1) : undefined);
+  if (bookmark) {
+    const a = anchors.get(bookmark);
     if (a) return `/Dest [${pageNums[a.page]} 0 R /XYZ ${num(a.x)} ${num(a.y)} 0]`;
   }
   if (link.url) {
     let url = link.url;
     if (link.anchor && !anchors.has(link.anchor)) url += '#' + link.anchor;
+    const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1].toLowerCase();
+    if (!scheme || !schemes.has(scheme) || /[\x00-\x1f\x7f]/.test(url)) return null;
     const ascii = url.replace(/[^\x20-\x7e]/gu, (c) => encodeURIComponent(c)).replace(/[\\()]/g, (c) => '\\' + c);
     return `/A << /S /URI /URI (${ascii}) >>`;
   }

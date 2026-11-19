@@ -1,30 +1,33 @@
-import type { AnchorProps, Block, DocxDocument, Drawing, FieldInline, Paragraph, Section, Table } from '../docx/model.js';
+import type { Block, DocxDocument, Drawing, FieldInline, Paragraph, Section, Table } from '../docx/model.js';
 import { formatNumber } from '../docx/numbering.js';
 import type { FontRegistry } from '../fonts/registry.js';
 import {
   gapBetween,
+  spaceAboveTable,
   hasDecorations,
   layoutBlocks,
   measureTable,
   paraDecorations,
+  shadedSpaceAfter,
   paraFrame,
   renderSegment,
   spaceAfter,
+  wrapLine,
   type BoxEnv,
   type BoxItem,
   type BoxResult,
+  type BoxWrap,
   type CellLayout,
+  type Exclusion,
   type MergeProgress,
   type RowPiece,
   type TableLayout,
 } from './box.js';
 import { renderDrawing } from './drawing.js';
 import { ParagraphLayout, type Line } from './paragraph.js';
-import { translateOps, type DrawOp, type Page } from './types.js';
+import { translateOps, type DrawOp, type FloatOp, type Page } from './types.js';
 
 const EPS = 0.01;
-/** Narrowest gap beside a wrapped object that still receives text. */
-const MIN_WRAP_WIDTH = 18;
 
 export interface LayoutStats {
   /** Word's own page breaks recorded in the file (w:lastRenderedPageBreak) in body paragraphs. */
@@ -41,14 +44,8 @@ export interface LayoutResult {
   warnings: string[];
 }
 
-interface Exclusion {
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  wrap: AnchorProps['wrap'];
-  side: AnchorProps['wrapText'];
-}
+/** What positions a floating object on a page. */
+type PageFrame = Pick<PageState, 'section' | 'width' | 'height' | 'marginLeft' | 'marginRight'>;
 
 interface FloatEntry {
   z: number;
@@ -91,6 +88,8 @@ interface PageState {
   notes: FootnotePiece[];
   overflow: FootnotePiece[];
   continuation: boolean;
+  /** An empty page that only keeps odd and even page numbers apart: it prints nothing. */
+  blank?: boolean;
   noteHeight: number;
   /** Lowest content y per column of the current section on this page. */
   colBottoms: number[];
@@ -109,13 +108,16 @@ interface Checkpoint {
   col: number;
   y: number;
   atTop: boolean;
-  topKind: 'hard' | 'soft';
+  topKind: 'hard' | 'soft' | 'section';
   prevPara: Paragraph | null;
   colBottoms: number[];
   colTop: number;
   cols: Column[];
   colSets: number;
-  stats: LayoutStats;
+  renderedBreaks: number;
+  matchedBreaks: number;
+  // Break records are append-only until the paginator rolls back.
+  breakLogLength: number;
 }
 
 const FIELD_FORMATS: Record<string, string> = {
@@ -127,13 +129,18 @@ const FIELD_FORMATS: Record<string, string> = {
   arabic: 'decimal',
 };
 
+/** Float positions that don't depend on where the anchor paragraph falls on its page. */
+const PAGE_FIXED_H = new Set(['page', 'margin', 'leftMargin', 'rightMargin', 'insideMargin', 'outsideMargin']);
+const PAGE_FIXED_V = new Set(['page', 'margin', 'topMargin', 'bottomMargin', 'insideMargin', 'outsideMargin']);
+
 export function layoutDocument(doc: DocxDocument, fonts: FontRegistry): LayoutResult {
   // Field width can change wrapping, so feed measured page values back into normal layout.
   const values = new Map<FieldInline, string>();
+  const early = new Map<Drawing, number>();
   for (let pass = 0; ; pass++) {
-    const paginator = new Paginator(doc, fonts, values);
+    const paginator = new Paginator(doc, fonts, values, early);
     const result = paginator.run();
-    if (!paginator.fieldsChanged) return result;
+    if (!paginator.fieldsChanged && !paginator.earlyChanged) return result;
     if (pass === 7) {
       result.warnings.push('Page fields did not stabilize after repeated pagination');
       return result;
@@ -143,7 +150,11 @@ export function layoutDocument(doc: DocxDocument, fonts: FontRegistry): LayoutRe
 
 class Paginator {
   fieldsChanged = false;
+  /** A float was found that belongs on its page from the top (see placeFloats). */
+  earlyChanged = false;
   private measuredFields = new Map<FieldInline, { value: string; section: Section }>();
+  /** The page each bookmark landed on, for page references. */
+  private anchorPages = new Map<string, { number: number; format: string }>();
   private pages: PageState[] = [];
   private page!: PageState;
   private col = 0;
@@ -154,15 +165,19 @@ class Paginator {
   private breakOpenedPage = -1;
   /** Floating tables (w:tblpPr), as floats anchored to the paragraph that follows them. */
   private tableFloats = new Map<Paragraph, Drawing[]>();
+  /** The stand-in drawings of floating tables, rebuilt on every pass. */
+  private tableFloatDrawings = new WeakSet<Drawing>();
   private floatedTables = new Set<Table>();
   /** Why the current column started: suppress space-before only after automatic breaks. */
-  private topKind: 'hard' | 'soft' = 'hard';
+  private topKind: 'hard' | 'soft' | 'section' = 'hard';
   private prevPara: Paragraph | null = null;
   /** Index of the body block being placed (diagnostics). */
   private blockIndex = 0;
   private sectionBlockBase = 0;
   private section!: Section;
   private sectionIndex = 0;
+  /** The section after the one being laid out. */
+  private nextSection: Section | null = null;
   private sectionStartPage = 0;
   private restartNumber: number | null = null;
   private stats: LayoutStats = { renderedBreaks: 0, matchedBreaks: 0, breakLog: [] };
@@ -179,6 +194,8 @@ class Paginator {
     private doc: DocxDocument,
     private fonts: FontRegistry,
     private fieldValues: Map<FieldInline, string>,
+    /** Floats placed as their page opens, by page index (see placeFloats). */
+    private early: Map<Drawing, number>,
   ) {
     this.env = {
       fonts,
@@ -207,6 +224,10 @@ class Paginator {
     if (f.field === 'page') return formatNumber(page, fmt);
     if (f.field === 'numpages') return ctx?.total != null ? formatNumber(ctx.total, f.format ? fmt : 'decimal') : this.fieldValues.get(f) ?? (f.cached || '1');
     if (f.field === 'sectionpages') return ctx?.sectionTotal != null ? formatNumber(ctx.sectionTotal, f.format ? fmt : 'decimal') : this.fieldValues.get(f) ?? (f.cached || '1');
+    if (f.field === 'pageref') {
+      const at = this.anchorPages.get(f.bookmark ?? '');
+      return at ? formatNumber(at.number, at.format) : this.fieldValues.get(f) ?? (f.cached || '1');
+    }
     return f.cached;
   }
 
@@ -263,6 +284,7 @@ class Paginator {
     const groups = this.sections();
     for (let i = 0; i < groups.length; i++) {
       const { section, blocks } = groups[i];
+      this.nextSection = groups[i + 1]?.section ?? null;
       this.startSection(section, i);
       this.placeBlocks(blocks);
       this.sectionBlockBase += blocks.length;
@@ -293,6 +315,7 @@ class Paginator {
     this.section = section;
     this.sectionIndex = index;
     this.env.gridPitch = section.gridType === 'lines' || section.gridType === 'linesAndChars' ? section.gridLinePitch : undefined;
+    this.env.charGrid = section.gridType === 'linesAndChars' && section.gridCharSpace ? section.gridCharSpace : undefined;
     if (section.pageNumberStart !== null) this.restartNumber = section.pageNumberStart;
     if (index === 0 || !this.page) {
       this.newPage(true);
@@ -324,19 +347,24 @@ class Paginator {
     // A page break that ends the previous section's last paragraph keeps the paragraph mark (and
     // its section break) on the page before; the section break then starts the next page itself,
     // so the empty page the break opened is not kept.
-    if (this.breakOpenedPage === this.pages.length && this.atTop && this.page.body.length === 0 && this.page.floats.length === 0 && this.pages.length > 1) {
+    // Bookmarks of skipped empty paragraphs on that page move to the section's first page.
+    let anchors: DrawOp[] = [];
+    if (this.breakOpenedPage === this.pages.length && this.atTop && this.page.body.every((op) => op.kind === 'anchor') && this.page.floats.length === 0 && this.pages.length > 1) {
+      anchors = this.page.body;
       this.pages.pop();
       this.page = this.pages[this.pages.length - 1];
       this.y = Math.max(...this.page.colBottoms);
     }
+    // Word keeps odd and even page numbers alternating. An odd- or even-page break that lands on
+    // the wrong parity, or (with different odd and even headers) a section restarting its numbers
+    // on the parity of the page before, gets an empty page first, printed without header or footer.
+    const last = this.page.number;
+    const parity = section.type === 'oddPage' ? 1 : section.type === 'evenPage' ? 0 : -1;
+    if (this.restartNumber === null) {
+      if (parity >= 0 && (last + 1) % 2 !== parity) this.blankPage(last + 1);
+    } else if ((parity >= 0 || this.doc.settings.evenAndOddHeaders) && this.restartNumber % 2 === last % 2) this.blankPage(last + 1);
     this.newPage(true);
-    if (section.type === 'evenPage' || section.type === 'oddPage') {
-      const wantOdd = section.type === 'oddPage';
-      if ((this.page.number % 2 === 1) !== wantOdd) {
-        // Word inserts a blank page to reach the right parity.
-        this.newPage(true);
-      }
-    }
+    this.page.body.push(...anchors);
   }
 
   // -------------------------------------------------------------------------------------------
@@ -364,6 +392,14 @@ class Paginator {
     if (section.titlePage && firstOfSection) return { header: section.headers.first, footer: section.footers.first };
     if (this.doc.settings.evenAndOddHeaders && number % 2 === 0) return { header: section.headers.even, footer: section.footers.even };
     return { header: section.headers.default, footer: section.footers.default };
+  }
+
+  private blankPage(number: number): void {
+    const restart = this.restartNumber;
+    this.restartNumber = number;
+    this.newPage(false);
+    this.page.blank = true;
+    this.restartNumber = restart;
   }
 
   private newPage(sectionStart: boolean): void {
@@ -394,8 +430,9 @@ class Paginator {
     const hf = this.headerFooterFor(s, number, firstOfSection);
     const hfWidth = width - marginLeft - marginRight;
     this.fieldPage = { number, format: s.pageNumberFormat, total: null, sectionTotal: null };
-    const headerBox = hf.header ? layoutBlocks(hf.header, hfWidth, this.env) : null;
-    const footerBox = hf.footer ? layoutBlocks(hf.footer, hfWidth, this.env) : null;
+    const frame: PageFrame = { section: s, width, height, marginLeft, marginRight };
+    const headerBox = hf.header ? this.hfBox(hf.header, frame, false).box : null;
+    const footerBox = hf.footer ? this.hfBox(hf.footer, frame, true).box : null;
     this.fieldPage = null;
     let top = s.marginTop;
     if (!s.marginTopExact && headerBox) top = Math.max(top, s.header + headerBox.height);
@@ -436,15 +473,23 @@ class Paginator {
       for (const it of box.items)
         for (const op of it.ops) {
           if (op.kind !== 'float' || !op.drawing.anchor) continue;
-          const pos = this.floatPosition(op.drawing, page, { x: marginLeft, w: hfWidth }, marginLeft + op.x, y0 + op.y);
+          const cell = op.cell && { ...op.cell, x: op.cell.x + marginLeft, y: op.cell.y + y0 };
+          const pos = this.floatPosition(op.drawing, page, { x: marginLeft, w: hfWidth }, marginLeft + op.x, y0 + op.y, cell);
           const ex = this.exclusionFor(op.drawing, pos.x, pos.y);
           if (ex && ex.y2 > top && ex.y1 < bottom) page.exclusions.push(ex);
         }
     }
+    for (const [d, index] of this.early) {
+      if (index !== this.pages.length - 1) continue;
+      const pos = this.floatPosition(d, page, cols[0], cols[0].x, top);
+      page.floats.push({ z: d.anchor!.zIndex, behind: d.anchor!.behindDoc, ops: renderDrawing(d, pos.x, pos.y, this.env) });
+      const ex = this.exclusionFor(d, pos.x, pos.y);
+      if (ex) page.exclusions.push(ex);
+    }
     this.col = 0;
     this.y = top;
     this.atTop = true;
-    this.topKind = 'hard';
+    this.topKind = sectionStart ? 'section' : 'hard';
   }
 
   private closeColSet(bottom: number): void {
@@ -504,7 +549,9 @@ class Paginator {
       colTop: p.colTop,
       cols: p.cols,
       colSets: p.colSets.length,
-      stats: { ...this.stats, breakLog: this.stats.breakLog.slice() },
+      renderedBreaks: this.stats.renderedBreaks,
+      matchedBreaks: this.stats.matchedBreaks,
+      breakLogLength: this.stats.breakLog.length,
     };
   }
 
@@ -527,7 +574,9 @@ class Paginator {
     this.atTop = cp.atTop;
     this.topKind = cp.topKind;
     this.prevPara = cp.prevPara;
-    this.stats = { ...cp.stats, breakLog: cp.stats.breakLog.slice() };
+    this.stats.renderedBreaks = cp.renderedBreaks;
+    this.stats.matchedBreaks = cp.matchedBreaks;
+    this.stats.breakLog.length = cp.breakLogLength;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -587,6 +636,23 @@ class Paginator {
     // break just opened, takes no room there: Word starts the next section on that page instead
     // of leaving it blank (see startSection).
     if (para.sectPr && para.sectPr.type !== 'continuous' && para.content.length === 0 && this.atTop && this.breakOpenedPage === this.pages.length) return false;
+    // An empty paragraph that ends a section after other content, before a continuous section
+    // break, takes no room either: Word shows only the break. A section of nothing but that
+    // paragraph keeps its line.
+    if (para.sectPr && prevBlock && this.nextSection?.type === 'continuous' && para.content.every((c) => c.type === 'bookmark' || c.type === 'renderedPageBreak')) {
+      const x = this.page.cols[this.col].x;
+      for (const c of para.content) if (c.type === 'bookmark') this.page.body.push({ kind: 'anchor', name: c.name, x, y: this.y });
+      return false;
+    }
+    // Likewise before a section that starts a new page: nothing follows on this page, and Word lets
+    // the empty paragraph stay here even where it would not fit.
+    if (para.sectPr && prevBlock && (this.nextSection?.type === 'nextPage' || this.nextSection?.type === 'oddPage' || this.nextSection?.type === 'evenPage') && para.content.every((c) => c.type === 'bookmark' || c.type === 'renderedPageBreak')) {
+      const x = this.page.cols[this.col].x;
+      for (const c of para.content) if (c.type === 'bookmark') this.page.body.push({ kind: 'anchor', name: c.name, x, y: this.y });
+      // Its space after still sets how much space before the next section's first paragraph keeps.
+      this.prevPara = para;
+      return false;
+    }
     if (para.props.pageBreakBefore && !this.atTop) this.breakPage('hard');
     const layout = new ParagraphLayout(para, this.env);
     const nextPara = next?.type === 'paragraph' ? next : null;
@@ -600,7 +666,16 @@ class Paginator {
       // Spacing before this paragraph.
       const gap = gapBetween(this.prevPara, para);
       if (this.atTop) {
-        if (this.topKind === 'hard') this.y += gap.before;
+        // Word drops a paragraph's space before at the top of a page, unless the paragraph itself
+        // asked for the new page (page break before).
+        // Automatic (HTML) space before collapses into the top of the document, as in a header.
+        // After a section break, the previous paragraph's space after stays on its page and only
+        // what the larger gap adds to it comes before this paragraph.
+        if (this.topKind !== 'soft' && !(this.blockIndex === 0 && para.props.spaceBeforeAuto)) {
+          if (para.props.pageBreakBefore) this.y += gapBetween(null, para).before;
+          else if (this.topKind === 'section') this.y += Math.max(0, gap.after + gap.before - gapBetween(this.prevPara, null).after);
+          else this.y += gap.before;
+        }
       } else this.y += (this.prevPara ? gap.after : 0) + gap.before;
       this.y += frame.topExtra;
       let floatsPlaced = false;
@@ -622,11 +697,13 @@ class Paginator {
         estimate = line.height;
         const noteH = this.notesHeight(line.notes);
         // The extra space of "multiple" line spacing sits below the text, and Word lets it hang into
-        // the bottom margin: only the text of the line has to fit. A footer tall enough to push the
-        // body up is not margin, so above one the whole line box has to fit.
-        const intoMargin = this.page!.bottom >= this.page!.height - this.page!.section.marginBottom - EPS;
-        const need = intoMargin ? Math.min(line.height, line.baseline + line.descent) : line.height;
-        const fits = y + need + noteH <= this.colBottom + EPS;
+        // the bottom margin: only the text of the line has to fit. Above a footer tall enough to push
+        // the body up, the text has to clear the footer and the extra space may still reach down to
+        // the bottom margin, not into it.
+        const marginEdge = this.page!.height - this.page!.section.marginBottom;
+        const intoMargin = this.page!.bottom >= marginEdge - EPS;
+        const text = Math.min(line.height, line.baseline + line.descent);
+        const fits = y + text + noteH <= this.colBottom + EPS && (intoMargin || y + line.height + noteH <= marginEdge + EPS);
         if (!fits && !this.atTop) {
           layout.restore(snap);
           this.restore(lineCp);
@@ -685,7 +762,7 @@ class Paginator {
         if (deco) {
           const nextGap = frame.groupedNext && nextPara ? gapBetween(para, nextPara) : { after: 0, before: 0 };
           const top = line.first ? y - frame.topExtra : y;
-          const bottom = line.last ? y + line.height + frame.bottomExtra + nextGap.after + nextGap.before : y + line.height;
+          const bottom = line.last ? y + line.height + frame.bottomExtra + nextGap.after + nextGap.before + shadedSpaceAfter(para, frame, nextPara) : y + line.height;
           this.page.body.push(...paraDecorations(para.props, frame, col.x, col.w, top, bottom, line.first, line.last));
         }
         this.page.body.push(...layout.renderLine(line, col.x + left, y));
@@ -695,6 +772,9 @@ class Paginator {
         linesHere++;
         if (line.brk === 'page') {
           this.breakPage('hard');
+          // Before Word 2013 (compatibility mode 15), a paragraph that opens with a page break
+          // starts on the new page as far as its spacing goes: its space before applies there.
+          if (this.env.compatibilityMode < 15 && line.first && !line.last && layout.onlyBreak(line)) this.y += gapBetween(null, para).before;
           if (line.last) this.breakOpenedPage = this.pages.length;
           startedHere = false;
           linesHere = 0;
@@ -713,78 +793,44 @@ class Paginator {
     return moved;
   }
 
-  /**
-   * Lay out the next line at the current position, flowing around wrapped objects. `left` is the
-   * extra offset applied when rendering (always 0: bounds are passed in column coordinates).
-   */
+  /** Lay out the next line at the current position, flowing around wrapped objects. */
   private layoutLine(layout: ParagraphLayout, estimate: number): { line: Line; y: number; left: number } | null {
-    const col = this.column;
-    let y = this.y;
-    let est = Math.max(estimate, 1);
-    for (let iter = 0; iter < 50; iter++) {
-      const base = layout.lineBounds(col.w);
-      const slot = this.findSlot(y, est, col.x + base.left, col.x + base.right);
-      const snap = layout.snapshot();
-      const line = layout.nextLine(slot.left - col.x, slot.right - col.x, col.w);
-      if (!line) return null;
-      if (!this.page.exclusions.length || line.height <= est + EPS) return { line, y: slot.y, left: 0 };
-      const check = this.findSlot(slot.y, line.height, col.x + base.left, col.x + base.right);
-      if (Math.abs(check.y - slot.y) < EPS && Math.abs(check.left - slot.left) < EPS && Math.abs(check.right - slot.right) < EPS) return { line, y: slot.y, left: 0 };
-      layout.restore(snap);
-      est = line.height;
-      y = slot.y;
-    }
-    const line = layout.nextLine(layout.lineBounds(col.w).left, layout.lineBounds(col.w).right, col.w);
-    return line ? { line, y, left: 0 } : null;
+    const placed = wrapLine(layout, this.page.exclusions, this.y, estimate, this.column);
+    return placed && { ...placed, left: 0 };
   }
 
-  /** The text interval for a line of height h at y between L and R (page x), avoiding exclusions. */
-  private findSlot(y: number, h: number, L: number, R: number): { y: number; left: number; right: number } {
-    const ex = this.page.exclusions;
-    if (!ex.length) return { y, left: L, right: R };
-    for (let iter = 0; iter < 100; iter++) {
-      const hits = ex.filter((e) => e.y1 < y + h - EPS && e.y2 > y + EPS && e.x1 < R - EPS && e.x2 > L + EPS);
-      if (!hits.length) return { y, left: L, right: R };
-      const block = hits.filter((e) => e.wrap === 'topAndBottom');
-      if (block.length) {
-        y = Math.max(...block.map((e) => e.y2));
-        continue;
-      }
-      let intervals: Array<[number, number]> = [[L, R]];
-      for (const e of hits) {
-        const next: Array<[number, number]> = [];
-        for (const [a, b] of intervals) {
-          let leftPart: [number, number] | null = e.x1 > a ? [a, Math.min(b, e.x1)] : null;
-          let rightPart: [number, number] | null = e.x2 < b ? [Math.max(a, e.x2), b] : null;
-          if (e.side === 'left') rightPart = null;
-          else if (e.side === 'right') leftPart = null;
-          else if (e.side === 'largest') {
-            const lw = leftPart ? leftPart[1] - leftPart[0] : 0;
-            const rw = rightPart ? rightPart[1] - rightPart[0] : 0;
-            if (lw >= rw) rightPart = null;
-            else leftPart = null;
-          }
-          if (leftPart && leftPart[1] - leftPart[0] > EPS) next.push(leftPart);
-          if (rightPart && rightPart[1] - rightPart[0] > EPS) next.push(rightPart);
-        }
-        intervals = next;
-      }
-      const fit = intervals.find(([a, b]) => b - a >= MIN_WRAP_WIDTH);
-      if (fit) return { y, left: fit[0], right: fit[1] };
-      y = Math.min(...hits.map((e) => e.y2));
-    }
-    return { y, left: L, right: R };
+  /**
+   * Lay out a header or footer, flowing its text around its own wrapped floating objects (a logo
+   * set to square wrapping pushes the header's text below it). `y0` is the box's top on the page.
+   */
+  private hfBox(blocks: Block[], page: PageFrame, footer: boolean): { box: BoxResult; y0: number } {
+    const s = page.section;
+    const width = page.width - page.marginLeft - page.marginRight;
+    const top = (box: BoxResult) => (footer ? page.height - s.footer - box.height : s.header);
+    const plain = layoutBlocks(blocks, width, this.env);
+    if (!plain.items.some((it) => it.ops.some((op) => op.kind === 'float' && op.drawing.anchor && op.drawing.anchor.wrap !== 'none'))) return { box: plain, y0: top(plain) };
+    // A footer's top depends on its height: place its objects from the unwrapped height.
+    const y0 = top(plain);
+    const col = { x: page.marginLeft, w: width };
+    const wrap: BoxWrap = (d, y) => {
+      const pos = this.floatPosition(d, page, col, page.marginLeft, y0 + y);
+      const ex = this.exclusionFor(d, pos.x, pos.y);
+      return ex && { ...ex, x1: ex.x1 - page.marginLeft, x2: ex.x2 - page.marginLeft, y1: ex.y1 - y0, y2: ex.y2 - y0 };
+    };
+    const box = layoutBlocks(blocks, width, this.env, { wrap });
+    return { box, y0: top(box) };
   }
 
-  // -------------------------------------------------------------------------------------------
-  // Floating objects
-
-  private floatPosition(d: Drawing, page: PageState, col: Column, paraX: number, paraY: number): { x: number; y: number } {
+  private floatPosition(d: Drawing, page: PageFrame, col: Column, paraX: number, paraY: number, cell?: FloatOp['cell']): { x: number; y: number } {
     const a = d.anchor!;
     const s = page.section;
     const w = d.width;
     const h = d.height;
+    // An object laid out in its table cell measures page- and margin-relative positions from the
+    // cell (a logo in a header table stays in its cell instead of dropping into the body).
+    const inCell = a.layoutInCell ? cell : undefined;
     const h0 = (() => {
+      if (inCell && (a.posH.relativeFrom === 'page' || a.posH.relativeFrom === 'margin')) return { base: inCell.x, size: inCell.w };
       switch (a.posH.relativeFrom) {
         case 'page':
           return { base: 0, size: page.width };
@@ -810,6 +856,7 @@ class Paginator {
     else if (a.posH.pct !== undefined) x = h0.base + a.posH.pct * h0.size;
     else x = h0.base + (a.posH.offset ?? 0);
     const v0 = (() => {
+      if (inCell && (a.posV.relativeFrom === 'page' || a.posV.relativeFrom === 'margin')) return { base: inCell.y, size: inCell.h };
       switch (a.posV.relativeFrom) {
         case 'page':
           return { base: 0, size: page.height };
@@ -831,6 +878,8 @@ class Paginator {
     else if (va === 'top' || va === 'inside') y = v0.base;
     else if (a.posV.pct !== undefined) y = v0.base + a.posV.pct * v0.size;
     else y = v0.base + (a.posV.offset ?? 0);
+    // Word keeps a text-wrapping object laid out in a cell from rising above the cell's top.
+    if (inCell && a.wrap !== 'none') y = Math.max(y, inCell.y);
     return { x, y };
   }
 
@@ -867,7 +916,7 @@ class Paginator {
     const vert = f.vertAnchor === 'page' ? 'page' : f.vertAnchor === 'margin' ? 'margin' : 'paragraph';
     const xAlign = f.xAlign && f.xAlign !== 'inline' ? f.xAlign : undefined;
     const yAlign = f.yAlign && f.yAlign !== 'inline' ? f.yAlign : undefined;
-    return {
+    const drawing: Drawing = {
       kind: 'shape',
       inline: false,
       width,
@@ -899,15 +948,33 @@ class Paginator {
         zIndex: 0,
       },
     };
+    this.tableFloatDrawings.add(drawing);
+    return drawing;
   }
 
   private placeFloats(drawings: Drawing[], col: Column, paraY: number): void {
+    const index = this.pages.length - 1;
     for (const d of drawings) {
       if (!d.anchor || d.hidden) continue;
+      const earlyPage = this.early.get(d);
+      if (earlyPage === index) continue;
+      if (earlyPage !== undefined) {
+        // The anchor moved off the page the float was placed on early: place it with its anchor.
+        this.early.delete(d);
+        this.earlyChanged = true;
+      }
       const pos = this.floatPosition(d, this.page, col, col.x, paraY);
       this.page.floats.push({ z: d.anchor.zIndex, behind: d.anchor.behindDoc, ops: renderDrawing(d, pos.x, pos.y, this.env) });
       const ex = this.exclusionFor(d, pos.x, pos.y);
-      if (ex) this.page.exclusions.push(ex);
+      if (!ex) continue;
+      this.page.exclusions.push(ex);
+      // Word lays out a page with all its floats known, so text above the anchor wraps around an
+      // object positioned against the page or margin too. Lay out again with it placed as the page opens.
+      const fixed = !this.tableFloatDrawings.has(d) && PAGE_FIXED_H.has(d.anchor.posH.relativeFrom) && PAGE_FIXED_V.has(d.anchor.posV.relativeFrom);
+      if (fixed && earlyPage === undefined && ex.y1 < paraY - 0.5 && ex.y2 > this.page.colTop && (paraY > this.page.colTop + 0.5 || this.col > 0)) {
+        this.early.set(d, index);
+        this.earlyChanged = true;
+      }
     }
   }
 
@@ -920,7 +987,7 @@ class Paginator {
       }
       const d = op.drawing;
       if (!d.anchor || d.hidden) continue;
-      const pos = this.floatPosition(d, page, { x: op.x, w: op.areaWidth }, op.x, op.y);
+      const pos = this.floatPosition(d, page, { x: op.x, w: op.areaWidth }, op.x, op.y, op.cell);
       floats.push({ z: d.anchor.zIndex, behind: d.anchor.behindDoc, ops: renderDrawing(d, pos.x, pos.y, this.env) });
     }
   }
@@ -1021,7 +1088,7 @@ class Paginator {
     let base = sep.height;
     for (const id of this.endnotesUsed) {
       const box = this.noteBox('endnote', id, col.w);
-      for (const it of box.items) items.push({ ...it, y: it.y + base });
+      for (const it of box.items) items.push({ ...it, y: it.y + base, ops: translateOps(it.ops, 0, base) });
       base += box.height;
     }
     if (!this.atTop && this.prevPara) this.y += spaceAfter(this.prevPara.props);
@@ -1045,7 +1112,7 @@ class Paginator {
     let col = this.column;
     let tl = measureTable(table, col.w, this.env);
     // Space after the previous paragraph still applies above the table.
-    if (!this.atTop && this.prevPara) this.y += spaceAfter(this.prevPara.props);
+    if (!this.atTop && this.prevPara) this.y += spaceAboveTable(this.prevPara, table);
     this.prevPara = null;
     const merge: MergeProgress = new Map();
     let pieces: RowPiece[] = [];
@@ -1111,7 +1178,11 @@ class Paginator {
           break;
         }
         const emptyHere = this.atTop;
-        if (!emptyHere && (row.row.cantSplit || !this.canSplit(tl, r))) {
+        // A row whose content fits here but whose minimum height does not moves on whole: Word
+        // splits a row only to break its content.
+        const started = row.cells.some((c) => (progress.get(c) ?? 0) > 0);
+        const onlyHeightOverflows = this.y + this.rowRemainingHeight(tl, r, progress, true) + (started ? 0 : row.borderTop) <= this.colBottom + EPS;
+        if (!emptyHere && (row.row.cantSplit || !this.canSplit(tl, r) || onlyHeightOverflows)) {
           if (first && r === 0) moved = true;
           newColumn(r);
           first = false;
@@ -1144,10 +1215,10 @@ class Paginator {
     return row.cells.some((c) => c.rowSpan === 1 && !c.cell.vMerge && c.box.items.length > 1);
   }
 
-  /** Height of what is left of row r after earlier split pieces. */
-  private rowRemainingHeight(tl: TableLayout, r: number, progress: Map<CellLayout, number>): number {
+  /** Height of what is left of row r after earlier split pieces; with `content`, of its content alone. */
+  private rowRemainingHeight(tl: TableLayout, r: number, progress: Map<CellLayout, number>, content = false): number {
     const row = tl.rows[r];
-    if (!row.cells.some((c) => (progress.get(c) ?? 0) > 0)) return row.height;
+    if (!content && !row.cells.some((c) => (progress.get(c) ?? 0) > 0)) return row.height;
     let h = 0;
     for (const c of row.cells) {
       if (c.cell.vMerge) continue;
@@ -1212,21 +1283,20 @@ class Paginator {
         sectionTotals.set(section, (sectionTotals.get(section) ?? 0) + 1);
       }
     }
+    for (const p of this.pages) {
+      for (const op of p.body) if (op.kind === 'anchor' && !this.anchorPages.has(op.name)) this.anchorPages.set(op.name, { number: p.number, format: p.section.pageNumberFormat });
+    }
     const out: Page[] = [];
     for (const p of this.pages) {
       const s = p.section;
       const hfOps: DrawOp[] = [];
       const floats = p.floats.slice();
-      const hf = this.headerFooterFor(s, p.number, p.firstOfSection);
+      const hf = p.blank ? {} : this.headerFooterFor(s, p.number, p.firstOfSection);
       const hfWidth = p.width - p.marginLeft - p.marginRight;
       this.fieldPage = { number: p.number, format: s.pageNumberFormat, total, sectionTotal: sectionTotals.get(p.section) ?? null };
-      if (hf.header) {
-        const box = layoutBlocks(hf.header, hfWidth, this.env);
-        for (const it of box.items) this.extractFloats(translateOps(it.ops, p.marginLeft, s.header), p, hfOps, floats);
-      }
-      if (hf.footer) {
-        const box = layoutBlocks(hf.footer, hfWidth, this.env);
-        const y0 = p.height - s.footer - box.height;
+      for (const [blocks, footer] of [[hf.header, false], [hf.footer, true]] as const) {
+        if (!blocks) continue;
+        const { box, y0 } = this.hfBox(blocks, p, footer);
         for (const it of box.items) this.extractFloats(translateOps(it.ops, p.marginLeft, y0), p, hfOps, floats);
       }
       this.fieldPage = null;
@@ -1276,7 +1346,7 @@ class Paginator {
       if (this.doc.background && this.doc.settings.displayBackgroundShape) behind.push({ kind: 'rect', x: 0, y: 0, w: p.width, h: p.height, fill: this.doc.background });
       floats.sort((a, b) => a.z - b.z);
       for (const f of floats) (f.behind ? behind : front).push(...f.ops);
-      const borders = this.pageBorders(p);
+      const borders = p.blank ? [] : this.pageBorders(p);
       if (borders.length) (s.pageBorders?.zOrder === 'back' ? behind : front).push(...borders);
       for (const layer of [body, behind, front]) {
         for (const op of layer) {

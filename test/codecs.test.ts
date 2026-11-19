@@ -1,8 +1,8 @@
-import { deflateRawSync, deflateSync, inflateRawSync, inflateSync } from 'node:zlib';
+import { deflateRawSync, deflateSync, inflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { toPdfImage } from '../src/image/image.js';
-import { deflateRaw, deflateZlib } from '../src/util/deflate.js';
-import { inflateRaw, inflateZlib } from '../src/util/inflate.js';
+import { nodeCompression } from '../src/util/node-compression.js';
+import { pakoCompression } from '../src/util/pako.js';
 import { child, children, parseXml, resolveAlternateContent, textContent } from '../src/util/xml.js';
 import { crc32 } from './helpers/docx.js';
 
@@ -15,28 +15,51 @@ function samples(): Uint8Array[] {
   return [new Uint8Array(0), new Uint8Array([42]), random, text, runs];
 }
 
-describe('deflate / inflate', () => {
-  it('round-trips through our own codec', () => {
-    for (const s of samples()) {
-      expect(inflateRaw(deflateRaw(s))).toEqual(s);
-      expect(inflateZlib(deflateZlib(s))).toEqual(s);
-    }
-  });
+const codecs = [
+  { name: 'node:zlib', codec: nodeCompression },
+  { name: 'pako', codec: pakoCompression },
+];
 
-  it('interoperates with zlib in both directions', () => {
-    for (const s of samples()) {
-      expect(new Uint8Array(inflateRawSync(deflateRaw(s)))).toEqual(s);
-      expect(new Uint8Array(inflateSync(deflateZlib(s)))).toEqual(s);
+describe.each(codecs)('$name compression', ({ codec }) => {
+  it('interoperates with raw and wrapped zlib, including empty output', () => {
+    for (const data of samples()) {
+      expect(new Uint8Array(inflateSync(codec.deflateZlib(data)))).toEqual(data);
       for (const level of [0, 1, 9]) {
-        expect(inflateRaw(new Uint8Array(deflateRawSync(s, { level })))).toEqual(s);
-        expect(inflateZlib(new Uint8Array(deflateSync(s, { level })))).toEqual(s);
+        expect(new Uint8Array(codec.inflateRaw(deflateRawSync(data, { level }), data.length))).toEqual(data);
+        expect(new Uint8Array(codec.inflateZlib(deflateSync(data, { level }), data.length))).toEqual(data);
       }
     }
   });
 
-  it('actually compresses repetitive input', () => {
-    const text = samples()[3];
-    expect(deflateZlib(text).length).toBeLessThan(text.length / 20);
+  it('compresses repetitive input', () => {
+    const data = samples()[3];
+    expect(codec.deflateZlib(data).length).toBeLessThan(data.length / 20);
+  });
+
+  it('enforces output limits, including zero, and rejects incomplete streams', () => {
+    const input = Uint8Array.of(42, 33);
+    for (const [decode, compressed] of [
+      [codec.inflateRaw, deflateRawSync(input)],
+      [codec.inflateZlib, deflateSync(input)],
+    ] as const) {
+      for (const limit of [0, 1]) expect(() => decode(compressed, limit)).toThrow(/limit/);
+      expect(() => decode(compressed.subarray(0, -1), input.length)).toThrow();
+    }
+  });
+
+  it('streams multiple chunks and stops before forwarding excess bytes', async () => {
+    const input = samples()[3];
+    const data = deflateSync(input);
+    const chunks: Uint8Array[] = [];
+    await codec.inflateZlibStream(data, input.length, (chunk) => chunks.push(chunk.slice()));
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(Buffer.concat(chunks).equals(input)).toBe(true);
+    let received = 0;
+    const run = async (source: Uint8Array, limit: number) =>
+      codec.inflateZlibStream(source, limit, (chunk) => { received += chunk.length; });
+    await expect(run(data, input.length - 1)).rejects.toThrow(/limit/);
+    expect(received).toBeLessThan(input.length);
+    await expect(run(data.subarray(0, -1), input.length)).rejects.toThrow();
   });
 });
 
@@ -78,8 +101,8 @@ describe('XML parser', () => {
   });
 });
 
-/** Encode a PNG from raw scanlines (filter byte 0 on every row). */
-function png(width: number, height: number, colorType: number, rows: number[][], extra: Array<[string, number[]]> = [], bitDepth = 8): Uint8Array {
+/** Encode rows with filter 0, or accept scanline bytes that already include the filters. */
+function png(width: number, height: number, colorType: number, rows: number[][] | Uint8Array, extra: Array<[string, number[]]> = [], bitDepth = 8): Uint8Array {
   const chunk = (type: string, data: Uint8Array) => {
     const out = new Uint8Array(12 + data.length);
     const dv = new DataView(out.buffer);
@@ -99,7 +122,7 @@ function png(width: number, height: number, colorType: number, rows: number[][],
   dv.setUint32(4, height);
   ihdr[8] = bitDepth;
   ihdr[9] = colorType;
-  const raw = new Uint8Array(rows.flatMap((r) => [0, ...r]));
+  const raw = rows instanceof Uint8Array ? rows : new Uint8Array(rows.flatMap((r) => [0, ...r]));
   const parts = [
     new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk('IHDR', ihdr),
@@ -116,27 +139,89 @@ function png(width: number, height: number, colorType: number, rows: number[][],
   return out;
 }
 
-describe('PNG decoding', () => {
-  it('passes opaque RGB scanlines through with a PNG predictor', () => {
-    const img = toPdfImage(png(2, 1, 2, [[255, 0, 0, 0, 0, 255]]))!;
+describe.each(codecs)('$name PNG decoding', ({ codec }) => {
+  it('passes opaque RGB scanlines through with a PNG predictor', async () => {
+    const img = (await toPdfImage(png(2, 1, 2, [[255, 0, 0, 0, 0, 255]]), codec))!;
     expect(img).toMatchObject({ width: 2, height: 1, colorSpace: '/DeviceRGB', bitsPerComponent: 8, filter: 'FlateDecode' });
     expect(img.decodeParms).toContain('/Predictor 15');
     expect(img.smask).toBeUndefined();
   });
 
-  it('splits RGBA into colour and a soft mask', () => {
-    const img = toPdfImage(png(2, 1, 6, [[10, 20, 30, 255, 40, 50, 60, 0]]))!;
-    expect(Array.from(inflateZlib(img.data))).toEqual([10, 20, 30, 40, 50, 60]);
-    expect(Array.from(inflateZlib(img.smask!))).toEqual([255, 0]);
+  it('splits RGBA into colour and a soft mask', async () => {
+    const img = (await toPdfImage(png(2, 1, 6, [[10, 20, 30, 255, 40, 50, 60, 0]]), codec))!;
+    expect(Array.from(inflateSync(img.data))).toEqual([10, 20, 30, 40, 50, 60]);
+    expect(Array.from(inflateSync(img.smask!))).toEqual([255, 0]);
   });
 
-  it('applies a palette transparency chunk', () => {
-    const img = toPdfImage(png(3, 1, 3, [[0, 1, 1]], [['PLTE', [255, 0, 0, 0, 255, 0]], ['tRNS', [255, 0]]]))!;
-    expect(Array.from(inflateZlib(img.data))).toEqual([255, 0, 0, 0, 255, 0, 0, 255, 0]);
-    expect(Array.from(inflateZlib(img.smask!))).toEqual([255, 0, 0]);
+  it('compresses decoded colour with a lossless predictor and keeps alpha intact', async () => {
+    const width = 256, height = 48;
+    const rows = Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_, x) =>
+      [(x + y * 2) & 255, (x * 2 + y * 3) & 255, (x * 3 + y * 5) & 255, 160 + y],
+    ));
+    const image = (await toPdfImage(png(width, height, 6, rows.map((row) => row.flat())), codec))!;
+    expect(image.decodeParms).toContain('/Predictor 15');
+    const filtered = inflateSync(image.data);
+    const rgb = Buffer.alloc(width * height * 3);
+    const stride = width * 3;
+    for (let y = 0; y < height; y++) {
+      const filter = filtered[y * (stride + 1)];
+      for (let x = 0; x < stride; x++) {
+        const pos = y * stride + x;
+        const prev = filter === 1 ? (x < 3 ? 0 : rgb[pos - 3]) : (y === 0 ? 0 : rgb[pos - stride]);
+        rgb[pos] = filtered[y * (stride + 1) + x + 1] + prev;
+      }
+    }
+    expect(rgb.equals(Buffer.from(rows.flatMap((row) => row.flatMap((pixel) => pixel.slice(0, 3)))))).toBe(true);
+    expect(inflateSync(image.smask!).equals(Buffer.from(rows.flatMap((row) => row.map((pixel) => pixel[3]))))).toBe(true);
   });
 
-  it('rejects formats it cannot draw', () => {
-    expect(toPdfImage(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"></svg>'))).toBeNull();
+  it('applies a palette transparency chunk', async () => {
+    const img = (await toPdfImage(png(3, 1, 3, [[0, 1, 1]], [['PLTE', [255, 0, 0, 0, 255, 0]], ['tRNS', [255, 0]]]), codec))!;
+    expect(Array.from(inflateSync(img.data))).toEqual([255, 0, 0, 0, 255, 0, 0, 255, 0]);
+    expect(Array.from(inflateSync(img.smask!))).toEqual([255, 0, 0]);
+  });
+
+  it.each([2, 6])('requires exact scanline lengths for PNG colour type %i', async (colorType) => {
+    const channels = colorType === 2 ? 3 : 4;
+    await expect(toPdfImage(png(1, 2, colorType, [Array(channels).fill(0)]), codec)).rejects.toThrow(/truncated scanlines/);
+    await expect(toPdfImage(png(1, 1, colorType, [Array(channels + 1).fill(0)]), codec)).rejects.toThrow(/limit/);
+  });
+
+  it('reduces large transparent PNGs in chunks, including the final partial band', async () => {
+    const width = 4096;
+    const height = 2049;
+    const scanlines = new Uint8Array((1 + width / 8) * height);
+    scanlines[scanlines.length - 1] = 0xff;
+    const input = png(width, height, 0, scanlines, [['tRNS', [0, 0]]], 1);
+    let chunks = 0;
+    const image = await toPdfImage(input, {
+      ...codec,
+      inflateZlib() { throw new Error('Unexpected whole-image inflate'); },
+      inflateZlibStream(data, limit, sink) {
+        return codec.inflateZlibStream(data, limit, (chunk) => {
+          chunks++;
+          sink(chunk);
+        });
+      },
+    });
+    expect(chunks).toBeGreaterThan(1);
+    expect(image).toMatchObject({ width: 2048, height: 1025 });
+    const alpha = inflateSync(image!.smask!);
+    expect(alpha.length).toBe(2048 * 1025);
+    expect([...alpha.subarray(-5)]).toEqual([0, 255, 255, 255, 255]);
+  });
+
+  it('checks the length of each nonempty Adam7 pass', async () => {
+    // A 2-by-2 grayscale image has three nonempty passes with 1, 1, and 2 samples.
+    const image = png(2, 2, 0, [[10], [20], [30, 40]]);
+    image[28] = 1;
+    new DataView(image.buffer).setUint32(29, crc32(image.subarray(12, 29)));
+    const decoded = (await toPdfImage(image, codec))!;
+    expect(Array.from(inflateSync(decoded.data))).toEqual([10, 10, 10, 20, 20, 20, 30, 30, 30, 40, 40, 40]);
+    await expect(toPdfImage(image.subarray(0, -1), codec)).rejects.toThrow(/truncated|missing end/);
+  });
+
+  it('rejects formats it cannot draw', async () => {
+    expect(await toPdfImage(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"></svg>'), codec)).toBeNull();
   });
 });

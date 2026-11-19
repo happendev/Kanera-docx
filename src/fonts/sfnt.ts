@@ -40,12 +40,46 @@ class Reader {
 }
 
 export function isFontCollection(data: Uint8Array): boolean {
-  return data.length > 12 && data[0] === 0x74 && data[1] === 0x74 && data[2] === 0x63 && data[3] === 0x66;
+  return data.length >= 4 && data[0] === 0x74 && data[1] === 0x74 && data[2] === 0x63 && data[3] === 0x66;
 }
 
-export function collectionSize(data: Uint8Array): number {
+export const MAX_FONT_FACES = 256;
+
+export class FontLimitError extends Error {}
+
+export class FontBudget {
+  private faces = 0;
+  private mappings = 0;
+  private kerningWork = 0;
+
+  reserveFaces(n: number): void {
+    if (n > MAX_FONT_FACES - this.faces) throw new FontLimitError('Font face limit exceeded');
+    this.faces += n;
+  }
+
+  reserveKerning(n: number): void {
+    if (n < 0) throw new Error('Invalid font kerning range');
+    if (n > 2_097_152 - this.kerningWork) throw new FontLimitError('Font kerning limit exceeded');
+    this.kerningWork += n;
+  }
+
+  reserveMappings(n: number): void {
+    if (n > 1_048_576 - this.mappings) throw new FontLimitError('Font character mapping limit exceeded');
+    this.mappings += n;
+  }
+}
+
+function requireBytes(start: number, size: number, end: number): void {
+  if (start + size > end) throw new Error('Truncated font table');
+}
+
+export function collectionSize(data: Uint8Array, fileSize = data.length): number {
   if (!isFontCollection(data)) return 1;
-  return new Reader(data).u32(8);
+  requireBytes(0, 12, data.length);
+  const count = new Reader(data).u32(8);
+  requireBytes(12, count * 4, fileSize);
+  if (!count) throw new Error('Empty font collection');
+  return count;
 }
 
 const MAC_ROMAN_HIGH =
@@ -104,21 +138,29 @@ export class SfntFont {
   constructor(
     readonly data: Uint8Array,
     collectionIndex = 0,
+    private readonly budget = new FontBudget(),
   ) {
     this.r = new Reader(data);
     let dir = 0;
     if (isFontCollection(data)) {
-      const n = this.r.u32(8);
-      if (collectionIndex >= n) throw new Error('Font collection index out of range');
+      const n = collectionSize(data);
+      if (!Number.isSafeInteger(collectionIndex) || collectionIndex < 0 || collectionIndex >= n) throw new Error('Font collection index out of range');
       dir = this.r.u32(12 + collectionIndex * 4);
     }
     this.dirOffset = dir;
     this.sfntVersion = this.r.u32(dir);
     if (this.r.tag(dir) === 'wOFF' || this.r.tag(dir) === 'wOF2') throw new Error('WOFF fonts are not supported; supply TTF/OTF');
     const numTables = this.r.u16(dir + 4);
+    requireBytes(dir, 12 + 16 * numTables, data.length);
+    let tableBytes = 0;
     for (let i = 0; i < numTables; i++) {
       const rec = dir + 12 + i * 16;
-      this.tables.set(this.r.tag(rec), { offset: this.r.u32(rec + 8), length: this.r.u32(rec + 12) });
+      const offset = this.r.u32(rec + 8);
+      const length = this.r.u32(rec + 12);
+      requireBytes(offset, length, data.length);
+      tableBytes += length;
+      if (tableBytes > data.length) throw new Error('Invalid font table lengths');
+      this.tables.set(this.r.tag(rec), { offset, length });
     }
     this.parseHead();
     this.parseMaxp();
@@ -254,6 +296,8 @@ export class SfntFont {
     if (t) {
       const o = t.offset;
       const count = this.r.u16(o + 2);
+      requireBytes(0, 6 + count * 12, t.length);
+      let nameBytes = 0;
       const strOff = o + this.r.u16(o + 4);
       for (let i = 0; i < count; i++) {
         const rec = o + 6 + i * 12;
@@ -264,6 +308,9 @@ export class SfntFont {
         const len = this.r.u16(rec + 8);
         const off = strOff + this.r.u16(rec + 10);
         if (![1, 2, 4, 6, 16, 17, 21, 22].includes(nameId)) continue;
+        requireBytes(off, len, o + t.length);
+        nameBytes += len;
+        if (nameBytes > 1 << 20) throw new Error('Font name size limit exceeded');
         let value: string | null = null;
         if (platform === 3 || platform === 0) {
           if (platform === 3 && encoding !== 1 && encoding !== 10 && encoding !== 0) continue;
@@ -305,15 +352,9 @@ export class SfntFont {
     if (!t) return;
     const o = t.offset;
     const n = this.r.u16(o + 2);
+    const tableEnd = o + t.length;
+    requireBytes(o, 4 + 8 * n, tableEnd);
     type Sub = { platform: number; encoding: number; offset: number; format: number };
-    const subs: Sub[] = [];
-    for (let i = 0; i < n; i++) {
-      const rec = o + 4 + i * 8;
-      const platform = this.r.u16(rec);
-      const encoding = this.r.u16(rec + 2);
-      const offset = o + this.r.u32(rec + 4);
-      subs.push({ platform, encoding, offset, format: this.r.u16(offset) });
-    }
     const rank = (s: Sub): number => {
       if (s.platform === 3 && s.encoding === 10) return 10;
       if (s.platform === 0 && (s.encoding === 4 || s.encoding === 6)) return 9;
@@ -323,17 +364,37 @@ export class SfntFont {
       if (s.platform === 1 && s.encoding === 0) return 2;
       return 0;
     };
-    const usable = subs.filter((s) => rank(s) > 0 && [0, 4, 6, 12, 13].includes(s.format)).sort((a, b) => rank(b) - rank(a));
-    const chosen = usable[0];
+    let chosen: Sub | undefined;
+    let bestRank = 0;
+    for (let i = 0; i < n; i++) {
+      const rec = o + 4 + i * 8;
+      const platform = this.r.u16(rec);
+      const encoding = this.r.u16(rec + 2);
+      const offset = o + this.r.u32(rec + 4);
+      requireBytes(offset, 2, tableEnd);
+      const sub = { platform, encoding, offset, format: this.r.u16(offset) };
+      const priority = rank(sub);
+      if (priority > bestRank && [0, 4, 6, 12, 13].includes(sub.format)) {
+        chosen = sub;
+        bestRank = priority;
+      }
+    }
     if (!chosen) return;
     this.symbolCmap = chosen.platform === 3 && chosen.encoding === 0;
-    this.readCmapSubtable(chosen.offset, chosen.format, chosen.platform === 1);
+    this.readCmapSubtable(chosen.offset, chosen.format, chosen.platform === 1, tableEnd);
   }
 
-  private readCmapSubtable(o: number, format: number, macRoman: boolean): void {
+  private readCmapSubtable(o: number, format: number, macRoman: boolean, tableEnd: number): void {
     const map = this.cmap;
     const r = this.r;
+    const long = format === 12 || format === 13;
+    requireBytes(o, long ? 8 : 4, tableEnd);
+    const length = long ? r.u32(o + 4) : r.u16(o + 2);
+    requireBytes(o, length, tableEnd);
+    const subEnd = o + length;
     if (format === 0) {
+      requireBytes(o, 262, subEnd);
+      this.budget.reserveMappings(256);
       for (let c = 0; c < 256; c++) {
         const g = r.u8(o + 6 + c);
         if (!g) continue;
@@ -342,22 +403,28 @@ export class SfntFont {
       }
     } else if (format === 4) {
       const segX2 = r.u16(o + 6);
+      if (!segX2 || segX2 % 2) throw new Error('Invalid cmap segment count');
+      requireBytes(o, 16 + 4 * segX2, subEnd);
       const ends = o + 14;
       const starts = ends + segX2 + 2;
       const deltas = starts + segX2;
       const rangeOffs = deltas + segX2;
+      let last = -1;
       for (let s = 0; s < segX2; s += 2) {
         const end = r.u16(ends + s);
         const start = r.u16(starts + s);
         const delta = r.i16(deltas + s);
         const ro = r.u16(rangeOffs + s);
+        if (start <= last || end < start) throw new Error('Invalid cmap segment range');
+        last = end;
         if (start === 0xffff) continue;
+        if (ro) requireBytes(rangeOffs + s + ro, (end - start + 1) * 2, subEnd);
+        this.budget.reserveMappings(end - start + 1);
         for (let c = start; c <= end; c++) {
           let g: number;
           if (ro === 0) g = (c + delta) & 0xffff;
           else {
             const addr = rangeOffs + s + ro + (c - start) * 2;
-            if (addr + 1 >= this.data.length) continue;
             g = r.u16(addr);
             if (g) g = (g + delta) & 0xffff;
           }
@@ -367,16 +434,23 @@ export class SfntFont {
     } else if (format === 6) {
       const first = r.u16(o + 6);
       const count = r.u16(o + 8);
+      requireBytes(o, 10 + count * 2, subEnd);
+      this.budget.reserveMappings(count);
       for (let i = 0; i < count; i++) {
         const g = r.u16(o + 10 + i * 2);
         if (g) map.set(first + i, g);
       }
     } else if (format === 12 || format === 13) {
       const groups = r.u32(o + 12);
+      requireBytes(o, 16 + groups * 12, subEnd);
+      let last = -1;
       for (let i = 0; i < groups; i++) {
         const g0 = o + 16 + i * 12;
         const start = r.u32(g0);
-        const end = Math.min(r.u32(g0 + 4), start + 0x20000);
+        const end = r.u32(g0 + 4);
+        if (start <= last || end < start || end > 0x10ffff) throw new Error('Invalid cmap group range');
+        last = end;
+        this.budget.reserveMappings(end - start + 1);
         const gid = r.u32(g0 + 8);
         for (let c = start; c <= end; c++) map.set(c, format === 12 ? gid + (c - start) : gid);
       }
@@ -416,7 +490,7 @@ export class SfntFont {
       start = this.r.u32(loca.offset + gid * 4);
       end = this.r.u32(loca.offset + gid * 4 + 4);
     }
-    if (end <= start) return [glyf.offset + start, glyf.offset + start];
+    if (end < start || end > glyf.length) throw new Error('Invalid glyph range');
     return [glyf.offset + start, glyf.offset + end];
   }
 
@@ -424,11 +498,12 @@ export class SfntFont {
   compositeComponents(gid: number): number[] {
     const range = this.glyphRange(gid);
     if (!range || range[1] - range[0] < 10) return [];
-    const [start] = range;
+    const [start, end] = range;
     if (this.r.i16(start) >= 0) return [];
     const out: number[] = [];
     let p = start + 10;
     for (;;) {
+      requireBytes(p, 4, end);
       const flags = this.r.u16(p);
       out.push(this.r.u16(p + 2));
       p += 4;
@@ -457,11 +532,17 @@ export class SfntFont {
         const nTables = this.r.u16(o + 2);
         let p = o + 4;
         for (let i = 0; i < nTables; i++) {
-          const len = this.r.u16(p + 2);
+          requireBytes(p, 6, o + t.length);
+          // Large final format-0 subtables can wrap the legacy 16-bit length field.
+          const len = i === nTables - 1 ? o + t.length - p : this.r.u16(p + 2);
+          requireBytes(p, len, o + t.length);
+          if (len < 6) throw new Error('Invalid kerning subtable');
           const coverage = this.r.u16(p + 4);
           const format = coverage >> 8;
           if (format === 0 && (coverage & 1) === 1) {
             const nPairs = this.r.u16(p + 6);
+            requireBytes(p, 14 + nPairs * 6, p + len);
+            this.budget.reserveKerning(nPairs);
             for (let k = 0; k < nPairs; k++) {
               const q = p + 14 + k * 6;
               pairs.set(this.r.u16(q) * 65536 + this.r.u16(q + 2), this.r.i16(q + 4));
@@ -480,15 +561,22 @@ export class SfntFont {
     if (!t) return;
     const r = this.r;
     const base = t.offset;
+    const tableEnd = base + t.length;
+    const records = (start: number, count: number, size: number) => {
+      requireBytes(start, count * size, tableEnd);
+      this.budget.reserveKerning(count);
+    };
     const featureList = base + r.u16(base + 6);
     const lookupList = base + r.u16(base + 8);
     const kernLookups = new Set<number>();
     const fCount = r.u16(featureList);
+    records(featureList + 2, fCount, 6);
     for (let i = 0; i < fCount; i++) {
       const rec = featureList + 2 + i * 6;
       if (r.tag(rec) !== 'kern') continue;
       const feat = featureList + r.u16(rec + 4);
       const n = r.u16(feat + 2);
+      records(feat + 4, n, 2);
       for (let k = 0; k < n; k++) kernLookups.add(r.u16(feat + 4 + k * 2));
     }
     const coverage = (off: number): number[] => {
@@ -496,13 +584,16 @@ export class SfntFont {
       const out: number[] = [];
       if (fmt === 1) {
         const n = r.u16(off + 2);
+        records(off + 4, n, 2);
         for (let i = 0; i < n; i++) out.push(r.u16(off + 4 + i * 2));
       } else if (fmt === 2) {
         const n = r.u16(off + 2);
+        records(off + 4, n, 6);
         for (let i = 0; i < n; i++) {
           const rr = off + 4 + i * 6;
           const s = r.u16(rr);
           const e = r.u16(rr + 2);
+          this.budget.reserveKerning(e - s + 1);
           for (let g = s; g <= e; g++) out.push(g);
         }
       }
@@ -514,14 +605,17 @@ export class SfntFont {
       if (fmt === 1) {
         const start = r.u16(off + 2);
         const n = r.u16(off + 4);
+        records(off + 6, n, 2);
         for (let i = 0; i < n; i++) m.set(start + i, r.u16(off + 6 + i * 2));
       } else if (fmt === 2) {
         const n = r.u16(off + 2);
+        records(off + 4, n, 6);
         for (let i = 0; i < n; i++) {
           const rr = off + 4 + i * 6;
           const s = r.u16(rr);
           const e = r.u16(rr + 2);
           const c = r.u16(rr + 4);
+          this.budget.reserveKerning(e - s + 1);
           for (let g = s; g <= e; g++) m.set(g, c);
         }
       }
@@ -552,6 +646,7 @@ export class SfntFont {
         for (let i = 0; i < setCount && i < cov.length; i++) {
           const ps = st + r.u16(st + 10 + i * 2);
           const n = r.u16(ps);
+          records(ps + 2, n, 2 + s1 + s2);
           for (let k = 0; k < n; k++) {
             const pr = ps + 2 + k * (2 + s1 + s2);
             const second = r.u16(pr);
@@ -565,7 +660,9 @@ export class SfntFont {
         const cd2 = classDef(st + r.u16(st + 10));
         const c1Count = r.u16(st + 12);
         const c2Count = r.u16(st + 14);
-        const rec = 2 * 0 + s1 + s2;
+        const rec = s1 + s2;
+        requireBytes(st + 16, c1Count * c2Count * rec, tableEnd);
+        this.budget.reserveKerning(cov.length * c2Count);
         // Class-pair matrices can be large; expand only for glyphs with a nonzero adjustment.
         const byClass2 = new Map<number, number[]>();
         for (const [g, c] of cd2) {
@@ -580,7 +677,10 @@ export class SfntFont {
             const p = st + 16 + (c1 * c2Count + c2) * rec;
             const adj = xAdvance(p, vf1);
             if (!adj) continue;
-            for (const g2 of byClass2.get(c2) ?? []) {
+            const glyphs = byClass2.get(c2);
+            if (!glyphs) continue;
+            this.budget.reserveKerning(glyphs.length);
+            for (const g2 of glyphs) {
               const key = g1 * 65536 + g2;
               if (!pairs.has(key)) pairs.set(key, adj);
             }
@@ -589,9 +689,11 @@ export class SfntFont {
       }
     };
     for (const li of kernLookups) {
+      requireBytes(lookupList + 2 + li * 2, 2, tableEnd);
       const lookup = lookupList + r.u16(lookupList + 2 + li * 2);
       const type = r.u16(lookup);
       const n = r.u16(lookup + 4);
+      records(lookup + 6, n, 2);
       for (let k = 0; k < n; k++) {
         let st = lookup + r.u16(lookup + 6 + k * 2);
         let stType = type;

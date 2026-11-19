@@ -31,7 +31,17 @@ export interface DocxSpec {
   /** External hyperlinks: relationship id → URL. */
   links?: Record<string, string>;
   footnotes?: string;
+  /** Contents of `<w:endnotes>`. */
+  endnotes?: string;
+  /** Contents of `<a:theme>`'s `<a:themeElements>`. */
+  theme?: string;
   imports?: Record<string, { name: string; contentType: string; text: string }>;
+  /** Custom XML data parts content controls can bind to: store item id → XML. */
+  customXml?: Record<string, string>;
+  /** Contents of the glossary document's `<w:docParts>` (building blocks such as placeholders). */
+  glossary?: string;
+  /** Contents of `<cp:coreProperties>` (title, author and the like). */
+  coreProperties?: string;
 }
 
 export const A4_SECT = '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>';
@@ -64,6 +74,14 @@ export function makeDocx(spec: DocxSpec): Uint8Array {
     files.push(['word/footnotes.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:footnotes ${W_NS}>${spec.footnotes}</w:footnotes>`]);
     rels.push(`<Relationship Id="rIdFootnotes" Type="${REL}/footnotes" Target="footnotes.xml"/>`);
   }
+  if (spec.endnotes !== undefined) {
+    files.push(['word/endnotes.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:endnotes ${W_NS}>${spec.endnotes}</w:endnotes>`]);
+    rels.push(`<Relationship Id="rIdEndnotes" Type="${REL}/endnotes" Target="endnotes.xml"/>`);
+  }
+  if (spec.theme !== undefined) {
+    files.push(['word/theme/theme1.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme ${W_NS} name="Test"><a:themeElements>${spec.theme}</a:themeElements></a:theme>`]);
+    rels.push(`<Relationship Id="rIdTheme" Type="${REL}/theme" Target="theme/theme1.xml"/>`);
+  }
   for (const [id, xml] of Object.entries(spec.headers ?? {})) {
     files.push([`word/${id}.xml`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr ${W_NS}>${xml}</w:hdr>`]);
     rels.push(`<Relationship Id="${id}" Type="${REL}/header" Target="${id}.xml"/>`);
@@ -79,6 +97,30 @@ export function makeDocx(spec: DocxSpec): Uint8Array {
   for (const [id, url] of Object.entries(spec.links ?? {})) {
     rels.push(`<Relationship Id="${id}" Type="${REL}/hyperlink" Target="${url}" TargetMode="External"/>`);
   }
+  Object.entries(spec.customXml ?? {}).forEach(([storeId, xml], i) => {
+    files.push([`customXml/item${i + 1}.xml`, xml]);
+    files.push([
+      `customXml/_rels/item${i + 1}.xml.rels`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/customXmlProps" Target="itemProps${i + 1}.xml"/></Relationships>`,
+    ]);
+    files.push([
+      `customXml/itemProps${i + 1}.xml`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="no"?><ds:datastoreItem ds:itemID="${storeId}" xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml"/>`,
+    ]);
+    rels.push(`<Relationship Id="rIdCustomXml${i + 1}" Type="${REL}/customXml" Target="../customXml/item${i + 1}.xml"/>`);
+  });
+  if (spec.glossary !== undefined) {
+    files.push(['word/glossary/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:glossaryDocument ${W_NS}><w:docParts>${spec.glossary}</w:docParts></w:glossaryDocument>`]);
+    rels.push(`<Relationship Id="rIdGlossary" Type="${REL}/glossaryDocument" Target="glossary/document.xml"/>`);
+  }
+  const packageRels = [`<Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/>`];
+  if (spec.coreProperties !== undefined) {
+    files.push([
+      'docProps/core.xml',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">${spec.coreProperties}</cp:coreProperties>`,
+    ]);
+    packageRels.push('<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>');
+  }
 
   files.push([
     'word/document.xml',
@@ -87,7 +129,7 @@ export function makeDocx(spec: DocxSpec): Uint8Array {
   files.push(['word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels.join('')}</Relationships>`]);
   files.push([
     '_rels/.rels',
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/></Relationships>`,
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${packageRels.join('')}</Relationships>`,
   ]);
   files.push([
     '[Content_Types].xml',
@@ -121,7 +163,7 @@ export function crc32(data: Uint8Array): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-function zipStore(files: Array<[string, Uint8Array]>): Uint8Array {
+export function zipStore(files: Array<[string, Uint8Array]>): Uint8Array {
   const chunks: Uint8Array[] = [];
   const central: Uint8Array[] = [];
   let offset = 0;

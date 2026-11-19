@@ -1,18 +1,19 @@
+import { nodeCompression } from '../../src/util/node-compression.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseDocx } from '../../src/docx/parser.js';
-import { BUNDLED_FONTS } from '../../src/fonts/bundled.js';
+import { FULL_FONTS } from '../../src/fonts/bundled.js';
 import { FontRegistry } from '../../src/fonts/registry.js';
 import { layoutDocument, type LayoutResult } from '../../src/layout/engine.js';
 import type { DrawOp, GlyphOp, Page } from '../../src/layout/types.js';
 
 const FONT_DIR = fileURLToPath(new URL('../../fonts/', import.meta.url));
 
-/** Lay out a .docx with only the bundled fonts, as the converter does by default. */
+/** Lay out a .docx with the bundled fonts, as the Node converter does by default. */
 export async function layout(docx: Uint8Array): Promise<LayoutResult> {
-  const doc = parseDocx(docx);
+  const doc = parseDocx(docx, nodeCompression.inflateRaw);
   const fonts = new FontRegistry();
-  for (const b of BUNDLED_FONTS) fonts.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load: async () => readFileSync(FONT_DIR + b.file) }, 'bundled');
+  for (const b of FULL_FONTS) fonts.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load: async () => readFileSync(FONT_DIR + b.file) }, 'bundled');
   for (const [family, hints] of doc.fontHints) fonts.setHints(family, hints);
   await fonts.prepare(doc.fontRequests);
   return layoutDocument(doc, fonts);

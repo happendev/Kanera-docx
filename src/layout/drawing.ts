@@ -1,6 +1,7 @@
 import type { Drawing, LineStyle, RunProps } from '../docx/model.js';
 import { DEFAULT_RUN } from '../docx/props.js';
 import { layoutBlocks, type BoxEnv } from './box.js';
+import { metafileOps } from './metafile.js';
 import { shapeText } from './shaper.js';
 import { translateOps, type DrawOp, type GlyphOp, type PathSeg } from './types.js';
 
@@ -288,7 +289,12 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
     const path = d.kind === 'image' && d.geometry === 'rect' ? null : geometryPath(d, x, y, w, h);
     const fill = isLine ? null : d.fill;
     if (fill?.color && path) ops.push({ kind: 'path', segs: path, fill: fill.color, fillAlpha: fill.alpha < 1 ? fill.alpha : undefined, stroke: null });
-    if (d.image) {
+    // Metafiles play back as vector drawing; anything they cannot express stays a picture.
+    const meta = d.image ? metafileOps(d.image, x, y, w, h, d.crop, env.fonts) : null;
+    if (meta) {
+      if (path && d.geometry !== 'rect') ops.push({ kind: 'clip', x, y, w, h, segs: path }, ...meta, { kind: 'restore' });
+      else ops.push(...meta);
+    } else if (d.image) {
       if (path && d.geometry !== 'rect') {
         // Pictures cropped to a shape (rounded corners, circles).
         ops.push({ kind: 'clip', x, y, w, h, segs: path });

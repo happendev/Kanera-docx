@@ -23,6 +23,9 @@ export interface GlyphOp {
   scaleX: number;
   alpha?: number;
   outline?: boolean;
+  /** Where the line's text starts, on lines set from their left edge: a renderer that snaps lines to a
+   * device grid moves the whole line by one amount, so its spacing is kept. */
+  lineX?: number;
 }
 
 export interface RectOp {
@@ -74,6 +77,8 @@ export interface PathOp {
   strokeWidth?: number;
   strokeAlpha?: number;
   dash?: number[];
+  /** Fill by the nonzero winding rule rather than even-odd. */
+  nonzero?: boolean;
 }
 
 /** Save state and apply a transform (rotation/flip about a centre); paired with 'restore'. */
@@ -90,6 +95,8 @@ export interface ClipOp {
   w: number;
   h: number;
   segs?: PathSeg[];
+  /** Clip by the nonzero winding rule rather than even-odd. */
+  nonzero?: boolean;
 }
 export interface RestoreOp {
   kind: 'restore';
@@ -121,6 +128,8 @@ export interface FloatOp {
   y: number;
   /** Width of the anchoring column/box. */
   areaWidth: number;
+  /** The table cell holding the anchor: its text area's left and width, and its top and height. */
+  cell?: { x: number; y: number; w: number; h: number };
 }
 
 export type DrawOp = GlyphOp | RectOp | LineOp | ImageOp | PathOp | TransformOp | ClipOp | RestoreOp | LinkOp | AnchorOp | FloatOp;
@@ -154,8 +163,9 @@ export function translateOp(op: DrawOp, dx: number, dy: number): DrawOp {
     case 'image':
     case 'link':
     case 'anchor':
-    case 'float':
       return { ...op, x: op.x + dx, y: op.y + dy };
+    case 'float':
+      return { ...op, x: op.x + dx, y: op.y + dy, cell: op.cell && { ...op.cell, x: op.cell.x + dx, y: op.cell.y + dy } };
     case 'line':
       return { ...op, x1: op.x1 + dx, y1: op.y1 + dy, x2: op.x2 + dx, y2: op.y2 + dy };
     case 'path':

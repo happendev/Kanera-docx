@@ -28,6 +28,13 @@ export function loadImage(ctx: DrawingContext, rid: string | undefined): ImageRe
   return ref;
 }
 
+function loadBlip(ctx: DrawingContext, blip: XmlElement | undefined): ImageRef | undefined {
+  const fallback = loadImage(ctx, blip?.attrs['r:embed']);
+  const svgBlip = children(child(blip, 'a:extLst'), 'a:ext').map((ext) => child(ext, 'asvg:svgBlip')).find(Boolean);
+  const svg = loadImage(ctx, svgBlip?.attrs['r:embed']);
+  return svg && fallback ? { ...fallback, svg } : svg ?? fallback;
+}
+
 /** Parse a DrawingML colour element (srgbClr, schemeClr, ...) including its transforms. */
 export function parseColor(el: XmlElement | undefined, ctx: DrawingContext, phClr?: string): { color: string; alpha: number } | undefined {
   if (!el) return undefined;
@@ -122,8 +129,11 @@ function parseAnchor(a: XmlElement): AnchorProps {
   }
   const d = (n: string) => emu(Number(a.attrs[n] ?? 0) || 0);
   const simple = a.attrs.simplePos === '1' || a.attrs.simplePos === 'true';
-  let posH = parsePos(child(a, 'wp:positionH'));
-  let posV = parsePos(child(a, 'wp:positionV'));
+  // Word 2010+ writes percentage positions as an mc:AlternateContent choice with a fallback.
+  const alternates = children(a, 'mc:AlternateContent').flatMap(resolveAlternateContent);
+  const position = (name: string) => child(a, name) ?? alternates.find((c) => c.name === name);
+  let posH = parsePos(position('wp:positionH'));
+  let posV = parsePos(position('wp:positionV'));
   if (simple) {
     const sp = child(a, 'wp:simplePos');
     posH = { relativeFrom: 'page', offset: emu(Number(sp?.attrs.x ?? 0)) };
@@ -200,9 +210,8 @@ function styleRefColor(style: XmlElement | undefined, refName: string, ctx: Draw
 
 function parsePicture(pic: XmlElement, ctx: DrawingContext, d: Drawing): void {
   const blipFill = child(pic, 'pic:blipFill');
-  const blip = child(blipFill, 'a:blip');
   d.kind = 'image';
-  d.image = loadImage(ctx, blip?.attrs['r:embed']);
+  d.image = loadBlip(ctx, child(blipFill, 'a:blip'));
   const src = child(blipFill, 'a:srcRect');
   if (src) {
     const f = (n: string) => (Number(src.attrs[n] ?? 0) || 0) / 100000;
@@ -240,7 +249,7 @@ function parseShape(wsp: XmlElement, ctx: DrawingContext, d: Drawing): void {
   // Picture fill in a shape renders as an image.
   const blipFill = child(spPr, 'a:blipFill');
   if (blipFill) {
-    d.image = loadImage(ctx, child(blipFill, 'a:blip')?.attrs['r:embed']);
+    d.image = loadBlip(ctx, child(blipFill, 'a:blip'));
     if (d.image) d.kind = 'image';
   }
   const txbx = child(wsp, 'wps:txbx');
@@ -521,6 +530,11 @@ function parseVmlShape(shape: XmlElement, ctx: DrawingContext, top: boolean): Dr
   const d = baseDrawing('shape', !absolute || !top, width, height);
   d.geometry = shape.name === 'v:oval' ? 'ellipse' : shape.name === 'v:roundrect' ? 'roundRect' : shape.name === 'v:line' ? 'line' : 'rect';
   if (css.visibility === 'hidden') d.hidden = true;
+  if (shape.attrs['o:hr'] === 't' && top && !absolute) {
+    const align = shape.attrs['o:hralign'];
+    // o:hrpct is in tenths of a percent; 0 keeps the shape's own width.
+    d.hr = { align: align === 'center' || align === 'right' ? align : 'left', pct: (Number(shape.attrs['o:hrpct']) || 0) / 1000 };
+  }
   if (css.rotation) d.rotation = parseFloat(css.rotation) || 0;
   if (css.flip) {
     d.flipH = css.flip.includes('x');

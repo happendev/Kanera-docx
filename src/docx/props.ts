@@ -16,11 +16,17 @@ export interface TabOp {
   leader: TabStop['leader'];
 }
 
-export type ParaDelta = Partial<Omit<ParaProps, 'tabs' | 'borders'>> & {
+export type ParaDelta = Partial<Omit<ParaProps, 'tabs' | 'borders' | 'spaceBeforeLines' | 'spaceAfterLines'>> & {
   tabOps?: TabOp[];
   borders?: Partial<ParaBorders>;
   numId?: string;
   ilvl?: number;
+  /** Indents in characters (w:leftChars and the like), or null where points replace them. */
+  indLeftChars?: number | null;
+  indFirstLineChars?: number | null;
+  /** Spacing in lines (w:beforeLines, w:afterLines), or null where points replace it. */
+  spaceBeforeLines?: number | null;
+  spaceAfterLines?: number | null;
 };
 
 export const TOGGLES = ['bold', 'italic', 'boldCs', 'italicCs', 'caps', 'smallCaps', 'strike', 'dstrike', 'hidden', 'outline', 'emboss', 'imprint', 'shadow'] as const;
@@ -79,6 +85,9 @@ export function parseRunDelta(rPr: XmlElement | undefined, ctx: PropContext): Ru
         if (a['w:hint']) d.hint = a['w:hint'];
         break;
       }
+      case 'w:lang':
+        if (el.attrs['w:eastAsia']) d.eastAsiaLang = el.attrs['w:eastAsia'];
+        break;
       case 'w:b':
         d.bold = onOff(el);
         break;
@@ -133,6 +142,9 @@ export function parseRunDelta(rPr: XmlElement | undefined, ctx: PropContext): Ru
         if (v !== undefined) d.spacing = v;
         break;
       }
+      case 'w:snapToGrid':
+        d.snapToGrid = onOff(el);
+        break;
       case 'w:w': {
         const v = num(el.attrs['w:val']?.replace('%', ''));
         if (v !== undefined) d.scale = v;
@@ -164,8 +176,9 @@ export function parseRunDelta(rPr: XmlElement | undefined, ctx: PropContext): Ru
         break;
       }
       case 'w:u': {
-        const v = el.attrs['w:val'] ?? 'single';
-        d.underline = v === 'none' ? null : v;
+        // A w:u without w:val only sets the underline colour; Word draws no underline for it.
+        const v = el.attrs['w:val'];
+        if (v !== undefined) d.underline = v === 'none' ? null : v;
         const c = hexColor(el.attrs['w:color']);
         if (c !== undefined) d.underlineColor = c;
         else if (el.attrs['w:themeColor']) {
@@ -246,6 +259,15 @@ export function parseParaDelta(pPr: XmlElement | undefined, ctx: PropContext): P
       case 'w:snapToGrid':
         d.snapToGrid = onOff(el);
         break;
+      case 'w:autoSpaceDE':
+        d.autoSpaceDE = onOff(el);
+        break;
+      case 'w:autoSpaceDN':
+        d.autoSpaceDN = onOff(el);
+        break;
+      case 'w:overflowPunct':
+        d.overflowPunct = onOff(el);
+        break;
       case 'w:suppressAutoHyphens':
         d.suppressAutoHyphens = onOff(el);
         break;
@@ -273,13 +295,15 @@ export function parseParaDelta(pPr: XmlElement | undefined, ctx: PropContext): P
         const a = el.attrs;
         const before = twipAttr(el, 'w:before');
         const after = twipAttr(el, 'w:after');
-        if (before !== undefined) d.spaceBefore = before;
-        if (after !== undefined) d.spaceAfter = after;
-        // beforeLines/afterLines are hundredths of a line (12pt lines in Word's grid-less model).
+        if (before !== undefined) [d.spaceBefore, d.spaceBeforeLines] = [before, null];
+        if (after !== undefined) [d.spaceAfter, d.spaceAfterLines] = [after, null];
+        // beforeLines/afterLines are hundredths of a line; the parser sizes the line once it knows
+        // the section's grid. A zero, which WPS writes beside every point value, leaves the points
+        // in force.
         const bl = num(a['w:beforeLines']);
         const al = num(a['w:afterLines']);
-        if (bl !== undefined) d.spaceBefore = (bl / 100) * 12;
-        if (al !== undefined) d.spaceAfter = (al / 100) * 12;
+        if (bl) d.spaceBeforeLines = bl / 100;
+        if (al) d.spaceAfterLines = al / 100;
         if (a['w:beforeAutospacing'] !== undefined) d.spaceBeforeAuto = onOff({ name: '', attrs: { 'w:val': a['w:beforeAutospacing'] }, children: [] });
         if (a['w:afterAutospacing'] !== undefined) d.spaceAfterAuto = onOff({ name: '', attrs: { 'w:val': a['w:afterAutospacing'] }, children: [] });
         if (a['w:line'] !== undefined) {
@@ -300,17 +324,18 @@ export function parseParaDelta(pPr: XmlElement | undefined, ctx: PropContext): P
         const right = twipAttr(el, 'w:right') ?? twipAttr(el, 'w:end');
         const first = twipAttr(el, 'w:firstLine');
         const hanging = twipAttr(el, 'w:hanging');
-        if (left !== undefined) d.indLeft = left;
+        if (left !== undefined) [d.indLeft, d.indLeftChars] = [left, null];
         if (right !== undefined) d.indRight = right;
-        if (first !== undefined) d.indFirstLine = first;
-        if (hanging !== undefined) d.indFirstLine = -hanging;
-        // Character-unit indents (hundredths of a character); approximated with an 11pt em.
+        if (first !== undefined) [d.indFirstLine, d.indFirstLineChars] = [first, null];
+        if (hanging !== undefined) [d.indFirstLine, d.indFirstLineChars] = [-hanging, null];
+        // Character-unit indents (hundredths of a character) win over the points beside them; a
+        // zero leaves the points in force. The character size is known once the paragraph is.
         const lc = num(a['w:leftChars'] ?? a['w:startChars']);
-        if (lc !== undefined && lc !== 0) d.indLeft = (lc / 100) * 10.5;
+        if (lc) d.indLeftChars = lc / 100;
         const hc = num(a['w:hangingChars']);
-        if (hc !== undefined && hc !== 0) d.indFirstLine = -(hc / 100) * 10.5;
+        if (hc) d.indFirstLineChars = -hc / 100;
         const fc = num(a['w:firstLineChars']);
-        if (fc !== undefined && fc !== 0) d.indFirstLine = (fc / 100) * 10.5;
+        if (fc) d.indFirstLineChars = fc / 100;
         break;
       }
       case 'w:tabs': {
@@ -477,19 +502,35 @@ export const DEFAULT_PARA: ParaProps = {
   outlineLevel: null,
   bidi: false,
   snapToGrid: true,
+  autoSpaceDE: true,
+  autoSpaceDN: true,
+  overflowPunct: true,
   suppressAutoHyphens: false,
   textAlignment: 'auto',
   frame: null,
 };
 
-export function finalizePara(d: ParaDelta): ParaProps {
+/** `charSize` is the font size a character-unit indent counts in: the paragraph mark's. */
+export function finalizePara(d: ParaDelta, charSize: number): ParaProps {
   const p: ParaProps = { ...DEFAULT_PARA, borders: { ...DEFAULT_PARA.borders } };
   for (const k of Object.keys(d) as Array<keyof ParaDelta>) {
     const v = d[k];
-    if (v === undefined || k === 'tabOps' || k === 'borders' || k === 'numId' || k === 'ilvl') continue;
+    if (v === undefined || k === 'tabOps' || k === 'borders' || k === 'numId' || k === 'ilvl' || k === 'indLeftChars' || k === 'indFirstLineChars' || k === 'spaceBeforeLines' || k === 'spaceAfterLines') continue;
     (p as unknown as Record<string, unknown>)[k] = v;
   }
+  // Lines are 12pt until the parser knows the section's grid (resolveLineSpacing).
+  if (d.spaceBeforeLines) [p.spaceBefore, p.spaceBeforeLines] = [d.spaceBeforeLines * 12, d.spaceBeforeLines];
+  if (d.spaceAfterLines) [p.spaceAfter, p.spaceAfterLines] = [d.spaceAfterLines * 12, d.spaceAfterLines];
+  if (d.indLeftChars) p.indLeft = d.indLeftChars * charSize;
+  if (d.indFirstLineChars) p.indFirstLine = d.indFirstLineChars * charSize;
   if (d.borders) Object.assign(p.borders, d.borders);
+  if (p.bidi) {
+    // In a right-to-left paragraph "left" and "right" name the start and end sides: its start
+    // is on the right.
+    if (p.align === 'left') p.align = 'right';
+    else if (p.align === 'right') p.align = 'left';
+    [p.indLeft, p.indRight] = [p.indRight, p.indLeft];
+  }
   // Tab stops: later definitions replace earlier ones at the same position; "clear" removes.
   const stops = new Map<number, TabStop>();
   for (const op of d.tabOps ?? []) {
@@ -565,6 +606,7 @@ export interface TrDelta {
   gridBefore?: number;
   gridAfter?: number;
   jc?: 'left' | 'center' | 'right';
+  cellSpacing?: number;
 }
 
 export function parseWidth(el: XmlElement | undefined): TableWidth | undefined {
@@ -758,6 +800,11 @@ export function parseTrDelta(trPr: XmlElement | undefined): TrDelta {
       case 'w:jc': {
         const v = el.attrs['w:val'];
         d.jc = v === 'center' ? 'center' : v === 'right' || v === 'end' ? 'right' : 'left';
+        break;
+      }
+      case 'w:tblCellSpacing': {
+        const w = parseWidth(el);
+        if (w) d.cellSpacing = w.type === 'dxa' ? w.value : 0;
         break;
       }
     }

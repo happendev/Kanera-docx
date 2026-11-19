@@ -1,4 +1,4 @@
-import { inflateRaw } from './inflate.js';
+import type { InflateBytes } from './compression.js';
 
 export interface ArchiveLimits {
   maxPartBytes?: number;
@@ -41,7 +41,7 @@ export class ZipArchive {
   private readonly maxPartBytes: number;
   private remainingBytes: number;
 
-  constructor(private readonly data: Uint8Array, limits: ArchiveLimits = {}) {
+  constructor(private readonly data: Uint8Array, private readonly inflateRaw: InflateBytes, limits: ArchiveLimits = {}) {
     this.maxPartBytes = byteLimit(limits.maxPartBytes, 64 * 1024 * 1024);
     this.remainingBytes = byteLimit(limits.maxTotalBytes, 256 * 1024 * 1024);
     let eocd = -1;
@@ -127,7 +127,7 @@ export class ZipArchive {
     const raw = d.subarray(start, start + entry.compressedSize);
     let out: Uint8Array;
     if (entry.method === 0) out = raw;
-    else if (entry.method === 8) out = inflateRaw(raw, entry.size, 0, entry.size);
+    else if (entry.method === 8) out = this.inflateRaw(raw, entry.size);
     else throw new Error(`ZIP: unsupported compression method ${entry.method} for ${entry.name}`);
     if (out.length !== entry.size) throw new Error('ZIP: incorrect decoded size for ' + entry.name);
     this.remainingBytes -= out.length;

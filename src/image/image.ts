@@ -1,5 +1,6 @@
-import { deflateZlib } from '../util/deflate.js';
-import { inflateZlib } from '../util/inflate.js';
+import type { Compression } from '../util/compression.js';
+import { ImageBudget } from './budget.js';
+import { decodeTiff } from './tiff.js';
 
 /** An image ready to be written as a PDF image XObject. */
 export interface PdfImage {
@@ -28,7 +29,7 @@ export function sniffImage(d: Uint8Array): ImageFormat {
   if (d[0] === 1 && d[1] === 0 && d[2] === 0 && d[3] === 0 && d[40] === 0x20 && d[41] === 0x45 && d[42] === 0x4d && d[43] === 0x46) return 'emf';
   if ((d[0] === 0xd7 && d[1] === 0xcd && d[2] === 0xc6 && d[3] === 0x9a) || (d[0] === 1 && d[1] === 0 && d[2] === 9 && d[3] === 0)) return 'wmf';
   const head = new TextDecoder().decode(d.subarray(0, Math.min(d.length, 512)));
-  if (/<svg[\s>]/i.test(head) || /^\s*<\?xml/.test(head)) return 'svg';
+  if (/<(?:[\w.-]+:)?svg[\s/>]/.test(head) || /^\s*<\?xml/.test(head)) return 'svg';
   return 'unknown';
 }
 
@@ -45,19 +46,25 @@ export function imageSize(d: Uint8Array): { width: number; height: number } | nu
   return null;
 }
 
-export function toPdfImage(d: Uint8Array): PdfImage | null {
+export async function toPdfImage(
+  d: Uint8Array, compression: Compression, budget = new ImageBudget(), quality?: number | false,
+): Promise<PdfImage | null> {
   switch (sniffImage(d)) {
     case 'png':
-      return pngToPdf(d);
+      return pngToPdf(d, compression, budget);
     case 'jpeg':
-      return jpegToPdf(d);
+      return jpegToPdf(d, budget, quality);
     case 'gif': {
-      const rgba = decodeGif(d);
-      return rgba ? rgbaToPdf(rgba.width, rgba.height, rgba.data) : null;
+      const rgba = decodeGif(d, budget);
+      return rgba ? rgbaToPdf(rgba.width, rgba.height, rgba.data, compression) : null;
     }
     case 'bmp': {
-      const rgba = decodeBmp(d);
-      return rgba ? rgbaToPdf(rgba.width, rgba.height, rgba.data) : null;
+      const rgba = decodeBmp(d, budget);
+      return rgba ? rgbaToPdf(rgba.width, rgba.height, rgba.data, compression) : null;
+    }
+    case 'tiff': {
+      const rgba = decodeTiff(d, compression.inflateZlib, budget);
+      return rgba ? rgbaToPdf(rgba.width, rgba.height, rgba.data, compression) : null;
     }
     default:
       return null;
@@ -74,7 +81,7 @@ function le16(d: Uint8Array, o: number): number {
   return d[o] | (d[o + 1] << 8);
 }
 
-export function rgbaToPdf(width: number, height: number, rgba: Uint8Array): PdfImage {
+function rgbaToPdf(width: number, height: number, rgba: Uint8Array, compression: Compression): PdfImage {
   const px = width * height;
   const rgb = new Uint8Array(px * 3);
   const alpha = new Uint8Array(px);
@@ -87,15 +94,46 @@ export function rgbaToPdf(width: number, height: number, rgba: Uint8Array): PdfI
     alpha[i] = a;
     if (a !== 255) hasAlpha = true;
   }
+  const plain = compression.deflateZlib(rgb);
+  // Smooth images and scans often compress much better as differences between pixels.
+  // Compare against the raw stream since a predictor can increase the size of some images.
+  const decodeParms = `<< /Predictor 15 /Colors 3 /BitsPerComponent 8 /Columns ${width} >>`;
+  const predicted = plain.length > 1024 ? predictedRgb(width, height, rgb, compression) : undefined;
+  const usePredictor = predicted !== undefined && predicted.length + decodeParms.length + 14 < plain.length;
   return {
     width,
     height,
     colorSpace: '/DeviceRGB',
     bitsPerComponent: 8,
     filter: 'FlateDecode',
-    data: deflateZlib(rgb),
-    smask: hasAlpha ? deflateZlib(alpha) : undefined,
+    data: usePredictor ? predicted : plain,
+    decodeParms: usePredictor ? decodeParms : undefined,
+    smask: hasAlpha ? compression.deflateZlib(alpha) : undefined,
   };
+}
+
+function predictedRgb(width: number, height: number, rgb: Uint8Array, compression: Compression): Uint8Array {
+  const stride = width * 3;
+  const rows = new Uint8Array((stride + 1) * height);
+  for (let y = 0; y < height; y++) {
+    const src = y * stride;
+    const dst = y * (stride + 1);
+    let subScore = 0;
+    let upScore = 0;
+    for (let x = 0; x < stride; x++) {
+      const sub = (rgb[src + x] - (x < 3 ? 0 : rgb[src + x - 3])) & 255;
+      const up = (rgb[src + x] - (y === 0 ? 0 : rgb[src + x - stride])) & 255;
+      subScore += Math.min(sub, 256 - sub);
+      upScore += Math.min(up, 256 - up);
+    }
+    const up = y > 0 && upScore < subScore;
+    rows[dst] = up ? 2 : 1;
+    for (let x = 0; x < stride; x++) {
+      const prev = up ? rgb[src + x - stride] : x < 3 ? 0 : rgb[src + x - 3];
+      rows[dst + x + 1] = rgb[src + x] - prev;
+    }
+  }
+  return compression.deflateZlib(rows);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -112,51 +150,73 @@ interface PngInfo {
   idat: Uint8Array;
 }
 
-function readPng(d: Uint8Array): PngInfo | null {
-  let p = 8;
-  let width = 0;
-  let height = 0;
-  let bitDepth = 8;
-  let colorType = 0;
-  let interlace = 0;
+function readPng(d: Uint8Array, budget: ImageBudget): PngInfo {
+  if (d.length < 33 || be32(d, 4) !== 0x0d0a1a0a || be32(d, 8) !== 13 || be32(d, 12) !== 0x49484452)
+    throw new Error('PNG: invalid header');
+  const width = be32(d, 16);
+  const height = be32(d, 20);
+  const bitDepth = d[24];
+  const colorType = d[25];
+  const interlace = d[28];
+  const depths = colorType === 0 ? [1, 2, 4, 8, 16] : colorType === 3 ? [1, 2, 4, 8] : [8, 16];
+  if (![0, 2, 3, 4, 6].includes(colorType) || !depths.includes(bitDepth) || d[26] || d[27] || interlace > 1)
+    throw new Error('PNG: invalid image parameters');
+  budget.reserve(width, height);
+
   let palette: Uint8Array | undefined;
   let trns: Uint8Array | undefined;
-  const idats: Uint8Array[] = [];
-  while (p + 8 <= d.length) {
+  let firstIdat = 0;
+  let total = 0;
+  let p = 33;
+  for (;;) {
+    if (p + 12 > d.length) throw new Error('PNG: missing end chunk');
     const len = be32(d, p);
-    const type = String.fromCharCode(d[p + 4], d[p + 5], d[p + 6], d[p + 7]);
-    const body = d.subarray(p + 8, p + 8 + len);
-    if (type === 'IHDR') {
-      width = be32(body, 0);
-      height = be32(body, 4);
-      bitDepth = body[8];
-      colorType = body[9];
-      interlace = body[12];
-    } else if (type === 'PLTE') palette = body;
-    else if (type === 'tRNS') trns = body;
-    else if (type === 'IDAT') idats.push(body);
-    else if (type === 'IEND') break;
+    if (p + 12 + len > d.length) throw new Error('PNG: truncated chunk');
+    const type = String.fromCharCode(...d.subarray(p + 4, p + 8));
+    if (type === 'IHDR') throw new Error('PNG: duplicate header');
+    if (type === 'PLTE') {
+      if (!len || len > 768 || len % 3) throw new Error('PNG: invalid palette');
+      palette = d.subarray(p + 8, p + 8 + len);
+    } else if (type === 'tRNS') trns = d.subarray(p + 8, p + 8 + len);
+    else if (type === 'IDAT') {
+      if (!firstIdat) firstIdat = p;
+      total += len;
+    } else if (type === 'IEND') {
+      if (len || !total || (colorType === 3 && !palette)) throw new Error('PNG: incomplete image');
+      break;
+    }
     p += 12 + len;
   }
-  if (!width || !height || idats.length === 0) return null;
-  let total = 0;
-  for (const c of idats) total += c.length;
-  const idat = new Uint8Array(total);
-  let o = 0;
-  for (const c of idats) {
-    idat.set(c, o);
-    o += c.length;
+  let idat = d.subarray(firstIdat + 8, firstIdat + 8 + be32(d, firstIdat));
+  if (idat.length !== total) {
+    idat = new Uint8Array(total);
+    let pos = 0;
+    for (let i = firstIdat; i < p; ) {
+      const len = be32(d, i);
+      if (be32(d, i + 4) === 0x49444154) {
+        idat.set(d.subarray(i + 8, i + 8 + len), pos);
+        pos += len;
+      }
+      i += 12 + len;
+    }
   }
   return { width, height, bitDepth, colorType, interlace, palette, trns, idat };
 }
 
-function pngToPdf(d: Uint8Array): PdfImage | null {
-  const info = readPng(d);
-  if (!info) return null;
+async function pngToPdf(d: Uint8Array, compression: Compression, budget: ImageBudget): Promise<PdfImage | null> {
+  const info = readPng(d, budget);
   const { width, height, bitDepth, colorType, interlace, palette, trns, idat } = info;
   const channels = colorType === 2 ? 3 : colorType === 0 ? 1 : colorType === 3 ? 1 : colorType === 4 ? 2 : 4;
   // Fast path: pass the compressed scanlines straight through with a PNG predictor.
   if (!interlace && !trns && (colorType === 0 || colorType === 2 || colorType === 3)) {
+    const rowBytes = 1 + Math.ceil(width * channels * bitDepth / 8);
+    let bytes = 0;
+    await compression.inflateZlibStream(idat, rowBytes * height, (chunk) => {
+      for (let i = (rowBytes - bytes % rowBytes) % rowBytes; i < chunk.length; i += rowBytes)
+        if (chunk[i] > 4) throw new Error('PNG: invalid scanline filter');
+      bytes += chunk.length;
+    });
+    if (bytes !== rowBytes * height) throw new Error('PNG: truncated scanlines');
     let colorSpace = colorType === 2 ? '/DeviceRGB' : '/DeviceGray';
     if (colorType === 3) {
       if (!palette) return null;
@@ -174,8 +234,86 @@ function pngToPdf(d: Uint8Array): PdfImage | null {
       decodeParms: `<< /Predictor 15 /Colors ${channels} /BitsPerComponent ${bitDepth} /Columns ${width} >>`,
     };
   }
-  const rgba = decodePngRgba(info);
-  return rgbaToPdf(width, height, rgba);
+  if (!interlace && width * height > MAX_DECODED_PIXELS) {
+    const small = await decodePngReduced(info, compression);
+    return rgbaToPdf(small.width, small.height, small.data, compression);
+  }
+  const rgba = decodePngRgba(info, compression);
+  return rgbaToPdf(width, height, rgba, compression);
+}
+
+/** Larger pictures are reduced while decoding, to keep memory and file size bounded. */
+const MAX_DECODED_PIXELS = 1 << 23;
+
+/**
+ * Decode a non-interlaced PNG row by row, averaging k×k blocks (weighted by alpha) so the result
+ * stays within MAX_DECODED_PIXELS; the full image is never held in memory.
+ */
+async function decodePngReduced(info: PngInfo, compression: Compression): Promise<{ width: number; height: number; data: Uint8Array }> {
+  const { width, height, bitDepth, colorType, palette, trns } = info;
+  const channels = colorType === 2 ? 3 : colorType === 0 ? 1 : colorType === 3 ? 1 : colorType === 4 ? 2 : 4;
+  const bitsPP = channels * bitDepth;
+  const bpp = Math.max(1, bitsPP >> 3);
+  const stride = Math.ceil((width * bitsPP) / 8);
+  const k = Math.ceil(Math.sqrt((width * height) / MAX_DECODED_PIXELS));
+  const ow = Math.ceil(width / k);
+  const oh = Math.ceil(height / k);
+  const out = new Uint8Array(ow * oh * 4);
+  const sums = new Float64Array(ow * 5);
+  const rowRgba = new Uint8Array(width * 4);
+  let line = new Uint8Array(stride);
+  let prev = new Uint8Array(stride);
+  let filter = -1;
+  let fill = 0;
+  let y = 0;
+  const flushBand = (oy: number) => {
+    for (let i = 0; i < ow; i++) {
+      const s = i * 5;
+      const n = sums[s + 4];
+      const a = sums[s + 3];
+      const o = (oy * ow + i) * 4;
+      if (a > 0) for (let c = 0; c < 3; c++) out[o + c] = Math.round(sums[s + c] / a);
+      out[o + 3] = n > 0 ? Math.round(a / n) : 0;
+    }
+    sums.fill(0);
+  };
+  const finishRow = () => {
+    unfilter(filter, line, prev, bpp);
+    for (let x = 0; x < width; x++) writePixel(rowRgba, x * 4, line, x, bitDepth, colorType, palette, trns);
+    for (let x = 0; x < width; x++) {
+      const s = Math.floor(x / k) * 5;
+      const a = rowRgba[x * 4 + 3];
+      sums[s] += rowRgba[x * 4] * a;
+      sums[s + 1] += rowRgba[x * 4 + 1] * a;
+      sums[s + 2] += rowRgba[x * 4 + 2] * a;
+      sums[s + 3] += a;
+      sums[s + 4]++;
+    }
+    if (y % k === k - 1 || y === height - 1) flushBand(Math.floor(y / k));
+    [prev, line] = [line, prev];
+    y++;
+    filter = -1;
+    fill = 0;
+  };
+  await compression.inflateZlibStream(
+    info.idat,
+    height * (stride + 1),
+    (chunk) => {
+      for (let i = 0; i < chunk.length && y < height; ) {
+        if (filter < 0) {
+          filter = chunk[i++];
+          continue;
+        }
+        const take = Math.min(stride - fill, chunk.length - i);
+        line.set(chunk.subarray(i, i + take), fill);
+        fill += take;
+        i += take;
+        if (fill === stride) finishRow();
+      }
+    },
+  );
+  if (y !== height) throw new Error('PNG: truncated scanlines');
+  return { width: ow, height: oh, data: out };
 }
 
 const ADAM7 = [
@@ -188,25 +326,32 @@ const ADAM7 = [
   [0, 1, 1, 2],
 ];
 
-export function decodePngRgba(info: PngInfo): Uint8Array {
+function decodePngRgba(info: PngInfo, compression: Compression): Uint8Array {
   const { width, height, bitDepth, colorType, interlace, palette, trns } = info;
   const channels = colorType === 2 ? 3 : colorType === 0 ? 1 : colorType === 3 ? 1 : colorType === 4 ? 2 : 4;
-  const raw = inflateZlib(info.idat);
-  const out = new Uint8Array(width * height * 4);
   const bitsPP = channels * bitDepth;
   const bpp = Math.max(1, bitsPP >> 3);
   let pos = 0;
 
   const passes = interlace ? ADAM7 : [[0, 0, 1, 1]];
+  let expected = 0;
+  for (const [x0, y0, dx, dy] of passes) {
+    const pw = Math.ceil((width - x0) / dx);
+    const ph = Math.ceil((height - y0) / dy);
+    if (pw > 0 && ph > 0) expected += (1 + Math.ceil(pw * bitsPP / 8)) * ph;
+  }
+  const raw = compression.inflateZlib(info.idat, expected);
+  if (raw.length !== expected) throw new Error('PNG: truncated scanlines');
+  const out = new Uint8Array(width * height * 4);
   for (const [x0, y0, dx, dy] of passes) {
     const pw = Math.ceil((width - x0) / dx);
     const ph = Math.ceil((height - y0) / dy);
     if (pw <= 0 || ph <= 0) continue;
     const stride = Math.ceil((pw * bitsPP) / 8);
-    let prev = new Uint8Array(stride);
+    let prev: Uint8Array = new Uint8Array(stride);
     for (let row = 0; row < ph; row++) {
       const filter = raw[pos++];
-      const line = raw.slice(pos, pos + stride);
+      const line = raw.subarray(pos, pos + stride);
       pos += stride;
       unfilter(filter, line, prev, bpp);
       prev = line;
@@ -337,11 +482,15 @@ interface JpegInfo {
   height: number;
   components: number;
   adobeTransform: number | null;
+  canReencode: boolean;
 }
 
 function jpegInfo(d: Uint8Array): JpegInfo | null {
   let p = 2;
   let adobe: number | null = null;
+  let hasColorProfile = false;
+  let frame: Omit<JpegInfo, 'adobeTransform' | 'canReencode'> | undefined;
+  let supportedFrame = false;
   while (p + 4 <= d.length) {
     if (d[p] !== 0xff) {
       p++;
@@ -357,46 +506,87 @@ function jpegInfo(d: Uint8Array): JpegInfo | null {
       continue;
     }
     const len = (d[p + 2] << 8) | d[p + 3];
-    if (marker === 0xee && len >= 12 && d[p + 4] === 0x41 && d[p + 5] === 0x64 && d[p + 6] === 0x6f && d[p + 7] === 0x62 && d[p + 8] === 0x65) {
+    if (len < 2 || p + 2 + len > d.length) break;
+    if (marker === 0xee && len >= 14 && d[p + 4] === 0x41 && d[p + 5] === 0x64 && d[p + 6] === 0x6f && d[p + 7] === 0x62 && d[p + 8] === 0x65) {
       adobe = d[p + 15];
     }
+    if (marker === 0xe2 && len >= 14 && new TextDecoder().decode(d.subarray(p + 4, p + 16)) === 'ICC_PROFILE\0')
+      hasColorProfile = true;
     const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
     if (isSof) {
-      return {
+      if (len < 8 || len < 8 + 3 * d[p + 9]) return null;
+      frame = {
         height: (d[p + 5] << 8) | d[p + 6],
         width: (d[p + 7] << 8) | d[p + 8],
         components: d[p + 9],
-        adobeTransform: adobe,
       };
+      supportedFrame = (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) && d[p + 4] === 8;
     }
     if (marker === 0xda) break;
     p += 2 + len;
   }
-  return null;
+  return frame ? { ...frame, adobeTransform: adobe, canReencode: supportedFrame && frame.components === 3 && !hasColorProfile } : null;
 }
 
-function jpegToPdf(d: Uint8Array): PdfImage | null {
+async function jpegToPdf(d: Uint8Array, budget: ImageBudget, quality?: number | false): Promise<PdfImage | null> {
   const info = jpegInfo(d);
   if (!info) return null;
+  budget.reserve(info.width, info.height);
   const colorSpace = info.components === 1 ? '/DeviceGray' : info.components === 4 ? '/DeviceCMYK' : '/DeviceRGB';
+  let data = d;
+  if (quality !== false && info.canReencode && (quality !== undefined || d.length > 1024)) {
+    try {
+      data = (await smallerJpeg(d, info.width, info.height, quality)) ?? d;
+    } catch {
+      // The PDF reader can still handle JPEGs the optional recompressor cannot decode.
+    }
+  }
   return {
     width: info.width,
     height: info.height,
     colorSpace,
     bitsPerComponent: 8,
     filter: 'DCTDecode',
-    data: d,
+    data,
     // Adobe-flavoured CMYK JPEGs store inverted values.
     decode: info.components === 4 && info.adobeTransform !== null ? [1, 0, 1, 0, 1, 0, 1, 0] : undefined,
   };
 }
 
+async function smallerJpeg(data: Uint8Array, width: number, height: number, quality?: number): Promise<Uint8Array | undefined> {
+  const { encode, decode } = await import('./jpeg-codec.js');
+  const decodeOptions = {
+    useTArray: true as const,
+    tolerantDecoding: false,
+    maxResolutionInMP: Math.ceil(width * height / 1_000_000),
+    maxMemoryUsageInMB: 256,
+  };
+  const pixels = decode(data, decodeOptions);
+  if (pixels.width !== width || pixels.height !== height) return undefined;
+  const jpeg = encode(pixels, quality ?? 80).data;
+  if (quality !== undefined) return jpeg.length < data.length ? jpeg : undefined;
+  if (jpeg.length > data.length * 0.9) return undefined;
+  const { data: candidate } = decode(jpeg, decodeOptions);
+  // Guard the default against visible changes even when re-encoding yields a much smaller stream.
+  let squaredError = 0;
+  for (let i = 0; i < candidate.length; i += 4) {
+    for (let c = 0; c < 3; c++) {
+      const error = candidate[i + c] - pixels.data[i + c];
+      if (Math.abs(error) > 32) return undefined;
+      squaredError += error * error;
+    }
+  }
+  return squaredError <= width * height * 3 * 9 ? jpeg : undefined;
+}
+
 // ---------------------------------------------------------------------------------------------
 // GIF (first frame)
 
-function decodeGif(d: Uint8Array): { width: number; height: number; data: Uint8Array } | null {
+function decodeGif(d: Uint8Array, budget: ImageBudget): { width: number; height: number; data: Uint8Array } | null {
   const width = le16(d, 6);
   const height = le16(d, 8);
+  if (d.length < 13) throw new Error('GIF: truncated header');
+  budget.reserve(width, height);
   const flags = d[10];
   let p = 13;
   let gct: Uint8Array | null = null;
@@ -406,7 +596,6 @@ function decodeGif(d: Uint8Array): { width: number; height: number; data: Uint8A
     p += size;
   }
   let transparent = -1;
-  const out = new Uint8Array(width * height * 4);
   while (p < d.length) {
     const b = d[p++];
     if (b === 0x21) {
@@ -425,6 +614,7 @@ function decodeGif(d: Uint8Array): { width: number; height: number; data: Uint8A
       const iy = le16(d, p + 2);
       const iw = le16(d, p + 4);
       const ih = le16(d, p + 6);
+      if (p + 9 > d.length || !iw || !ih || ix + iw > width || iy + ih > height) throw new Error('GIF: invalid frame dimensions');
       const iflags = d[p + 8];
       p += 9;
       let ct = gct;
@@ -435,14 +625,25 @@ function decodeGif(d: Uint8Array): { width: number; height: number; data: Uint8A
       }
       const interlaced = (iflags & 0x40) !== 0;
       const minCode = d[p++];
-      const chunks: number[] = [];
-      while (p < d.length) {
-        const sz = d[p++];
-        if (sz === 0) break;
-        for (let k = 0; k < sz; k++) chunks.push(d[p + k]);
-        p += sz;
+      if (!ct || minCode < 2 || minCode > 8 || p >= d.length) throw new Error('GIF: invalid image data');
+      const start = p;
+      let length = 0;
+      while (p < d.length && d[p]) {
+        const size = d[p++];
+        length += size;
+        p += size;
       }
-      const indices = lzwDecode(Uint8Array.from(chunks), minCode, iw * ih);
+      if (p >= d.length) throw new Error('GIF: truncated image data');
+      const codes = new Uint8Array(length);
+      let dest = 0;
+      for (let i = start; i < p; ) {
+        const size = d[i++];
+        codes.set(d.subarray(i, i + size), dest);
+        i += size;
+        dest += size;
+      }
+      const indices = lzwDecode(codes, minCode, iw * ih);
+      const out = new Uint8Array(width * height * 4);
       const rows: number[] = [];
       if (interlaced) {
         for (let y = 0; y < ih; y += 8) rows.push(y);
@@ -452,16 +653,15 @@ function decodeGif(d: Uint8Array): { width: number; height: number; data: Uint8A
       } else for (let y = 0; y < ih; y++) rows.push(y);
       for (let r = 0; r < ih; r++) {
         const y = iy + rows[r];
-        if (y >= height) continue;
         for (let x = 0; x < iw; x++) {
           const px = ix + x;
-          if (px >= width) continue;
           const idx = indices[r * iw + x];
           const o = (y * width + px) * 4;
-          if (idx === transparent || !ct) {
+          if (idx === transparent) {
             out[o + 3] = 0;
             continue;
           }
+          if (idx * 3 + 2 >= ct.length) throw new Error('GIF: invalid palette index');
           out[o] = ct[idx * 3];
           out[o + 1] = ct[idx * 3 + 1];
           out[o + 2] = ct[idx * 3 + 2];
@@ -496,7 +696,7 @@ function lzwDecode(data: Uint8Array, minCode: number, pixels: number): Uint8Arra
     let code = 0;
     for (let i = 0; i < codeSize; i++) {
       const byte = data[(bitPos + i) >> 3];
-      if (byte === undefined) return out;
+      if (byte === undefined) throw new Error('GIF: truncated pixel data');
       code |= ((byte >> ((bitPos + i) & 7)) & 1) << i;
     }
     bitPos += codeSize;
@@ -510,7 +710,7 @@ function lzwDecode(data: Uint8Array, minCode: number, pixels: number): Uint8Arra
     let cur = code;
     let sp = 0;
     if (code >= dictSize) {
-      if (prev < 0) break;
+      if (code !== dictSize || prev < 0) throw new Error('GIF: invalid LZW code');
       stack[sp++] = first[prev];
       cur = prev;
     }
@@ -529,13 +729,14 @@ function lzwDecode(data: Uint8Array, minCode: number, pixels: number): Uint8Arra
     }
     prev = code;
   }
+  if (op !== pixels) throw new Error('GIF: truncated pixel data');
   return out;
 }
 
 // ---------------------------------------------------------------------------------------------
 // BMP
 
-function decodeBmp(d: Uint8Array): { width: number; height: number; data: Uint8Array } | null {
+function decodeBmp(d: Uint8Array, budget: ImageBudget): { width: number; height: number; data: Uint8Array } | null {
   const offset = le32s(d, 10);
   const headerSize = le32s(d, 14);
   const width = le32s(d, 18);
@@ -543,10 +744,12 @@ function decodeBmp(d: Uint8Array): { width: number; height: number; data: Uint8A
   const height = Math.abs(rawH);
   const bpp = le16(d, 28);
   const compression = le32s(d, 30);
-  if (compression !== 0 && compression !== 3) return null;
+  if (d.length < 54 || headerSize < 40 || ![1, 4, 8, 24, 32].includes(bpp) || (compression !== 0 && compression !== 3)) return null;
+  budget.reserve(width, height);
   const topDown = rawH < 0;
   const stride = Math.ceil((width * bpp) / 32) * 4;
   const palOff = 14 + headerSize;
+  if (offset < palOff || offset + height * stride > d.length) throw new Error('BMP: truncated pixel data');
   const out = new Uint8Array(width * height * 4);
   for (let y = 0; y < height; y++) {
     const row = offset + (topDown ? y : height - 1 - y) * stride;
@@ -558,16 +761,17 @@ function decodeBmp(d: Uint8Array): { width: number; height: number; data: Uint8A
         out[o + 1] = d[p + 1];
         out[o + 2] = d[p];
         out[o + 3] = 255;
-      } else if (bpp === 8 || bpp === 4 || bpp === 1) {
+      } else {
         const perByte = 8 / bpp;
         const byte = d[row + Math.floor(x / perByte)];
         const idx = (byte >> (8 - bpp * ((x % perByte) + 1))) & ((1 << bpp) - 1);
         const pp = palOff + idx * 4;
+        if (pp + 4 > offset) throw new Error('BMP: truncated palette');
         out[o] = d[pp + 2];
         out[o + 1] = d[pp + 1];
         out[o + 2] = d[pp];
         out[o + 3] = 255;
-      } else return null;
+      }
     }
   }
   return { width, height, data: out };

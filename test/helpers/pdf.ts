@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { inflateZlib } from '../../src/util/inflate.js';
+import { inflateSync } from 'node:zlib';
 
 function hasGhostscript(): boolean {
   try {
@@ -79,7 +79,7 @@ export function pdfStreams(pdf: Uint8Array): string[] {
     if (!len) continue;
     const start = m.index + m[0].length;
     const data = pdf.subarray(start, start + Number(len[1]));
-    const body = m[1].includes('/FlateDecode') ? inflateZlib(data) : data;
+    const body = m[1].includes('/FlateDecode') ? inflateSync(data) : data;
     let s = '';
     for (const b of body) s += String.fromCharCode(b);
     out.push(s);

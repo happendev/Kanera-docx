@@ -1,0 +1,44 @@
+name: Conversion bug
+description: Report a DOCX-to-PDF conversion error or a difference from Microsoft Word.
+body:
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: For a layout or formatting issue, describe how the affected page looks in Microsoft Word.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened?
+      description: Point to the affected page and element, such as a table, paragraph or image. Include any conversion errors or warnings.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Example DOCX and comparison files
+      description: |
+        For an accuracy issue, attach or link the smallest example DOCX that still reproduces it.
+        If possible, include the PDF exported from Word and the PDF produced by this converter,
+        or screenshots of the affected pages from both.
+
+        Issue attachments are public once the repository is public. Use a sample with dummy text
+        that preserves the relevant styles, fonts and layout. If you can't share a file, describe
+        how to recreate the relevant part of the document.
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How can we reproduce it?
+      description: Include the CLI command or a short code snippet with any options or custom fonts needed to reproduce the issue.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Version and environment
+      description: Include the converter version (or commit), operating system, and Node or browser version. For accuracy issues, include the Word version used for comparison if known.
+      placeholder: '0.1.0, Node 24 CLI on Linux, reference PDF from Word for Mac'
+    validations:
+      required: true

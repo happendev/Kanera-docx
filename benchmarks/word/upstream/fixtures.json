@@ -1,0 +1,2498 @@
+{
+  "source": "https://api.github.com/repositories/1163851617",
+  "revision": "7a775fb6469ce7bb1322e6fe9d0c37edfaf67afa",
+  "directory": "tests/Issue_Files",
+  "classic_generator": "https://api.github.com/repositories/1163851617/git/blobs/ef3dda01bdd13298363c5602bb9539bf2f11a8e2",
+  "classic_references": {
+    "source": "https://api.github.com/repositories/1374445024",
+    "revision": "96c015dffad995f4e03ab07b25c073d424ddb1c5",
+    "directory": "assets/benchmarks/dotnet/classic/docx",
+    "published_cases": 180
+  },
+  "fixtures": [
+    {
+      "id": "13_IEEE_Style_Paper",
+      "docx": "docx/13_IEEE_Style_Paper.docx",
+      "docx_sha256": "ca9e94626946656fd33db0371960ba8c034d6944665e58d3db8ddc489246a603",
+      "pdf": "reference_docx/13_IEEE_Style_Paper.pdf",
+      "pdf_sha256": "c16bd0c9de6596c9a63e266f49378fcc51bdcc453f68df4e829b4e18b8ab5c68",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "14_Thesis_Chapter",
+      "docx": "docx/14_Thesis_Chapter.docx",
+      "docx_sha256": "5ff622c53205f6064437104c337481bc5233bd06b79a3789fd019c8629504209",
+      "pdf": "reference_docx/14_Thesis_Chapter.pdf",
+      "pdf_sha256": "8c445871392c7323ae6c3c9eded3fc050a8c51ae17c46946ea92047cf3d52c92",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "20260317_sample_CN",
+      "docx": "docx/20260317_sample_CN.docx",
+      "docx_sha256": "b1598012909b65e8c8c78ad361cee093bf45a942c7d57f2f211188f89ebad64f",
+      "pdf": "reference_docx/20260317_sample_CN.pdf",
+      "pdf_sha256": "3fb1a9fd0966341b9c426e3e94da3ec5d9289fa58fc8bd4e8dcd6bcc6cbc7c07",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "20260318_issue",
+      "docx": "docx/20260318_issue.docx",
+      "docx_sha256": "36ae945bc0590a4d2b97e5490d92c0e3239797476f2e00d248c060fd4c53a2d1",
+      "pdf": "reference_docx/20260318_issue.pdf",
+      "pdf_sha256": "cc8e47419d90884afa8cdf31336cef3c9381a36489ed7aac73f1172fd24d1875",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "CCU_article",
+      "docx": "docx/CCU_article.docx",
+      "docx_sha256": "67ebd3b7627edab2f914a8b9327773dbce7d7b2bf614fc89a79c44c4f9d3c94f",
+      "pdf": "reference_docx/CCU_article.pdf",
+      "pdf_sha256": "f13fe41b7271378cf706780a89fb989690cc613ae9715eff16c69618234740f8",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "Class News",
+      "docx": "docx/Class News.docx",
+      "docx_sha256": "00697de021096aea802d2fbcac46247d1b9f8d3335705305c25ca71f0123a3d3",
+      "pdf": "reference_docx/Class News.pdf",
+      "pdf_sha256": "d0ecfbd393e0c73cf3453bd0da92d5478365ef395123a90f217484a8b48b6467",
+      "reference_application": "LibreOffice 26.2.0.3 (X86_64)",
+      "suite": "issue"
+    },
+    {
+      "id": "Confirmatory_Affidavit",
+      "docx": "docx/Confirmatory_Affidavit.docx",
+      "docx_sha256": "88dea80677f422afd08c2b0d19eab85d8e2e69cbbf0f4bc949ddf5113990f239",
+      "pdf": "reference_docx/Confirmatory_Affidavit.pdf",
+      "pdf_sha256": "55f6370d309e532e8a915ecec5204c071c533c0537a6f5cd819821814aeebf82",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "Cooperation Agreement Template",
+      "docx": "docx/Cooperation Agreement Template.docx",
+      "docx_sha256": "d1e5950fdd39a4e7067bd01ee89fe1a307a7e30da1113a362b5dffd02bf0798c",
+      "pdf": "reference_docx/Cooperation Agreement Template.pdf",
+      "pdf_sha256": "ff960d2b4ebe8abd70f34fc4a3d1c30621cb37affe0e006b83b5281d6c7a7f30",
+      "reference_application": "LibreOffice 26.2.0.3 (X86_64)",
+      "suite": "issue"
+    },
+    {
+      "id": "Fabrikam",
+      "docx": "docx/Fabrikam.docx",
+      "docx_sha256": "b508a150504ef38d456d55f0070f56de7a23ed2b8ad07289e0c7d175e20edc65",
+      "pdf": "reference_docx/Fabrikam.pdf",
+      "pdf_sha256": "3dedfafb9614ce3c1a8baabfca64fee4ca8f5e6e5ce09f49886536027f52db1f",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "Invoice",
+      "docx": "docx/Invoice.docx",
+      "docx_sha256": "ea8006057fad63b05554de0e14852a8c85bf356d8ff3cb503f30f3c6b5b92cb1",
+      "pdf": "reference_docx/Invoice.pdf",
+      "pdf_sha256": "91f65399e88b95ae0e672da8bc8703f70cb421f8ac5410dfb27e029a6c31b717",
+      "reference_application": "LibreOffice 26.2.0.3 (X86_64)",
+      "suite": "issue"
+    },
+    {
+      "id": "Issue159_PageLayoutOptions",
+      "docx": "docx/Issue159_PageLayoutOptions.docx",
+      "docx_sha256": "c15c38d61c70e6ad9e1e39234bf4a2471225a01441af432253fa3a039ea9ba7d",
+      "pdf": "reference_docx/Issue159_PageLayoutOptions.pdf",
+      "pdf_sha256": "958a849eb3f0e33935318c36b06c7a4ff752e5be2d60670ebb265b12e0c5a4e1",
+      "reference_application": "LibreOffice 26.2.1.2 (X86_64)",
+      "suite": "issue"
+    },
+    {
+      "id": "Issue79_FilledContract",
+      "docx": "docx/Issue79_FilledContract.docx",
+      "docx_sha256": "ecfde68f5701341df4d610373938f477081674ef81b0f44f4679a2d32c4b887a",
+      "pdf": "reference_docx/Issue79_FilledContract.pdf",
+      "pdf_sha256": "c7173378faa4cb3f1b28811e86dc762639ebbf58edc3e2b53bf449872ea95da4",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "Issue79_TemplateContract",
+      "docx": "docx/Issue79_TemplateContract.docx",
+      "docx_sha256": "f88f0e9a332d05cea41ac82195c37fb08ba8593a22138af3a9d56d710e956f22",
+      "pdf": "reference_docx/Issue79_TemplateContract.pdf",
+      "pdf_sha256": "fb214e605956dc3c4338addf229ff1aa321ea8afb00042cab28f737088687032",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "Issue83_Output",
+      "docx": "docx/Issue83_Output.docx",
+      "docx_sha256": "6958a536d4d489bce7580f9e598e9b7c597c205cc1cce743ee7f0338c1d3c364",
+      "pdf": "reference_docx/Issue83_Output.pdf",
+      "pdf_sha256": "bdfa417b93365f06603c92368e927d4926fd28a315b7c0d28e5c4e946fb605c5",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "MODERN LIVING",
+      "docx": "docx/MODERN LIVING.docx",
+      "docx_sha256": "bb11bd8a5fd2f307afbb87556134f60349f43b293b56f2f5c172002c4ab64fcf",
+      "pdf": "reference_docx/MODERN LIVING.pdf",
+      "pdf_sha256": "3135d0908ea6c730adcb456d351ead37e91c55a5358dea34e2cb0f9afc10f78f",
+      "reference_application": "LibreOffice 26.2.0.3 (X86_64)",
+      "suite": "issue"
+    },
+    {
+      "id": "OSCAR WARD",
+      "docx": "docx/OSCAR WARD.docx",
+      "docx_sha256": "03f81a9069e16aa4d7be503a433ed11dd6884854b2e8eae2e8b2911a6a86a672",
+      "pdf": "reference_docx/OSCAR WARD.pdf",
+      "pdf_sha256": "9858d5dde4bf5cd5a3d93d40acef6cd9717442608064f722d9d71fa0cd3a3112",
+      "reference_application": "LibreOffice 26.2.0.3 (X86_64)",
+      "suite": "issue"
+    },
+    {
+      "id": "SA8000 ch sample",
+      "docx": "docx/SA8000 ch sample.docx",
+      "docx_sha256": "60b601c4237c85e7354b1152290270729535c50dcf4cc8e3519943f605d028c9",
+      "pdf": "reference_docx/SA8000 ch sample.pdf",
+      "pdf_sha256": "fb6a8a9c919f2db0af40f60be7eae5176ea0ab4399a26b61d2beb8536be685e9",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "Support_Letter",
+      "docx": "docx/Support_Letter.docx",
+      "docx_sha256": "316f41c441051d8e76e493d7e7af960447392a0d63a0aa3d31a806bef1244e8f",
+      "pdf": "reference_docx/Support_Letter.pdf",
+      "pdf_sha256": "54efd314af86539b03633ec8a74b770641507d0145e4d5912bfd7b3cb11e955a",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "Template for MSc Thesis",
+      "docx": "docx/Template for MSc Thesis.docx",
+      "docx_sha256": "fc8fea294f2aa4bf4b98d911250427d1f02a9a5264a971bdccf008df574e4db7",
+      "pdf": "reference_docx/Template for MSc Thesis.pdf",
+      "pdf_sha256": "b3bc92add4d764bda42b77966f8a7e18a72852af932e5ee6efe7bffbba50e5d6",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "TestIssue61",
+      "docx": "docx/TestIssue61.docx",
+      "docx_sha256": "2ed27c9cfe720f46d3a29ccec138f32562cd2a899be3244b561f922791ad7da4",
+      "pdf": "reference_docx/TestIssue61.pdf",
+      "pdf_sha256": "b3a2aa66d9a03bb554a7b451ca21ae266b9990917102ee4b2218f0ff0e07f3d5",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "TestIssue78",
+      "docx": "docx/TestIssue78.docx",
+      "docx_sha256": "725212b5d213b9cb0682f9bf6b053740914c2ca42f1c428e8a4ce1b495527c42",
+      "pdf": "reference_docx/TestIssue78.pdf",
+      "pdf_sha256": "6dc774625a7f9716b540c97bf3fa146404a48ef4cfad3b76025a30191b828cfc",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "TestIssue90",
+      "docx": "docx/TestIssue90.docx",
+      "docx_sha256": "3db1222e130ec7d8fbb40c7e43e30081e79042f702e2360d8f7d30db53d368e0",
+      "pdf": "reference_docx/TestIssue90.pdf",
+      "pdf_sha256": "f4ab69ffb2653aeebf420e7514e46f542f655ebb646e21059b2734baff3cced0",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "TestIssue91",
+      "docx": "docx/TestIssue91.docx",
+      "docx_sha256": "543bc5e64f6d0053d6f19bc8ee2a1a4a8c0a9ce6a6887aed2c0b0a1554f26c07",
+      "pdf": "reference_docx/TestIssue91.pdf",
+      "pdf_sha256": "2fc277c9f8531969554ee7543a8aacb156609837e691579b04d3955b352a363c",
+      "reference_application": "LibreOffice 26.2.1.2 (X86_64)",
+      "suite": "issue"
+    },
+    {
+      "id": "TestIssue93",
+      "docx": "docx/TestIssue93.docx",
+      "docx_sha256": "6344c12d731e7485ece2cf81de29ba9215160eeeb98c84f0273af95e5759a2ae",
+      "pdf": "reference_docx/TestIssue93.pdf",
+      "pdf_sha256": "25bfd54e29fe3d7127d52694442a0c79d64d4479a14bd7dac7d2e548d2fd1937",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "issue202605",
+      "docx": "docx/issue202605.docx",
+      "docx_sha256": "0d984e0501e4b64ee54a7231bf6db372d9b54a804abf759eb448859ba76a77eb",
+      "pdf": "reference_docx/issue202605.pdf",
+      "pdf_sha256": "43d0f7cb5f55e7b7c61eb31f25e905f8d52dcd583dda0b64a8940705a20770ce",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "issue26050501",
+      "docx": "docx/issue26050501.docx",
+      "docx_sha256": "f02625abf5b0ec8f3868b6e09724dd0000d102731733e7018008b5ad11905ae6",
+      "pdf": "reference_docx/issue26050501.pdf",
+      "pdf_sha256": "7f654f7c11964be45828fcb25f695dc07ed4706c07fa3356389efcb701ddd6c7",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "issues66",
+      "docx": "docx/issues66.docx",
+      "docx_sha256": "d1118f164b88aa7e04cfbb10b2256898d29fd52b770cdbf2a0b5f38d2bf24c34",
+      "pdf": "reference_docx/issues66.pdf",
+      "pdf_sha256": "121b00588f3da71bf1050e4bdf2f2f1b0d03a78b7c2dc0ba3ac116dc8b5c69b5",
+      "reference_application": "Microsoft Word for Microsoft 365",
+      "suite": "issue"
+    },
+    {
+      "id": "nthu_article",
+      "docx": "docx/nthu_article.docx",
+      "docx_sha256": "c7ab7d0a9e02e9a9b87c47b49b6dc19dd8435ef2c77a0a95eb2e2e2df320cd9e",
+      "pdf": "reference_docx/nthu_article.pdf",
+      "pdf_sha256": "b021393f38117897bdd7b86c853ab0466abca0d2e7607a9ea94d20ce21d2134b",
+      "reference_application": "LibreOffice 26.2.0.3 (X86_64)",
+      "suite": "issue"
+    },
+    {
+      "id": "docx_classic01_single_paragraph",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic01_single_paragraph.docx",
+      "docx_sha256": "08a6a9771bc84787f00d111bb78ed15a7e2e51852908307c866b9262bf8d5db2",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic01_single_paragraph_p1_reference.png",
+          "sha256": "58cdbcd3b3c28d13bd9c9f81361aad57cbe856a4db0e112e71f7f22f25a99732"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic02_multiple_paragraphs",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic02_multiple_paragraphs.docx",
+      "docx_sha256": "aa93e2be8e2a9c3c5b92b5aacafdcc3a643785b93e895a1044bbf94b61ef2ee2",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic02_multiple_paragraphs_p1_reference.png",
+          "sha256": "3055c4f509f6fc880e7e4c74a9c40030826f2ba65b1563ff5a0a3fe58eb6a5ed"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic03_headings",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic03_headings.docx",
+      "docx_sha256": "96fa70a99edeb79611a7b8c09c915b9f949c5f864dc2e132110bca5f16e52e7c",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic03_headings_p1_reference.png",
+          "sha256": "b8e3e5d09fad26bcad1bf361b6ad2bdcbffdab9f654f0c11f0c62a6e5dd556e0"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic04_bold_italic",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic04_bold_italic.docx",
+      "docx_sha256": "287055122d7ccc8368e62fa6f4cdfafdda99dae1533a57f6250ca03b4d6d8e30",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic04_bold_italic_p1_reference.png",
+          "sha256": "94a769d48f8af097a7989a043c8efea94e7d4f477ec9dcd793a2b1a512705c27"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic05_font_sizes",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic05_font_sizes.docx",
+      "docx_sha256": "155b8f67a6e18187e7b9a8c28f1489b0379311bd65022cfdf1b9fa8cb4819ff5",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic05_font_sizes_p1_reference.png",
+          "sha256": "08b19faff67e2194c61a5dca24679053b49399afb02960417ed323592cc7034a"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic06_font_colors",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic06_font_colors.docx",
+      "docx_sha256": "c836fdca0b13ad6d71d5ef02d50ffb7305b15d85dac992dd835db945d2df74f1",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic06_font_colors_p1_reference.png",
+          "sha256": "72d1f5b6f6719ad8d904e73193118f6f8c804e08415e1d41f2db493c90af6cef"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic07_alignment",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic07_alignment.docx",
+      "docx_sha256": "baadc144e987e1257eda16797c3aa60d16524f2b192e448e880ae4c4d9e22a21",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic07_alignment_p1_reference.png",
+          "sha256": "7258822b2c2a7f476fc2ce92a1cad1c859ba27196b60292fa2e3d2b238989486"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic08_bullet_list",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic08_bullet_list.docx",
+      "docx_sha256": "9967a3c7741849eb7ec09ca7dd7cabecdc3a413af43c24639e5f04edc0536911",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic08_bullet_list_p1_reference.png",
+          "sha256": "222ac1bc54ec60e598fe4e9e1c8efabce16019e72e4f0a598470363dd2be8058"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic09_numbered_list",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic09_numbered_list.docx",
+      "docx_sha256": "8cd27e3c4a659367272dbca58bacc9e130d281d5e80a26af13ed97b07a2d1271",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic09_numbered_list_p1_reference.png",
+          "sha256": "4b7edff626ebafa1d9f830e8001949f02764f117be67e9fc2fe62c59e2dcbe54"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic100_multi_page_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic100_multi_page_table.docx",
+      "docx_sha256": "d11504e8955720a871998dd01ca0f2844266a125e9a75adea2f297227671b05f",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic100_multi_page_table_p1_reference.png",
+          "sha256": "4082adcdb67367a8d9cb7be303549cb916edb7a954eceef9728dc76a392db81d"
+        },
+        {
+          "path": "classic/reference/docx_classic100_multi_page_table_p2_reference.png",
+          "sha256": "36791a3cb4fe711381037292046ebdea080f2b6abf382730dec090daadec0e2b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic101_warranty_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic101_warranty_document.docx",
+      "docx_sha256": "d3467bee544263bf3a8a58e23ecb86416c57bb2d659fd94468f131daabe07ad3",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic101_warranty_document_p1_reference.png",
+          "sha256": "5170e78c378369031ae3f7335a1fcbbca3664f7e4239552b16b67091f1d9f1f1"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic102_curriculum_syllabus",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic102_curriculum_syllabus.docx",
+      "docx_sha256": "f04109bb98735b15ce16c48a7cec55955ddb768c0d13bd697096a8d6066355f9",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic102_curriculum_syllabus_p1_reference.png",
+          "sha256": "ec7131def419235fc1445a957d088fb093b38fe943fd34bb57f76453049df8fe"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic103_event_program",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic103_event_program.docx",
+      "docx_sha256": "9391ff69f865e6b1f41db5c0ff5e40a38dfb2e0e943cc5c94f3e23b51531e1d6",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic103_event_program_p1_reference.png",
+          "sha256": "aa2e63a7c9afd79202ca8bb60ac22116e8f73794dfec3c23a6c920dc48069f13"
+        },
+        {
+          "path": "classic/reference/docx_classic103_event_program_p2_reference.png",
+          "sha256": "a3414cd78e0c5cb0c6433c1ab333e8ac0c4c51b239a11393bc50bddb699f3eea"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic104_sop_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic104_sop_document.docx",
+      "docx_sha256": "37b17c5481c787a5b4e30d20c5d8b11b540eb0f4d2b61e20523fb63910e732c8",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic104_sop_document_p1_reference.png",
+          "sha256": "c422c39d3656a058a5dd7fb8bee6ea8a3b94bf596eca553f54e02eeac6c5276b"
+        },
+        {
+          "path": "classic/reference/docx_classic104_sop_document_p2_reference.png",
+          "sha256": "07263a6df6d376d09588d4806bc27bc6ad062a7393bfaabf1a73feec659cef41"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic105_certificate",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic105_certificate.docx",
+      "docx_sha256": "0ae0f3ac39a2cb5e55ffe4894fb5638f5f77f2a20538420627172c11dce1a5fc",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic105_certificate_p1_reference.png",
+          "sha256": "762a89935d594268427a0876b6861a8709ded81e9bcf0de32d07e07acb94c298"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic106_multi_section_orientation",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic106_multi_section_orientation.docx",
+      "docx_sha256": "59d85e3983c98ed410fed193ee17e9b2c9dd21ebb681a5a36c91b82b553be7ad",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic106_multi_section_orientation_p1_reference.png",
+          "sha256": "3267522aba9725236fb8fb54301ff0f690506a935593ceb5cb69d96b3178b07d"
+        },
+        {
+          "path": "classic/reference/docx_classic106_multi_section_orientation_p2_reference.png",
+          "sha256": "c73efd59d4f8f3a4546e7533fbc1d235a423bc79517db2d3d2f82b84fff62516"
+        },
+        {
+          "path": "classic/reference/docx_classic106_multi_section_orientation_p3_reference.png",
+          "sha256": "0e922f0414ab613ae4e3bb32f7b913759682de22a451f699b74c936a194fcd3d"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic107_order_form",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic107_order_form.docx",
+      "docx_sha256": "c4fa92bf6308f5df3df00ea87c6aaaec3b262f2c0b4faf1c233ef6b5641bd565",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic107_order_form_p1_reference.png",
+          "sha256": "890e4d6b9cd9f6d22ce934754b65752601bdae39b6430ca3f96a014bbfc8add0"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic108_comparison_matrix",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic108_comparison_matrix.docx",
+      "docx_sha256": "3e9d05e5454d7370cc3869fbf6100da8c71e6d9f5e602a915c2495a69c796fb8",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic108_comparison_matrix_p1_reference.png",
+          "sha256": "8faa0011dc37ac71dfab8e6f5a2e0e7c801fa1dd73de9c8740067b38ca1480b8"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic109_release_notes",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic109_release_notes.docx",
+      "docx_sha256": "23a471e8b02eeed7efaafbc3ecaea2d476c8ec6ec1b92495f6fb850ffd307bc9",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic109_release_notes_p1_reference.png",
+          "sha256": "ca77f23cec15efa6191f427428ee58b6fc84ef881b7afbcb28f7b8515c2ef34d"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic10_simple_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic10_simple_table.docx",
+      "docx_sha256": "f50677e7edb5146933a74183c5ce2fee29d9568ec8a76319fafba5a5209967bf",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic10_simple_table_p1_reference.png",
+          "sha256": "ec67c5e86a3a4f052870f063c86e4b26a9c2c9a77b6ebd7fdb5469e72c85290d"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic110_troubleshooting_guide",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic110_troubleshooting_guide.docx",
+      "docx_sha256": "9f739c2acbf64dfde9dcf8202c2191d109a728d9e502dd8a95bc3a909b76e879",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic110_troubleshooting_guide_p1_reference.png",
+          "sha256": "60625460577653c6cb37e9f72cbf6e9eb3a70a11f8db20fc780adfcc723d8d12"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic111_meeting_agenda",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic111_meeting_agenda.docx",
+      "docx_sha256": "b86f2242aca4e19623b38b6c74349a71ec9e3bf69fd2852f4e6b6d50c4c1bf88",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic111_meeting_agenda_p1_reference.png",
+          "sha256": "37cbf7cfe878dd4eae10c1e0b0a268b1aacbb8e818c8487786d47a790a3de98e"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic112_project_status_report",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic112_project_status_report.docx",
+      "docx_sha256": "faa1d2941ed34cfcd84ac70a02117c5a0614926cd98b1cc14eb5ecaadaa997f2",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic112_project_status_report_p1_reference.png",
+          "sha256": "6fb31f68bf42e05f2756fbedfcc8d143385e55761cbb7b58ad8b478056635421"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic113_address_labels",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic113_address_labels.docx",
+      "docx_sha256": "f41ba674705f4a2a916e4a34ec22154f893d134a5a4c463fa0b05bc6e67b99ef",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic113_address_labels_p1_reference.png",
+          "sha256": "2812bbe06dda8f4619905bd62d4510e8786d9e3dd5257b58dfb1303c8a175172"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic114_test_report",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic114_test_report.docx",
+      "docx_sha256": "51a10d0df2117bd4b8387d05723fa9644608ea57cc2d8649b6b3c40aab5b9a03",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic114_test_report_p1_reference.png",
+          "sha256": "2cc829565d73eeef2c55dbe6d67fb354fe3206d28088fab6d5ae29bf7779fc01"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic115_price_list",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic115_price_list.docx",
+      "docx_sha256": "333eee850f94a8c2d38cfc282f1cc24b7b51828451375829d32cacfbb4bb340c",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic115_price_list_p1_reference.png",
+          "sha256": "625f55905378ab94f667a8c9e51a88dc5f2bf94ed792d5cebe845d1cc3c8a592"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic116_risk_assessment",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic116_risk_assessment.docx",
+      "docx_sha256": "0806dc5cb4ad2c2930b084adc18991af7749cd6561347b215dcef2fb239e4743",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic116_risk_assessment_p1_reference.png",
+          "sha256": "54ccff254c1b19072264b2e23fb32623c15a62c85fa6ea91ad475e6377a7b125"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic117_employee_handbook_excerpt",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic117_employee_handbook_excerpt.docx",
+      "docx_sha256": "3863a55296a01ae0c233948f25600302fabd8a51055860e533b092a49f8f995c",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic117_employee_handbook_excerpt_p1_reference.png",
+          "sha256": "2719004ed1daca4d63349853406333b73ad9c514da33f3613cbcccef2dc98975"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic118_data_report_with_summary",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic118_data_report_with_summary.docx",
+      "docx_sha256": "48d068df0dc269281dbe82053efbd78823f90c4d4577f84e3c447e1da42a1fa6",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic118_data_report_with_summary_p1_reference.png",
+          "sha256": "0d5b6b92e2a97424113047184b9df0b7df7592ac6dc814c90f7c464f08f781a1"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic119_multi_language_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic119_multi_language_document.docx",
+      "docx_sha256": "10e40ac8ae3f392793da23b63a97b0851aed45a91385dfe51f4bdc6bca7bc1c8",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic119_multi_language_document_p1_reference.png",
+          "sha256": "6f0e6c212331d8f70fb4306387452d6a2ef68b96948c2f8d60c3b9cc175b844c"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic11_table_with_shading",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic11_table_with_shading.docx",
+      "docx_sha256": "944fe130c4c991999e06332791bedbb56db87cca0a12a4ab76851e9ee5277806",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic11_table_with_shading_p1_reference.png",
+          "sha256": "d443a0b3844e6ff20f8739e3f28049af555fb178fc3b68699edf2bca237445e0"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic120_comprehensive_business_proposal",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic120_comprehensive_business_proposal.docx",
+      "docx_sha256": "c02943a9a8e94dad5035b5569eb08307d786635e9691c4c307f2bdaa607c22b7",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic120_comprehensive_business_proposal_p1_reference.png",
+          "sha256": "21691aef17e6ef90722e1037bd91fe4f703569f97bd68f21675f28788dacaa25"
+        },
+        {
+          "path": "classic/reference/docx_classic120_comprehensive_business_proposal_p2_reference.png",
+          "sha256": "0f623f25292a822400a689b7126d9cfca6452eb2b02eff8960076998ca228eac"
+        },
+        {
+          "path": "classic/reference/docx_classic120_comprehensive_business_proposal_p3_reference.png",
+          "sha256": "44d5e4fdc3d8ea97e18e2b6bca19459b527a15e50a6037f13092b5b2c6018ff2"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic121_thin_border_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic121_thin_border_table.docx",
+      "docx_sha256": "982a93f975b0ddb7f9ce24c5f01c8a16e2b31d62d47deeece78dad65267673ab",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic121_thin_border_table_p1_reference.png",
+          "sha256": "372ae557c4e3fb7156ad8ccf63b25b0ff3105744dcecf9708f725f43d403ce24"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic122_thick_outer_border_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic122_thick_outer_border_table.docx",
+      "docx_sha256": "609c6263c56ba690d0512971c76c60c0acfd7ebad6eb9ef30348f82090a23835",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic122_thick_outer_border_table_p1_reference.png",
+          "sha256": "7159155c69e182181557ef370e07c1c39914c660289e330b1d5bcba0f80caec3"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic123_dashed_border_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic123_dashed_border_table.docx",
+      "docx_sha256": "cc6f0abe8c244144488c0e52dba09556739ba7b2a29a44d8197b56ad5aad6075",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic123_dashed_border_table_p1_reference.png",
+          "sha256": "258e7cf349a7cfb98de324397d78d489f40ba6a8657fc0563fb89c245c1a4e93"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic124_colored_border_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic124_colored_border_table.docx",
+      "docx_sha256": "f48ef1ffd077106fd90b81ebd859f4d6034086eaae91b1fe1afbe04695f8ec0f",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic124_colored_border_table_p1_reference.png",
+          "sha256": "fec1a6d7a87bffd02e283a97e96e0e5100db92a62b7a98cc02c2602e62accc19"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic125_solid_cell_fills",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic125_solid_cell_fills.docx",
+      "docx_sha256": "04a6f23fa80fcd1b352b72eb1bcea459698cf5aeb58483596966261d41062929",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic125_solid_cell_fills_p1_reference.png",
+          "sha256": "9f48a05febf472df21cf08d53ab8a38704f834a2c5ee098475e762b8c51a7d9f"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic126_dark_header_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic126_dark_header_table.docx",
+      "docx_sha256": "3224270668ad6dcabf64e337c6c2c8f4776d0eba3454c6725f9d65106f8f892d",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic126_dark_header_table_p1_reference.png",
+          "sha256": "4fb29cc5a0c247f60034c8b3d18ffc0e35e8f752143e9d4a6d6688698075f134"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic127_font_styles_showcase",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic127_font_styles_showcase.docx",
+      "docx_sha256": "e4be811da1035dab3dfced660931d2634deb982d3be3cb7f346843faebdac8ae",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic127_font_styles_showcase_p1_reference.png",
+          "sha256": "029d6f739266069d79f09644062ef3e553bd762b2684c94cb8b0ab2f4cf27399"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic128_font_sizes_showcase",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic128_font_sizes_showcase.docx",
+      "docx_sha256": "08035d22bfb94395899f394e15dd60b4525a643ac3eea73162fec9d760dd5deb",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic128_font_sizes_showcase_p1_reference.png",
+          "sha256": "cd27eda3448f571de3178ef79bd9911016d0be502184d318e089ccc22c577446"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic129_alignment_combinations",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic129_alignment_combinations.docx",
+      "docx_sha256": "1b2c471f4e9f64d509ae380b12d76e4b57bd57eea8deebe8c64d8c2d568474aa",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic129_alignment_combinations_p1_reference.png",
+          "sha256": "c6829cce633998e471b0cf28463623f16e1ca247cee4ef6680adacd4f3dfd0eb"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic12_merged_cells_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic12_merged_cells_table.docx",
+      "docx_sha256": "ad57e629f91a597625ed631dfdc41870a58b8304ecc412b2828917e6ec03edfc",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic12_merged_cells_table_p1_reference.png",
+          "sha256": "c80ea995534022a2ead4ae2702da13e87b879f9f6bf9a4292c49d2c0b65760cb"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic130_wrap_and_indent",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic130_wrap_and_indent.docx",
+      "docx_sha256": "96c88bd8004a84ce428c6ad8652302cf6b12e6d541c8532dc746891d772806e6",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic130_wrap_and_indent_p1_reference.png",
+          "sha256": "9b4482a0bd3eeb2de8e504ee4400f6ea53e051221e32c9d441916da33c53b65b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic131_number_format_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic131_number_format_table.docx",
+      "docx_sha256": "fd320cbbb6e1f8ca8c05f0dfb123cab2b7a0f36af3b455cf50af0d50eb1b8783",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic131_number_format_table_p1_reference.png",
+          "sha256": "30c6b1618ae5782ae012667103c298b7173f501ae2a9a07343e6e965499f30c7"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic132_striped_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic132_striped_table.docx",
+      "docx_sha256": "26988268ae76ffcf3c64469146c98db917d5c9224d728355b865aee3fdc95c2d",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic132_striped_table_p1_reference.png",
+          "sha256": "d910a4352cd313d54aba82a6e560a4e8b0ad4941e3606bcdc558b870b7a40dd7"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic133_gradient_rows_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic133_gradient_rows_table.docx",
+      "docx_sha256": "bc03447dfb2d9c3c80829d7001fbf9f0e6c5b56d876844f563d6398470f30174",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic133_gradient_rows_table_p1_reference.png",
+          "sha256": "0be55824b79ee66240ef8bab6c615fd0e1f3fbc162934a8b89fc7f39e0971bf4"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic134_heatmap_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic134_heatmap_table.docx",
+      "docx_sha256": "4fe3cb803eeac5648914684c0006d26bf93b7cb84406723fd668f3d9e51bb4da",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic134_heatmap_table_p1_reference.png",
+          "sha256": "39fdb1d87fa1090f354873b1ab2d0abff53b8eed87433e91a6cfe263966b2c77"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic135_bottom_border_paragraphs",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic135_bottom_border_paragraphs.docx",
+      "docx_sha256": "60a27e01786e29d1e72ca56026ea3d426e41a911b35ef1dea9efe80839229deb",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic135_bottom_border_paragraphs_p1_reference.png",
+          "sha256": "21b695ee8c9040fd8ecc8d178529c9dcf52721443731880e147f0916a12f2102"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic136_financial_statement",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic136_financial_statement.docx",
+      "docx_sha256": "4cba571eca16f6ae60aee7f15743b6044a2f80d3b1350e80e77b61bb53d47063",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic136_financial_statement_p1_reference.png",
+          "sha256": "020c55c880bec1b1fbcd39c33fa97ef749d38d09721d1a34148b5a7aa9e1bf2b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic137_checkerboard_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic137_checkerboard_table.docx",
+      "docx_sha256": "1ed5c9b294449fa22f585ff29011797f53d9eb6afc893ce7fa8d032f52b02b97",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic137_checkerboard_table_p1_reference.png",
+          "sha256": "2433cd2ae4a2bdedaa2e3be0dcca64fb1e70005b27f1cac65ddf0223c739ce4a"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic138_color_grid_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic138_color_grid_table.docx",
+      "docx_sha256": "b8e5c2a8249019483ad57741139503533c4f5cc74a8f419aef52222e8f31ed54",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic138_color_grid_table_p1_reference.png",
+          "sha256": "96e2f3c1ebb57a8dccb9e6358b71f3b9512b8d56af18677bff8eca22cf967ee8"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic139_paragraph_shading_patterns",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic139_paragraph_shading_patterns.docx",
+      "docx_sha256": "d32f9b2bdfcd04f3577121d5ffb55087becc4d5cfc30fb493d2a070975668f15",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic139_paragraph_shading_patterns_p1_reference.png",
+          "sha256": "064ccbc5dd066c034a7625e3bf9f3ed0130df2f19d13301238c41a8cab5d59f8"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic13_long_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic13_long_document.docx",
+      "docx_sha256": "998c97b54b34502bd5fdaf6f5d6856040225119f8cda4c9bfef16108a9ea0f2b",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic13_long_document_p1_reference.png",
+          "sha256": "079035bb6ed6ddf45c338364f2f5022455f619f65c68c9aaac0dc6f2c4cd0aa4"
+        },
+        {
+          "path": "classic/reference/docx_classic13_long_document_p2_reference.png",
+          "sha256": "6ead2382b26cbe8b8381b9e51c0535c06e11cdec468ac11e136ebea0c4b8c984"
+        },
+        {
+          "path": "classic/reference/docx_classic13_long_document_p3_reference.png",
+          "sha256": "9875083552118eec4bb283e8ba8e5fb104cd7e5238b2062db1bd9e1bfc9f462d"
+        },
+        {
+          "path": "classic/reference/docx_classic13_long_document_p4_reference.png",
+          "sha256": "e96c390eca3e842e24c0a7177c468b51a9aba190932db3d5a049eccb76d12833"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic140_rotated_text_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic140_rotated_text_table.docx",
+      "docx_sha256": "663486f1e0361c586ebf04edd92c437522e54b34ecde85f31060a88f3b3da4a7",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic140_rotated_text_table_p1_reference.png",
+          "sha256": "7fe50696b7c1c2b7de57214a0e6fff74aaf801d1d050223bd9d96008b2c56d82"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic141_mixed_border_styles",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic141_mixed_border_styles.docx",
+      "docx_sha256": "230c8bd56b1920c8499d49075b60f4abb0af7a287ae65cf1a7c67e14ec2a7477",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic141_mixed_border_styles_p1_reference.png",
+          "sha256": "757f327a9d4c80382d69a39ab29f910744362ac76ddd625e55fb5a973145ee7f"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic142_styled_invoice_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic142_styled_invoice_document.docx",
+      "docx_sha256": "d6136d29ac49275b1516e379e36aac01da59106cda4a29a5e75f157a2d13c347",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic142_styled_invoice_document_p1_reference.png",
+          "sha256": "e15080d4d16751ca6a0abac06a82177276d0e7b821982b3a7a927d90bb2f7636"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic143_multi_section_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic143_multi_section_document.docx",
+      "docx_sha256": "c3b35fc14f72beb4e8de977a9a2965f472c8c856b7032f6c40a291802f3773cc",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic143_multi_section_document_p1_reference.png",
+          "sha256": "44d173005b3a2e1bd51aac0b5a6aa010f5b4580269ca705d601e5d246f3424f1"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic144_note_style_paragraphs",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic144_note_style_paragraphs.docx",
+      "docx_sha256": "10765264e8401e733c31cb5e2afce4fda81c26d0993e55d7d198285ebc49aa34",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic144_note_style_paragraphs_p1_reference.png",
+          "sha256": "423e511866ef952ec14c493614812620fa0bbee73439e1482a239f70fac3d632"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic145_status_badge_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic145_status_badge_table.docx",
+      "docx_sha256": "a4a57bccb4800fd11cc587ab326f0094093e226dacd0c27dda01f5693cf00c4b",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic145_status_badge_table_p1_reference.png",
+          "sha256": "87e03f561538ea092ca91ae096063046ba0dad31d2975cc82b1ad3b90bf23c27"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic146_double_border_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic146_double_border_table.docx",
+      "docx_sha256": "620ca4465f3d16ab96f276a5cee5caa8fca07c35628a5caebd084f02f4a26921",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic146_double_border_table_p1_reference.png",
+          "sha256": "285c800f13b96063c8a713598f41181780d8e88e3f9a74910df19f1934452988"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic147_multi_section_styled_report",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic147_multi_section_styled_report.docx",
+      "docx_sha256": "1a7654780baaabf41a7d22e45f80b0171e5584da31be3979ba2d9847148cff46",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic147_multi_section_styled_report_p1_reference.png",
+          "sha256": "71a1c6f754c00c5ffb312d47cf5648ad7fccffc4eb8934155aa73d291cde22cc"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic148_data_grid_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic148_data_grid_document.docx",
+      "docx_sha256": "4ac985babe0e391fbbdc0865d0b5919fb0c2a9407a8e8374da8a055115ed74e7",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic148_data_grid_document_p1_reference.png",
+          "sha256": "255155263d2d45a7e6baeb96c2f925c9d8bef6b230b9f2bea72be0dad5a9d10b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic149_merged_section_report",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic149_merged_section_report.docx",
+      "docx_sha256": "0970a6f8deda0f33dc0aeeb621e13aa4d67b36e163a1bb87dca4b3905e56aa7f",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic149_merged_section_report_p1_reference.png",
+          "sha256": "506103ccb58d9212f289840551ca1081b80a0ed4d278f4794440b17dac034e97"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic14_mixed_content",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic14_mixed_content.docx",
+      "docx_sha256": "84d0e1546d45b396a804c4e9264c46fed04ad8ae2bc36587924d07a82a8c7b36",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic14_mixed_content_p1_reference.png",
+          "sha256": "361fdc51ab4aa93e27d08b4198097fcbb2df33cece347d2e63a0e098df7dd8ba"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic150_kitchen_sink_styles",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic150_kitchen_sink_styles.docx",
+      "docx_sha256": "0f3b3690f5bce5ad30728cb2b36b666747751727a5ab5e14b4f12a07f336c729",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic150_kitchen_sink_styles_p1_reference.png",
+          "sha256": "193ba11b780793288bcca3a65bc4d65bec7c3e78ee0b5f028ecf94204e7beeff"
+        },
+        {
+          "path": "classic/reference/docx_classic150_kitchen_sink_styles_p2_reference.png",
+          "sha256": "97611832706ba09f79843de0e4e44638717e8549974ff263dca8334e13898138"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic15_indentation",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic15_indentation.docx",
+      "docx_sha256": "20908c32036972ede7e3dbfdc441e48457e13c003f4d30434ec45d7f8298ca2b",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic15_indentation_p1_reference.png",
+          "sha256": "b390943c5dbe3011ca0cc5f96ce3ddc79ea30563029659adc21b46ca2c2fb7fb"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic16_line_spacing",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic16_line_spacing.docx",
+      "docx_sha256": "510876330b4d4a9d99a2cdc97fa98d30c68914f80f61faea3fa921f45eed7745",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic16_line_spacing_p1_reference.png",
+          "sha256": "a4393241326cea709bc82a83f8d92b739ef93b108dbd3bf65717aa31c90b91ac"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic17_page_break",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic17_page_break.docx",
+      "docx_sha256": "ad08c680b348ec75749f3cb6b088c2785b892e09fa76ded3a02df333f6a72232",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic17_page_break_p1_reference.png",
+          "sha256": "fd9392bcd20b0774010c250f4fd61b1e480bac7eeb958a1b2b79dec64328bef5"
+        },
+        {
+          "path": "classic/reference/docx_classic17_page_break_p2_reference.png",
+          "sha256": "bb0d351106f80882b94859b1edfb14b874da80cd37f4c38e648b42d6003d2785"
+        },
+        {
+          "path": "classic/reference/docx_classic17_page_break_p3_reference.png",
+          "sha256": "76a9600ceaa8b7c4edad00672e931e351148c39e7446ffd53f451a29cb5752b7"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic18_embedded_image",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic18_embedded_image.docx",
+      "docx_sha256": "ec779380e238b84f538107bb1719d480b1a7572a8e55684596b6150648a1d86a",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic18_embedded_image_p1_reference.png",
+          "sha256": "d0178431fa50e14afbf4fc71f1b8f6714e49d2217b9e49ad87a13a0be592ca6f"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic19_multiple_images",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic19_multiple_images.docx",
+      "docx_sha256": "e59b0fd5bda79d37cc1c4055a55acb52e93a88b8b404cdfb5dd25c152e6e5df1",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic19_multiple_images_p1_reference.png",
+          "sha256": "d4adb83ef371e3dec29d7130d1518ee03f53844816793c6fd8e6eedfba225943"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic20_table_with_many_rows",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic20_table_with_many_rows.docx",
+      "docx_sha256": "e091aea3d45befe7db3d522eb9a14322eebb38475655ca516b56bc119a58965f",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic20_table_with_many_rows_p1_reference.png",
+          "sha256": "bcb16a46dbeed29a4faca7190d5e46b8f82a32905b9ef534ab8657d618dcc02e"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic21_nested_lists",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic21_nested_lists.docx",
+      "docx_sha256": "b7e76fc4ee51b256cdd2ca9f3bf035f484f1a52a0f5de06ce7bfab76c8fbf9b0",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic21_nested_lists_p1_reference.png",
+          "sha256": "02e68b159ad61cafe1e1359f66e73a5a30b7ce53faa8d9ea1103a98b11b61964"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic22_horizontal_rule",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic22_horizontal_rule.docx",
+      "docx_sha256": "67c6c9a2ef72682073eb60516ea002714960a4c05ff6b29ac16c980242bf1d0b",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic22_horizontal_rule_p1_reference.png",
+          "sha256": "6f62af0ccb58b1783ea7cc80eaba8973c9e5359f81d0a71547608aa7db28d00e"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic23_mixed_formatting_runs",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic23_mixed_formatting_runs.docx",
+      "docx_sha256": "939612dfaf625e14586168ca351911daf5044a15d5409ee65bd06863a8ee9bf4",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic23_mixed_formatting_runs_p1_reference.png",
+          "sha256": "e56e1f8e5747b09716c87077bacd06a0d8fe93cc853383249bde1a8e6471d73c"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic24_two_column_table_layout",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic24_two_column_table_layout.docx",
+      "docx_sha256": "cdc16fa4f1c27f10beae9871143ec530beead347d78a500de42b94f2b11c5951",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic24_two_column_table_layout_p1_reference.png",
+          "sha256": "66b6efbf94d1313d72fd1c7d91777d7783e77fa089f60ee5e61ce7b267fbf829"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic25_title_and_subtitle",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic25_title_and_subtitle.docx",
+      "docx_sha256": "fe4aa832cdcd91c09a56b0de6bd1a4e8d031f892a3748bd54e776f39424973be",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic25_title_and_subtitle_p1_reference.png",
+          "sha256": "2351a170157c568b5717ebd301e39df1208bf86ca3ba2aa8fc5a76c9ad84128b"
+        },
+        {
+          "path": "classic/reference/docx_classic25_title_and_subtitle_p2_reference.png",
+          "sha256": "f77b5e2697fb92aaa2d28b7982bf15647bff3546c2326c3bb7596617872ee5b1"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic26_table_alignment",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic26_table_alignment.docx",
+      "docx_sha256": "4e56cce71e1f33dc0492817317e45db4d5ad9b91e33991c21abdfcac22dc08d1",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic26_table_alignment_p1_reference.png",
+          "sha256": "933ca0719a155dbc80686f1f4d4b9de34a956f1e436cfc6629d5c49d56e05a8b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic27_long_paragraph_wrapping",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic27_long_paragraph_wrapping.docx",
+      "docx_sha256": "b1f39a3c04c8068e59fd3e94cdd14a5916b32275c5f11e750e86f691322cacbb",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic27_long_paragraph_wrapping_p1_reference.png",
+          "sha256": "458eeea76d09d251f951a5d22a8cee5c73555fd32ea6f91f831bd0687ba0f7a7"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic28_special_characters",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic28_special_characters.docx",
+      "docx_sha256": "052c4fe5196cbb99900bb35a3b935cee0880ec444541bd1513ef0fe562865df1",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic28_special_characters_p1_reference.png",
+          "sha256": "b875db1a29f32b4900ef9caa34fce2126bc91a751b2143fab0aace6a9d21766a"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic29_table_with_image",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic29_table_with_image.docx",
+      "docx_sha256": "d9d4f47b908e142e45666eb2e73cc3f71b47ee9cf3808a52d72bbbb1b56ca9c7",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic29_table_with_image_p1_reference.png",
+          "sha256": "b05f368c37b102e198411bbb21358ec40a5b7e0912fd9da60616be6ae5831fbb"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic30_comprehensive_report",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic30_comprehensive_report.docx",
+      "docx_sha256": "81a18d7439fdfb6c373ad596c0f2dc15a44e179043d83dd7268d2f37e2f32b8a",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic30_comprehensive_report_p1_reference.png",
+          "sha256": "2ab908f961b19e59e16fd3d130a64b99672dea8ab324c41fe978c3d7aadf510d"
+        },
+        {
+          "path": "classic/reference/docx_classic30_comprehensive_report_p2_reference.png",
+          "sha256": "3922124ad9d128838cd09a786e7736d39bb617347216808b0990788755056aa9"
+        },
+        {
+          "path": "classic/reference/docx_classic30_comprehensive_report_p3_reference.png",
+          "sha256": "df8344764c8d804e5bda5a273d5ee1c21209e54c482d9d085efb3c932cab6d36"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic31_strikethrough_text",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic31_strikethrough_text.docx",
+      "docx_sha256": "b31f884d66ef6d136dab96ab1467d9e81cc5898dd8ab5e8dd089428ec198ed1d",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic31_strikethrough_text_p1_reference.png",
+          "sha256": "48e500af526f4d2a681844d9fcbc5b2faccb81fff1c96beb0142d38986a69180"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic32_superscript_subscript",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic32_superscript_subscript.docx",
+      "docx_sha256": "eb3c8cf358deb320e229e0625539f98958a6d6bea299a455494c434935ec1187",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic32_superscript_subscript_p1_reference.png",
+          "sha256": "36ad08f9a5f1e433523ab9ba2f3af9294967786e690f1d2732af67328c79419b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic33_highlighted_text",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic33_highlighted_text.docx",
+      "docx_sha256": "6434ee8b30e6430583040826dbd6f0c0b8e99713399545533e74b979123ab785",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic33_highlighted_text_p1_reference.png",
+          "sha256": "1fb3483c97a67d03d7aef0cbf0d34e563c6372bdb96a73927b01bd5d0cdb9842"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic34_paragraph_borders",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic34_paragraph_borders.docx",
+      "docx_sha256": "debb224ae5244151fc1fef543a8c08b0f9c176cf962ebb9b62f83c4a701c6677",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic34_paragraph_borders_p1_reference.png",
+          "sha256": "02898f4e09323111c4e66d4dc9f640f2c3e9889340467f4eb8359b855088baf7"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic35_tab_stops",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic35_tab_stops.docx",
+      "docx_sha256": "cfd1e77e57fc1ae036eb4f6ff22fe6aebb66b26a33d00cf099baa86c25cd167b",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic35_tab_stops_p1_reference.png",
+          "sha256": "09fad911d0ffef00a14c369c1a0918e0351c44f01e3a3dfc5f73e012f6fd1e3f"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic36_wide_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic36_wide_table.docx",
+      "docx_sha256": "5991a47299e367586d155e943d485093a6066bfb6631828f1971c42b3dbfd933",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic36_wide_table_p1_reference.png",
+          "sha256": "a52e6b90e329b1ecd28f09d53370c593ba01769b507cfb1760f7d8c962b26c9d"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic37_nested_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic37_nested_table.docx",
+      "docx_sha256": "15ac2fa35c2facfb325d19692c5fa21200ee370f7bb1ade691d4f1bf4b9bf45c",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic37_nested_table_p1_reference.png",
+          "sha256": "9bd394c6eab67f5b7211a6c051077836db22398022f0972f42ba479748f3b3be"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic38_table_column_widths",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic38_table_column_widths.docx",
+      "docx_sha256": "f018cf86d77fd189da27631792056b8b52ae8da340ad92c3927e8f4a39d4972b",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic38_table_column_widths_p1_reference.png",
+          "sha256": "5f42f47857af5f106f8322e14f58ba1826460771d54aa83bf53a2b5dc96fbb90"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic39_financial_report",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic39_financial_report.docx",
+      "docx_sha256": "8c35539ce29d2b7748fcf64f5a55bb203a48111cde1f3e59583cce18bba4674c",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic39_financial_report_p1_reference.png",
+          "sha256": "742825a5b1165ee5d3044113ff5bd5a96b168963095e3c63d74da7849f9e83ce"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic40_resume",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic40_resume.docx",
+      "docx_sha256": "c5d50c8522f83e2d595573f008cbc4dea29dcd03b2078b2e1b6f2092ec2347c3",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic40_resume_p1_reference.png",
+          "sha256": "f4faef2b3ca069adb28fe7f1c895be53394794ab5c780238899f16a966edc137"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic41_business_letter",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic41_business_letter.docx",
+      "docx_sha256": "2cd70942c2e8de6a25d616866991c977e90d99b758bce0b9997dc76d35e351bf",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic41_business_letter_p1_reference.png",
+          "sha256": "151beeb044f044221eb1c1a06ffaeccce671ef1f64e98c281642df890dd90d7f"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic42_meeting_minutes",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic42_meeting_minutes.docx",
+      "docx_sha256": "10b41074efefc154651a2efb363a521960d0668391106b013550d2c9e7560109",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic42_meeting_minutes_p1_reference.png",
+          "sha256": "03684cc7fef95c10a92b5e5bd4e005fa7dfb93f90e4eab4ca418c0d790517c52"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic43_invoice_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic43_invoice_document.docx",
+      "docx_sha256": "6518522044f2d36bace4bd6bb6273be3ecd84d53c593e832a8084759f7517762",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic43_invoice_document_p1_reference.png",
+          "sha256": "03e7fb6e002ba498bf409cbb80ac4a8d676ca08e9c3471a484c66a5d8a575bab"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic44_memo",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic44_memo.docx",
+      "docx_sha256": "500fdacb00cbc222722afc0d9229f2f0f92ceb02ef9295a476f5d289d08cfb56",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic44_memo_p1_reference.png",
+          "sha256": "39eddd780b8bfca8e59b58230190f3a717dfb04fb4aed905e3e2f6aea481b8f2"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic45_project_plan",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic45_project_plan.docx",
+      "docx_sha256": "191f145518f0941bd746d4798b94bd9d8fdb7a890323210d695b9348144962e6",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic45_project_plan_p1_reference.png",
+          "sha256": "f71f68af6dfc9556d23a5c44653addf59a8a5f8756af90fb35a8907a910ce8cd"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic46_comparison_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic46_comparison_table.docx",
+      "docx_sha256": "104c79f58c28193c533d942716178765596f7200121495e0cf8332ee18ac36e7",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic46_comparison_table_p1_reference.png",
+          "sha256": "783f9e5e0ddab2da9c82b5ce00b0a6e383c251520007b25ad373236d9425794a"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic47_data_dictionary",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic47_data_dictionary.docx",
+      "docx_sha256": "5929efa3e0c36aaaa1cbfba3b949325cfcaad71916ce293c78d31ad8f7660a31",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic47_data_dictionary_p1_reference.png",
+          "sha256": "d4d70db5542d4f1d49f0f81321509204bc47cd428b36f170c989d7ddd46c6eed"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic48_multi_level_headings",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic48_multi_level_headings.docx",
+      "docx_sha256": "9bf14cdcba4959b3eac35b1a951fda52051732c4f08839d5ef0cda720eb67bc4",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic48_multi_level_headings_p1_reference.png",
+          "sha256": "d57adc1d6ca98ba097771aa36e8073821a4381461a50ea669a15b5774d6b4f4e"
+        },
+        {
+          "path": "classic/reference/docx_classic48_multi_level_headings_p2_reference.png",
+          "sha256": "e73dfc960aeee234be71a0160e212b1bb5d5c03b7dbb0caa0bec4d16ea0a01c1"
+        },
+        {
+          "path": "classic/reference/docx_classic48_multi_level_headings_p3_reference.png",
+          "sha256": "b898c211d508dc9bf53f4ebec7e02a5181d4cf3659ff6f7b5ad6c3c7d78ea78b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic49_cjk_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic49_cjk_document.docx",
+      "docx_sha256": "8fb413e425553d53210c8037582ffdd373a9c053b45d1e94e6081cb7e193459d",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic49_cjk_document_p1_reference.png",
+          "sha256": "cea6efc870b02b491bf3e8979712e0fe72e1095a1d5a106994bb1618f0899183"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic50_long_table_with_formatting",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic50_long_table_with_formatting.docx",
+      "docx_sha256": "732a06c9d2ae077fe75ea28568c39a6771dcd2e8e2b5d8c898b95d5ce31566b9",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic50_long_table_with_formatting_p1_reference.png",
+          "sha256": "3085aa9ca78ec7c0b101af5473fee678fb04cab50ea0a9cd49ee4b9b2ca05d94"
+        },
+        {
+          "path": "classic/reference/docx_classic50_long_table_with_formatting_p2_reference.png",
+          "sha256": "9e82401c586c5473fba59132f2e862c487973efe8925138b90b10f6044fc18e3"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic51_underline_styles",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic51_underline_styles.docx",
+      "docx_sha256": "99ef93b0d2f380a228807d6c10b1b71919b56276a4b9ed839dae3cdfb756ca36",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic51_underline_styles_p1_reference.png",
+          "sha256": "81cb65686b00e3cb5c4d4504e84427595f3f0acfe605f1d5dfc786381e6a0187"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic52_spacing_before_after",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic52_spacing_before_after.docx",
+      "docx_sha256": "75a47a111e4a7fd0102817ba55b0bdfd8b3e6cc52326389c605dbbd69f52da2d",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic52_spacing_before_after_p1_reference.png",
+          "sha256": "98ad22025702d571fa52eeab03ce72d370c135ddc82c202665e8f718550f0c2b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic53_table_merged_complex",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic53_table_merged_complex.docx",
+      "docx_sha256": "ccb0a1a6985ffe7ec9774e3401829299517fdc6f2f67a19f3d1de9a9f35e5a10",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic53_table_merged_complex_p1_reference.png",
+          "sha256": "637b860175137b7903c81bc8ab8a13b8bbe6fb72623a0ba046f00288ee8d2275"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic54_multi_font_family",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic54_multi_font_family.docx",
+      "docx_sha256": "6f2bcada925e9f0ced498ec31de051e1b05e5da0bfab4dce76c3b003d1748556",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic54_multi_font_family_p1_reference.png",
+          "sha256": "2f5ffba27bea6ea66b8c1c5bd143192b543b7d6c94905570965e16b1f63033b4"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic55_background_shading_paragraph",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic55_background_shading_paragraph.docx",
+      "docx_sha256": "228835b0de62aa46a90f70365311f7b8aae322ec90358bfa3819ec967b30a785",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic55_background_shading_paragraph_p1_reference.png",
+          "sha256": "2333c9b6dbadee37cd6db0721ae2293ae6c7eb45247f4fe1198668302dc747fb"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic56_images_and_tables_mixed",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic56_images_and_tables_mixed.docx",
+      "docx_sha256": "3d763ddb14a31301858f2fb549cb90d08e5509bde5f8c4bad5d68548b11756f1",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic56_images_and_tables_mixed_p1_reference.png",
+          "sha256": "49ea49e17c4318e648c70b0641fbafa4d72423cdaafc966d94dbde03e2334312"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic57_right_to_left_text",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic57_right_to_left_text.docx",
+      "docx_sha256": "2d9817a3b9c90e8bb4f29d5d00e7d53a4ad9760787f2faec1d2e6d1af6e2ebd3",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic57_right_to_left_text_p1_reference.png",
+          "sha256": "6312cb4d2c493a170cfdf39e3970c127e9302ad215547b237a098af49e330bbe"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic58_dense_paragraph_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic58_dense_paragraph_document.docx",
+      "docx_sha256": "c1fbf06194402197b9b2f901c72266ca0229ddcf70d47c5e4e86593c952f4b06",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic58_dense_paragraph_document_p1_reference.png",
+          "sha256": "ba7463b64c3a5ff3404b38fed06885d87289176ead47d58e338a52b3b02de18f"
+        },
+        {
+          "path": "classic/reference/docx_classic58_dense_paragraph_document_p2_reference.png",
+          "sha256": "15fab5c2e972875adc0db3839ef9462f9bde8befe830e7b5c739521afef191df"
+        },
+        {
+          "path": "classic/reference/docx_classic58_dense_paragraph_document_p3_reference.png",
+          "sha256": "2fda65b047001e1f8a62a252f9004592ef3acb6173c5520a4e680c42127e7738"
+        },
+        {
+          "path": "classic/reference/docx_classic58_dense_paragraph_document_p4_reference.png",
+          "sha256": "7508ce21c66bff5c8d19227c613ca35bfc69041237feae7ea42b968fc921dbce"
+        },
+        {
+          "path": "classic/reference/docx_classic58_dense_paragraph_document_p5_reference.png",
+          "sha256": "8a02b0860d2eaab35ad01201ed01bf48a14c3b21c9bb7f43632c6bf5487d69aa"
+        },
+        {
+          "path": "classic/reference/docx_classic58_dense_paragraph_document_p6_reference.png",
+          "sha256": "5d05f5abd263577a5629a3b14f933b5c0e58a07de85c5b027cb24b49fda8ee96"
+        },
+        {
+          "path": "classic/reference/docx_classic58_dense_paragraph_document_p7_reference.png",
+          "sha256": "22da919fbd90e6876514ea4e0c04c1620fc948d60184e96714b1d4d580b20b1a"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic59_numbered_and_bullet_mixed",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic59_numbered_and_bullet_mixed.docx",
+      "docx_sha256": "0fe4b7a568f576112edf02539bd16aa9a812244196200f45852c66ea2cfad62f",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic59_numbered_and_bullet_mixed_p1_reference.png",
+          "sha256": "7d14322091ac17f1d66a6ea65f52abdbb4d3ddeb10636f36e1e7b93dd3ed199a"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic60_comprehensive_styled_report",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic60_comprehensive_styled_report.docx",
+      "docx_sha256": "a81c34284d5a8353392a69ab983c91c84305d627875871cf6198cff6486753ed",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic60_comprehensive_styled_report_p1_reference.png",
+          "sha256": "47d9895bad6856927a439399d382e37c2a542c25138f822c2c7c0959300b2dcd"
+        },
+        {
+          "path": "classic/reference/docx_classic60_comprehensive_styled_report_p2_reference.png",
+          "sha256": "220443292a6dc152f19c1e7c8e06dafbb51ba2f47ff25c9f4f1f6c7532d5634a"
+        },
+        {
+          "path": "classic/reference/docx_classic60_comprehensive_styled_report_p3_reference.png",
+          "sha256": "cdd9cfbf745165e34074b7445d8b8d7b489229ee71573b3e737185c737ef012c"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic61_header_and_footer",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic61_header_and_footer.docx",
+      "docx_sha256": "9cfe93de2d67d10ce5fc445a13a07f7c287d0a483148224bbbba6b983686fe5d",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic61_header_and_footer_p1_reference.png",
+          "sha256": "804c6d131aa340c908f3bce4f587e17ab2ab65cd590530ac745351c3b19e16b8"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic62_footnote_references",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic62_footnote_references.docx",
+      "docx_sha256": "0abc64f7657eb7cf282b1087f6b51281d84dbf49a6c89d379c11f9d7702e463a",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic62_footnote_references_p1_reference.png",
+          "sha256": "92453f823be326d3eae2dd7cf4f1fd730228332c76d87f5ec97a701a124241f1"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic63_toc_style_headings",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic63_toc_style_headings.docx",
+      "docx_sha256": "96eaae32990430c8536823484f022278c4725888baf212229e0536533be62aa8",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic63_toc_style_headings_p1_reference.png",
+          "sha256": "d91b4734d86fe4bb35f689f8ede6f5f49120e7054425b1e032c1576d63a7e7a5"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic64_multi_column_layout",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic64_multi_column_layout.docx",
+      "docx_sha256": "d2d28f48717834f439c1ae0ca3719a0287d3d82f3a4b99abbbfaf80dcf25f82f",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic64_multi_column_layout_p1_reference.png",
+          "sha256": "7a7efcda36a050c79f973526d5ccdf414a8cfa640c0f98dc92da59adf86c0224"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic65_code_block_styling",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic65_code_block_styling.docx",
+      "docx_sha256": "9ae11981df95691883b6d468d619dbd86eccc23562da9bcf0f77f0ec781e8078",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic65_code_block_styling_p1_reference.png",
+          "sha256": "b48fd7fa013eb76c262b3c48e81110e4ab106751f38a2e16e1594e82b6b65f3d"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic66_colored_title_page",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic66_colored_title_page.docx",
+      "docx_sha256": "5e3110e232e9a7a9cd8a230c6bf2aa10163cb52756dd37de46538a2f5a404aaa",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic66_colored_title_page_p1_reference.png",
+          "sha256": "2638b11c0711f8dd98d8496a586b213c9c2c175c8deced7748261b05d0402fe4"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic67_alternating_row_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic67_alternating_row_table.docx",
+      "docx_sha256": "75190ae898213b65cae8c91932445ab8dd87664926d9e7d0fe824c6d3020bfe5",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic67_alternating_row_table_p1_reference.png",
+          "sha256": "3812b29a1abced114e09b67b06be28a5a4469bee80d38a0322c2cfd7b278ead6"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic68_sidebar_layout",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic68_sidebar_layout.docx",
+      "docx_sha256": "60b81a072d40588ec765bb61eaefe56e62c21ab8ea25a351e490489545c20876",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic68_sidebar_layout_p1_reference.png",
+          "sha256": "ca14190a2db4aab9d314cd17ebe3f844800e3973303cf1a90d126a7e6391b185"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic69_blockquote_styling",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic69_blockquote_styling.docx",
+      "docx_sha256": "f7c28384229f0515243215e564b7ec71f8e34d6ac50551ab0c6e77770c36b6fe",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic69_blockquote_styling_p1_reference.png",
+          "sha256": "65e1c9786aa13fa83ac6cc02c8e9486a984f46e64f02e0ddeb35fe62452f7c78"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic70_academic_paper",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic70_academic_paper.docx",
+      "docx_sha256": "49dc382473286a2f486801d474f46bd2309c4ca81fce731316f84e262d2a9486",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic70_academic_paper_p1_reference.png",
+          "sha256": "948c88c4dd267bb0c11c07bb6ca7bbfe9e3aec605260ccf68c18191438610c0f"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic71_legal_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic71_legal_document.docx",
+      "docx_sha256": "9c2769a52e8670f1f85e88366518fd1ffebb00f890e843456b6684785f990bcb",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic71_legal_document_p1_reference.png",
+          "sha256": "93622ccbc176603d96aa19488fb7ea10146ab35f69bfb1e509dc62720411e1d2"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic72_technical_specification",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic72_technical_specification.docx",
+      "docx_sha256": "c6fcfac49b1baa135e138fd192e53c4b70a13caa2447f34fa107b39cb6a9e9a9",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic72_technical_specification_p1_reference.png",
+          "sha256": "e51a685c796f71379c2967d77800c856f9bac3196e5b254a97f8555b6c08c055"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic73_calendar_layout",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic73_calendar_layout.docx",
+      "docx_sha256": "46198c29b6aaa61f5469961f638138202297692a568b8f3696f2d28ed09be050",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic73_calendar_layout_p1_reference.png",
+          "sha256": "73036c7acce65e93fcc21b26910a0ecc23785e81715ba5594ebc0295867bf3a1"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic74_org_chart",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic74_org_chart.docx",
+      "docx_sha256": "1796b031f134f9cc540ebf4db17c593520b940764cd1b560c5eb075167be930a",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic74_org_chart_p1_reference.png",
+          "sha256": "392e791062405c0e196d7bdb4402598ffa60b992bc8dd61c7244bef15bc466da"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic75_newsletter_layout",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic75_newsletter_layout.docx",
+      "docx_sha256": "03bf548a20d8ac5f5b1654485bb887e79b759d1682c6f9dd8ebe99aa9ac564af",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic75_newsletter_layout_p1_reference.png",
+          "sha256": "cd18d44ef611b5c4aa42ff8e44d85767790dd169ae0ec875bc52390e765c7d84"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic76_recipe_card",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic76_recipe_card.docx",
+      "docx_sha256": "b247345917406b382cec5cae1835ce9b0d633a4105a0e6bff46a2e6231029148",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic76_recipe_card_p1_reference.png",
+          "sha256": "cb8772dcf8add71e3ac6b1466c3de4b302131d616b49d2f8b253e39f6d5c64f3"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic77_timeline_layout",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic77_timeline_layout.docx",
+      "docx_sha256": "3b5b38dcd368645e65e83e502e0a9344d71e69b229e5ed553308da11d86a80db",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic77_timeline_layout_p1_reference.png",
+          "sha256": "66c3093ea0dab106a75acba1f0658462769cdcfc740ecffd0860f8a5b0dec709"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic78_faq_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic78_faq_document.docx",
+      "docx_sha256": "7426c0f32d5aeeaeebe4e584e1daa9c904604362c047ce9e29b0da0878a4e206",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic78_faq_document_p1_reference.png",
+          "sha256": "69ec370b3e1d06df97fc268f79831bc74a4dd7ea988523cde0db3b52d49da293"
+        },
+        {
+          "path": "classic/reference/docx_classic78_faq_document_p2_reference.png",
+          "sha256": "36e016dd0b87d4eb362fa9b095532c9d9511c0285f454f159a13e10ab05acb0e"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic79_glossary",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic79_glossary.docx",
+      "docx_sha256": "6e8adfafe35d4f621c3afb1d11471c44cae60aeb5a4d9f5ae148f98254c048bc",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic79_glossary_p1_reference.png",
+          "sha256": "84be6e7a0fed4daf86b1b4952732ab7259a40da60cf38a3f947baa6019589b13"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic80_matrix_grid",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic80_matrix_grid.docx",
+      "docx_sha256": "811d6b1102def7bb61966bc79457e4b6e10987f731646118108b3ba8609f1b3f",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic80_matrix_grid_p1_reference.png",
+          "sha256": "7e76d9b3f51dd2ce71e5f8f7c21f96aa2fdd10bccca65ab526545a63cf073c6b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic81_budget_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic81_budget_table.docx",
+      "docx_sha256": "4dea501f5688b0165e07222779f4468ed35c391157bbdf7b9c0c07d5902031a0",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic81_budget_table_p1_reference.png",
+          "sha256": "36f6179333ca0b12da5cc5232bd80751a91724b82dc58fff2a7f0f2cc0aebd7b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic82_survey_questionnaire",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic82_survey_questionnaire.docx",
+      "docx_sha256": "75c66c42476dd7a9b95e55586ecb660dcd1ad719bce8bf6d7574db5fd068a369",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic82_survey_questionnaire_p1_reference.png",
+          "sha256": "b3d9bc7dbb99db4856f49b65149237d0cfc4fc5b0aa0296c784687cd13056f37"
+        },
+        {
+          "path": "classic/reference/docx_classic82_survey_questionnaire_p2_reference.png",
+          "sha256": "55bece0437a2588f8274cd90fc920a6f66d8c0db14893483ca8abe5383a2af36"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic83_medical_form",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic83_medical_form.docx",
+      "docx_sha256": "6eabfec2b359f733742d82dc05704b0986bff49fae561f97c53081c947c72cfe",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic83_medical_form_p1_reference.png",
+          "sha256": "8ab5774f30c33d6af872ed6c7b9c89f98373d5c1d6752748b17ac2486db57123"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic84_shipping_label",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic84_shipping_label.docx",
+      "docx_sha256": "d468608427a75de418d175365713ba04fb503a41695d672576cb27ea39c5783d",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic84_shipping_label_p1_reference.png",
+          "sha256": "194d869cf45ec88fda08f1036ad6f83b4a0b92003e2d9ab2483b1925a3e7f232"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic85_report_card",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic85_report_card.docx",
+      "docx_sha256": "ee61337105351dd4b3371ae04d81787bd0b6ff65a25a706eec9d50f199866a56",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic85_report_card_p1_reference.png",
+          "sha256": "4f3d63d69fd9117a8cb89044d2908d93e1b26101ca28742fdcc7e0bd97b23cc9"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic86_checklist_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic86_checklist_document.docx",
+      "docx_sha256": "9d8a586e9523292369aecd7b3122d9ec79e50472097ec786dafbae8f697528e8",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic86_checklist_document_p1_reference.png",
+          "sha256": "49847242cd97f9c5fc3e0cc1768b213dc3e1f81860e5046329973135a27e51a1"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic87_bibliography",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic87_bibliography.docx",
+      "docx_sha256": "42b29023f330ef892c92cda4c780138e4ea393fae7aeefd6da809c375351d8df",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic87_bibliography_p1_reference.png",
+          "sha256": "b8ecee9468c8a5c7e7c7dff25a61fedb3a6d7577676ec9ef580edad9a3581567"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic88_presentation_handout",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic88_presentation_handout.docx",
+      "docx_sha256": "b434ab75ed9f56c86df7b9656adcd380179f0237559a79921c2f0d26ad58e1e0",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic88_presentation_handout_p1_reference.png",
+          "sha256": "64e887600365531948813af5ca25dad7ff887a8f403e80d7f0f70f9a07ae2df7"
+        },
+        {
+          "path": "classic/reference/docx_classic88_presentation_handout_p2_reference.png",
+          "sha256": "224a40833b6089f2892749aa790e280c18d5761b1d2f9e5483bd6fb4ecbc38e9"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic89_multi_image_gallery",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic89_multi_image_gallery.docx",
+      "docx_sha256": "e640b70d6324bb3f736328a601110bad10734258f8ea9b85d29b71dc0aa7812e",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic89_multi_image_gallery_p1_reference.png",
+          "sha256": "eb14ce2163bbdf13e5d4590d1e23fcc0660fd12c8495ba01a11d809b2a08ef77"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic90_comprehensive_annual_report",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic90_comprehensive_annual_report.docx",
+      "docx_sha256": "7a86c412f94de1cd578418bcf43d6c060c8a171e3ed6eecc92212bd8f19a6ca4",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic90_comprehensive_annual_report_p1_reference.png",
+          "sha256": "a96ab00c67425452752806d3f8c2f6d0aa8d6ded51b5e08487c0fdc2b38b2ab3"
+        },
+        {
+          "path": "classic/reference/docx_classic90_comprehensive_annual_report_p2_reference.png",
+          "sha256": "00b188c1324e80f54d71fe49ba4c6c511c34890186e6a288e0216873166170ee"
+        },
+        {
+          "path": "classic/reference/docx_classic90_comprehensive_annual_report_p3_reference.png",
+          "sha256": "e6eda4e02cdbacc6a188ae7e2ba78a87e77ee291610dda8acb3223ca097f25fe"
+        },
+        {
+          "path": "classic/reference/docx_classic90_comprehensive_annual_report_p4_reference.png",
+          "sha256": "9d009f5dc9af06f87b28698d5159c3aefcacbf510cc7241c1083852d8e5179e1"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic91_landscape_page",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic91_landscape_page.docx",
+      "docx_sha256": "d906c550b28bf173d03071029a8fd49caa3ce903c7c9c4d9577f076de301cb8e",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic91_landscape_page_p1_reference.png",
+          "sha256": "153f5a782681b41fb7179af943d3d2ae03a03015f64135d0e2172b4b196d47d0"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic92_first_line_indent",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic92_first_line_indent.docx",
+      "docx_sha256": "7d60ac659360c394bf8489a35e25199436abd8cb10700b1b50523577335fc711",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic92_first_line_indent_p1_reference.png",
+          "sha256": "c46bb3578ca26d8ebccda18c15d5fb9c4de7041671a9ec8fc6dc86bc7c3de203"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic93_hanging_indent",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic93_hanging_indent.docx",
+      "docx_sha256": "26220d12ed1d9d18624a76778954400ac8177a5cd1d837475d2bcd0fd2bda276",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic93_hanging_indent_p1_reference.png",
+          "sha256": "37a1cc6c8fec06cc961a2477cc6426272745af302216a94a43a0029ebe8b02f8"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic94_custom_bullet_characters",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic94_custom_bullet_characters.docx",
+      "docx_sha256": "49d668e0380eecfe337a7ad98df62b190efce5a9df76892f58cfec964d6a87e9",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic94_custom_bullet_characters_p1_reference.png",
+          "sha256": "104756d9d227f1408cc70554dba3d9dbcfce88ebc826b03b0b7c64f3a2566cb4"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic95_contract_template",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic95_contract_template.docx",
+      "docx_sha256": "e9ba3f5393dd23204512c52bcfb4a0526647fd35d0485e4157f4dca297b575d9",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic95_contract_template_p1_reference.png",
+          "sha256": "46eb8bedc432df459bf435f758f8f9b9f742e9e51cc21ca7b6562cc254ff6a8b"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic96_dense_data_table",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic96_dense_data_table.docx",
+      "docx_sha256": "63ec3d650a2bf6a5a314197c7e1ab2ffaa20a626801b16489c0d43d6ff964963",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic96_dense_data_table_p1_reference.png",
+          "sha256": "372165ded6b8be442fa010cf2cc67172a89fba9688f93d3cea5afc12c8b4cb04"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic97_product_catalog",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic97_product_catalog.docx",
+      "docx_sha256": "f343c94c1bad70680a5ddcce452c913331de8f5890a8127f1f934fac0c3ad584",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic97_product_catalog_p1_reference.png",
+          "sha256": "0d2bbe146c9a5a4c339bfa0545808f63edca7fcd3d3b15750ba99ab3513e291e"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic98_training_manual",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic98_training_manual.docx",
+      "docx_sha256": "6289f1208b3c570dac2984133b282af4fd36de4d1c3f1e75017646e6c2c44ae1",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic98_training_manual_p1_reference.png",
+          "sha256": "568d7a23a2d95dfd594dd8b31e6995e47eb48cbcad37d497dd4de51870cceef8"
+        }
+      ]
+    },
+    {
+      "id": "docx_classic99_policy_document",
+      "suite": "classic",
+      "docx": "classic/docx/docx_classic99_policy_document.docx",
+      "docx_sha256": "a41b0147f3deccba14d7fee16b7f5dc9c71864e881b0e3195085f226c93b9ec4",
+      "reference_application": "Microsoft 365 Word",
+      "reference_dpi": 150,
+      "reference_images": [
+        {
+          "path": "classic/reference/docx_classic99_policy_document_p1_reference.png",
+          "sha256": "452d214b1b9a75d9db4d69194da6bed25b166922c9e9e689db07be44f71f7f92"
+        }
+      ]
+    }
+  ]
+}

@@ -1,8 +1,10 @@
-import { deflateZlib } from '../util/deflate.js';
+import type { Compression } from '../util/compression.js';
 
 /** Minimal PDF file assembler: numbered objects, streams, cross-reference table. */
 export class PdfObjects {
-  private bodies: Array<Uint8Array | null> = [];
+  private bodies: Array<Uint8Array | Uint8Array[] | null> = [];
+
+  constructor(private readonly deflateZlib: Compression['deflateZlib']) {}
 
   alloc(): number {
     this.bodies.push(null);
@@ -20,10 +22,11 @@ export class PdfObjects {
   }
 
   stream(num: number, dict: string, data: Uint8Array, compress = true): void {
-    const body = compress ? deflateZlib(data) : data;
+    const body = compress ? this.deflateZlib(data) : data;
     const filter = compress ? ' /Filter /FlateDecode' : '';
     const head = latin1(`<<${dict ? ' ' + dict : ''}${filter} /Length ${body.length} >>\nstream\n`);
-    this.bodies[num - 1] = concat([head, body, latin1('\nendstream')]);
+    // Keep the payload separate until finish() copies it into the final PDF.
+    this.bodies[num - 1] = [head, body, latin1('\nendstream')];
   }
 
   addStream(dict: string, data: Uint8Array, compress = true): number {
@@ -45,7 +48,8 @@ export class PdfObjects {
     this.bodies.forEach((body, i) => {
       offsets.push(offset);
       push(latin1(`${i + 1} 0 obj\n`));
-      push(body ?? latin1('null'));
+      if (Array.isArray(body)) body.forEach(push);
+      else push(body ?? latin1('null'));
       push(latin1('\nendobj\n'));
     });
     const xref = offset;

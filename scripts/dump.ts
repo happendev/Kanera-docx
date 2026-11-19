@@ -1,10 +1,11 @@
 /** Print a summary of a .docx body: blocks, breaks, sections, styles. pnpm tsx scripts/dump.ts file.docx [from] [to] */
+import { nodeCompression } from '../src/util/node-compression.js';
 import { readFileSync } from 'node:fs';
 import { parseDocx } from '../src/docx/parser.js';
 import type { Block } from '../src/docx/model.js';
 
 const [file, fromS, toS] = process.argv.slice(2);
-const doc = parseDocx(new Uint8Array(readFileSync(file)));
+const doc = parseDocx(new Uint8Array(readFileSync(file)), nodeCompression.inflateRaw);
 const from = Number(fromS ?? 0);
 const to = Number(toS ?? 40);
 const text = (b: Block): string => {

@@ -4,14 +4,57 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { encode } from 'jpeg-js';
 import { convertDocx as convertInBrowser } from '../src/browser.js';
 import { convertDocx as convertCore } from '../src/index.js';
 import { convertDocx, docxToPdf } from '../src/node.js';
 import { makeDocx, p } from './helpers/docx.js';
-import { inlineImage, sampleDocx } from './helpers/sample.js';
+import { inlineImage, redPng, sampleDocx } from './helpers/sample.js';
 import { ghostscript, ghostscriptRenders, pdfPageCount, pdfPagesText, pdfStreams, pdfText } from './helpers/pdf.js';
 
 describe('convertDocx (node)', () => {
+  it('uses automatic photo quality and accepts an explicit quality or no lossy re-encoding', async () => {
+    const width = 192, height = 128;
+    const data = new Uint8Array(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        data.set([80 + x / 2, 100 + y / 2, 120 + 17 * Math.sin((x + y) / 9), 255], i);
+      }
+    }
+    const jpeg = encode({ width, height, data }, 100).data;
+    const docx = makeDocx({ body: `<w:p>${inlineImage('photo', 96, 64)}</w:p>`, media: { photo: { name: 'photo.jpg', data: jpeg } } });
+    const original = await docxToPdf(docx, { imageQuality: false });
+    const automatic = await docxToPdf(docx);
+    const smaller = await docxToPdf(docx, { imageQuality: 40 });
+    expect(Buffer.from(original).includes(jpeg)).toBe(true);
+    expect(automatic.length).toBeLessThan(original.length);
+    expect(smaller.length).toBeLessThan(automatic.length);
+    await expect(docxToPdf(docx, { imageQuality: 101 })).rejects.toThrow(/image quality/i);
+  });
+
+  it('writes supported Word SVGs as reusable PDF forms and uses the preview for unsupported features', async () => {
+    const blip = '<asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" r:embed="vector"/>';
+    const drawing = inlineImage('preview', 96, 64).replace('<a:blip r:embed="preview"/>',
+      `<a:blip r:embed="preview"><a:extLst><a:ext>${blip}</a:ext></a:extLst></a:blip>`);
+    const convert = (shape: string) => convertDocx(makeDocx({
+      body: `<w:p>${drawing}${drawing}</w:p>`,
+      media: {
+        vector: { name: 'vector.svg', data: new TextEncoder().encode(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 8"><metadata>editor metadata</metadata>${shape}</svg>`) },
+        preview: { name: 'preview.png', data: redPng() },
+      },
+    }), { compress: false });
+    const vector = await convert('<path d="M0 0h12v8h-12z" fill="#00f"/>');
+    const source = pdfText(vector.pdf);
+    expect(source.match(/\/Subtype \/Form\b/g)).toHaveLength(1);
+    expect(source).toContain('0 0 1 rg');
+    expect(source).not.toContain('editor metadata');
+    expect(source).not.toContain('/Subtype /Image');
+    const preview = await convert('<text>Use Word’s preview</text>');
+    expect(preview.warnings).toEqual([]);
+    expect(pdfText(preview.pdf).match(/\/Subtype \/Image\b/g)).toHaveLength(1);
+  });
+
   it('produces a well-formed PDF with embedded subset fonts, images and links', async () => {
     const result = await convertDocx(sampleDocx());
     expect(result.pageCount).toBe(2);
@@ -55,6 +98,28 @@ describe('convertDocx (node)', () => {
     const at = content.indexOf(stroked[0]);
     expect(content.slice(0, at).trimEnd().endsWith('q')).toBe(true);
     expect(content.slice(at + stroked[0].length).trimStart().startsWith('Q')).toBe(true);
+  });
+
+  it('snaps text to Word for Mac’s 0.24pt grid only when asked, moving a line as a whole', async () => {
+    // 11pt text indented a quarter point: Word for Mac draws it at 11.04pt, starts the line at
+    // 72.24 and puts the baseline on the grid; the bold run after it keeps its distance.
+    const run = (text: string, rPr: string) => `<w:r><w:rPr>${rPr}<w:sz w:val="22"/></w:rPr><w:t xml:space="preserve">${text}</w:t></w:r>`;
+    const body = `<w:p><w:pPr><w:ind w:left="5"/></w:pPr>${run('Plain ', '')}${run('bold', '<w:b/>')}</w:p>`;
+    const runs = async (wordPlatform?: 'windows' | 'mac') => {
+      const { pdf } = await convertDocx(makeDocx({ body }), { compress: false, wordPlatform });
+      const tm = /\/F\d+ ([\d.]+) Tf .*? ([\d.]+) ([\d.]+) Tm/g;
+      // The A4 page is 841.9pt tall; the grid runs down from its top.
+      return [...pdfStreams(pdf).join('\n').matchAll(tm)].map((m) => ({ size: +m[1], x: +m[2], y: 841.9 - +m[3] }));
+    };
+    const win = await runs();
+    const mac = await runs('mac');
+    expect(win.map((r) => r.size)).toEqual([11, 11]);
+    expect(win[0].x).toBeCloseTo(72.25, 3);
+    expect(mac.map((r) => r.size)).toEqual([11.04, 11.04]);
+    expect(mac[0].x).toBeCloseTo(72.24, 3);
+    expect(mac[1].x - mac[0].x).toBeCloseTo(win[1].x - win[0].x, 3);
+    for (const r of mac) expect(Math.abs(r.y / 0.24 - Math.round(r.y / 0.24))).toBeLessThan(0.01);
+    expect(Math.abs(mac[0].y - win[0].y)).toBeLessThanOrEqual(0.12);
   });
 
   it('accepts ArrayBuffers and file paths', async () => {
@@ -108,6 +173,35 @@ describe('other entry points', () => {
     expect(requested.every((u) => u.startsWith('https://cdn.test/fonts/'))).toBe(true);
     // Families the document does not use are never downloaded.
     expect(requested.some((u) => u.includes('Carlito'))).toBe(true);
-    expect(requested.filter((u) => /Roboto|Gelasio|Caladea|Selawik|Mono/.test(u))).toEqual([]);
+    expect(requested.filter((u) => /Roboto|Gelasio|Caladea|Selawik|Morrow|Mono/.test(u))).toEqual([]);
+  });
+
+  it('embeds the default Aptos Narrow and Aptos Light substitutes in Node and the browser', async () => {
+    const faces = [
+      ['Aptos Narrow', '', 'MorrowSans-Narrow-Regular.ttf', 'MorrowSans-Narrow'],
+      ['Aptos Narrow', '<w:b/>', 'MorrowSans-Narrow-Bold.ttf', 'MorrowSans-Narrow-Bold'],
+      ['Aptos Narrow', '<w:i/>', 'MorrowSans-Narrow-Italic.ttf', 'MorrowSans-Narrow-Italic'],
+      ['Aptos Narrow Bold Italic', '', 'MorrowSans-Narrow-BoldItalic.ttf', 'MorrowSans-Narrow-Bold-Italic'],
+      ['Aptos Light', '', 'MorrowSans-Light.ttf', 'MorrowSans-Light'],
+      ['Aptos Light Italic', '', 'MorrowSans-LightItalic.ttf', 'MorrowSans-LightItalic'],
+    ];
+    const body = faces.map(([family, style]) => p('AV café Ω Ж', '', `<w:rFonts w:ascii="${family}" w:hAnsi="${family}"/>${style}`)).join('');
+    // An empty styles part keeps Word's built-in Aptos defaults (and their Morrow Sans) out of it.
+    const docx = makeDocx({ styles: '', body });
+    const fetched: string[] = [];
+    const browser = await convertInBrowser(docx, {
+      fontBaseUrl: 'https://cdn.test/aptos/',
+      fetch: async (url) => {
+        const file = new URL(String(url)).pathname.split('/').at(-1)!;
+        fetched.push(file);
+        return new Response(readFileSync(new URL(`../fonts/${file}`, import.meta.url)));
+      },
+    });
+    expect(fetched.filter((file) => file.startsWith('Morrow')).sort()).toEqual(faces.map(([, , file]) => file).sort());
+    for (const result of [await convertDocx(docx), browser]) {
+      expect(result.warnings).toEqual([]);
+      const pdf = pdfText(result.pdf);
+      for (const [, , , name] of faces) expect(pdf).toMatch(new RegExp(`/BaseFont /[^\\s]+\\+${name}(?=\\s)`));
+    }
   });
 });

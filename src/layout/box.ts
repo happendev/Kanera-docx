@@ -1,4 +1,4 @@
-import type { Block, Border, Paragraph, ParaProps, Table, TableCell, TableRow } from '../docx/model.js';
+import type { AnchorProps, Block, Border, Drawing, FrameProps, Paragraph, ParaProps, Table, TableCell, TableRow } from '../docx/model.js';
 import { ParagraphLayout, type Line, type ParagraphEnv } from './paragraph.js';
 import { translateOps, type DrawOp } from './types.js';
 
@@ -39,10 +39,26 @@ export function gapBetween(prev: Paragraph | null, next: Paragraph | null, prevA
     if (prev.props.contextualSpacing) after = 0;
     if (next.props.contextualSpacing) before = 0;
   }
+  // Automatic (HTML) spacing leaves no gap between items of one list, as between HTML <li>
+  // elements: only the space around the list remains.
+  if (prev?.numbering && prev.numbering.numId === next?.numbering?.numId) {
+    if (prev.props.spaceAfterAuto) after = 0;
+    if (next.props.spaceBeforeAuto) before = 0;
+  }
   // Word does not add one paragraph's space after to the next one's space before: the larger of
   // the two separates them (measured against Word's own PDF output and its recorded page breaks).
   if (prev && next) return { after: Math.max(after, before), before: 0 };
   return { after, before };
+}
+
+/**
+ * Space left after a paragraph that a table follows. Contextual spacing reaches into the table: a
+ * paragraph of the same style opening its first cell drops it (as in Word's PDFs).
+ */
+export function spaceAboveTable(prev: Paragraph, table: Table): number {
+  const first = table.rows[0]?.cells[0]?.content[0];
+  if (prev.props.contextualSpacing && first?.type === 'paragraph' && first.props.styleId === prev.props.styleId) return 0;
+  return spaceAfter(prev.props);
 }
 
 function sameBorder(a: Border | null, b: Border | null): boolean {
@@ -51,6 +67,10 @@ function sameBorder(a: Border | null, b: Border | null): boolean {
 }
 
 /** Paragraphs with identical borders and indents share one border box. */
+function boxLeft(p: ParaProps): number {
+  return p.indLeft + Math.min(0, p.indFirstLine);
+}
+
 export function bordersGroup(a: Paragraph | null, b: Paragraph | null): boolean {
   if (!a || !b) return false;
   const pa = a.props;
@@ -64,7 +84,9 @@ export function bordersGroup(a: Paragraph | null, b: Paragraph | null): boolean 
     sameBorder(pa.borders.right, pb.borders.right) &&
     sameBorder(pa.borders.between, pb.borders.between) &&
     pa.shading === pb.shading &&
-    Math.abs(pa.indLeft - pb.indLeft) < 0.01 &&
+    // The box spans from the leftmost of the left and first-line indents, so a hanging-indent
+    // paragraph joins a plain one whose text starts where its first line does.
+    Math.abs(boxLeft(pa) - boxLeft(pb)) < 0.01 &&
     Math.abs(pa.indRight - pb.indRight) < 0.01
   );
 }
@@ -85,6 +107,19 @@ export function paraFrame(prev: Paragraph | null, para: Paragraph, next: Paragra
   const topExtra = topB ? topB.space + topB.width : 0;
   const bottomExtra = !groupedNext && b.bottom ? b.bottom.space + b.bottom.width : 0;
   return { groupedPrev, groupedNext, topExtra, bottomExtra };
+}
+
+/**
+ * Space below a paragraph's last line that its shading covers. Word closes the gap between two
+ * shaded paragraphs, even in different colours, with the upper one's shading. Above unshaded text
+ * or a table the space after stays bare, as it does where a bottom border closes the box first or
+ * contextual spacing drops the space. A grouped paragraph's shading already runs on into the next.
+ */
+export function shadedSpaceAfter(para: Paragraph, frame: ParaFrame, next: Paragraph | null): number {
+  const p = para.props;
+  if (!p.shading || !next?.props.shading || frame.groupedNext || p.borders.bottom) return 0;
+  if (p.contextualSpacing && next.props.styleId === p.styleId) return 0;
+  return spaceAfter(p);
 }
 
 export function hasDecorations(p: ParaProps): boolean {
@@ -129,30 +164,169 @@ export function dashFor(b: Border): number[] | undefined {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Text wrapping around floating objects
+
+/** The area a wrapped floating object keeps text out of. */
+export interface Exclusion {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  wrap: AnchorProps['wrap'];
+  side: AnchorProps['wrapText'];
+}
+
+const EPS = 0.01;
+/** Narrowest gap beside a wrapped object that still receives text. */
+const MIN_WRAP_WIDTH = 18;
+
+/** The text interval for a line of height h at y between L and R, avoiding exclusions. */
+function findSlot(ex: Exclusion[], y: number, h: number, L: number, R: number): { y: number; left: number; right: number } {
+  if (!ex.length) return { y, left: L, right: R };
+  for (let iter = 0; iter < 100; iter++) {
+    const hits = ex.filter((e) => e.y1 < y + h - EPS && e.y2 > y + EPS && e.x1 < R - EPS && e.x2 > L + EPS);
+    if (!hits.length) return { y, left: L, right: R };
+    const block = hits.filter((e) => e.wrap === 'topAndBottom');
+    if (block.length) {
+      y = Math.max(...block.map((e) => e.y2));
+      continue;
+    }
+    let intervals: Array<[number, number]> = [[L, R]];
+    for (const e of hits) {
+      const next: Array<[number, number]> = [];
+      for (const [a, b] of intervals) {
+        let leftPart: [number, number] | null = e.x1 > a ? [a, Math.min(b, e.x1)] : null;
+        let rightPart: [number, number] | null = e.x2 < b ? [Math.max(a, e.x2), b] : null;
+        if (e.side === 'left') rightPart = null;
+        else if (e.side === 'right') leftPart = null;
+        else if (e.side === 'largest') {
+          const lw = leftPart ? leftPart[1] - leftPart[0] : 0;
+          const rw = rightPart ? rightPart[1] - rightPart[0] : 0;
+          if (lw >= rw) rightPart = null;
+          else leftPart = null;
+        }
+        if (leftPart && leftPart[1] - leftPart[0] > EPS) next.push(leftPart);
+        if (rightPart && rightPart[1] - rightPart[0] > EPS) next.push(rightPart);
+      }
+      intervals = next;
+    }
+    const fit = intervals.find(([a, b]) => b - a >= MIN_WRAP_WIDTH);
+    if (fit) return { y, left: fit[0], right: fit[1] };
+    y = Math.min(...hits.map((e) => e.y2));
+  }
+  return { y, left: L, right: R };
+}
+
+/**
+ * The next line of a paragraph at or below y in the column (x, w), flowing around the exclusions.
+ * The line's height decides which objects it meets, so a line taller than estimated is retried.
+ */
+export function wrapLine(layout: ParagraphLayout, ex: Exclusion[], y: number, estimate: number, col: { x: number; w: number }): { line: Line; y: number } | null {
+  let est = Math.max(estimate, 1);
+  for (let iter = 0; iter < 50; iter++) {
+    const base = layout.lineBounds(col.w);
+    const slot = findSlot(ex, y, est, col.x + base.left, col.x + base.right);
+    const snap = layout.snapshot();
+    // A first line pushed right by an object keeps its first-line indent from the object's edge.
+    let left = slot.left;
+    if (slot.left > col.x + base.left + EPS) left = Math.min(slot.right, slot.left + Math.max(0, base.left - layout.para.props.indLeft));
+    const line = layout.nextLine(left - col.x, slot.right - col.x, col.w);
+    if (!line) return null;
+    if (!ex.length || line.height <= est + EPS) return { line, y: slot.y };
+    const check = findSlot(ex, slot.y, line.height, col.x + base.left, col.x + base.right);
+    if (Math.abs(check.y - slot.y) < EPS && Math.abs(check.left - slot.left) < EPS && Math.abs(check.right - slot.right) < EPS) return { line, y: slot.y };
+    layout.restore(snap);
+    est = line.height;
+    y = slot.y;
+  }
+  const line = layout.nextLine(layout.lineBounds(col.w).left, layout.lineBounds(col.w).right, col.w);
+  return line ? { line, y } : null;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Box layout (no pagination): table cells, headers/footers, footnotes, text boxes
 
-export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv): BoxResult {
+/**
+ * The area a floating object anchored to a paragraph at box y keeps text out of, in box
+ * coordinates; null when it doesn't wrap text.
+ */
+export type BoxWrap = (d: Drawing, y: number) => Exclusion | null;
+
+/**
+ * Lay out blocks in a box. With `wrap`, text flows around the box's own floating objects; `cell`
+ * marks a table cell's content.
+ */
+export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: { wrap?: BoxWrap; cell?: boolean } = {}): BoxResult {
+  const wrap = opts.wrap;
   const items: BoxItem[] = [];
+  const exclusions: Exclusion[] = [];
   let y = 0;
   let prevPara: Paragraph | null = null;
   let pendingAfter = 0;
+  let pendingFrame: TextFrame | null = null;
+  let inFlow = false;
+  // A text frame takes no room in the flow: it sits relative to the next paragraph's top.
+  const placeFrame = (top: number) => {
+    if (!pendingFrame) return;
+    const f = pendingFrame;
+    const fy = top + (f.props.y ?? 0);
+    items.push({ y: fy, height: 0, ops: translateOps(f.box.items.flatMap((it) => it.ops), f.x, fy) });
+    if (f.props.wrap !== 'none' && f.props.wrap !== 'through') {
+      exclusions.push({ x1: f.x - f.props.hSpace, x2: f.x + f.width + f.props.hSpace, y1: fy - f.props.vSpace, y2: fy + f.box.height + f.props.vSpace, wrap: f.props.wrap === 'notBeside' ? 'topAndBottom' : 'square', side: 'bothSides' });
+    }
+    pendingFrame = null;
+  };
   for (let bi = 0; bi < blocks.length; bi++) {
     const block = blocks[bi];
+    if (block.type === 'paragraph' && !opts.cell && isBoxFrame(block)) {
+      let end = bi + 1;
+      while (end < blocks.length && blocks[end].type === 'paragraph' && sameFrame((blocks[end] as Paragraph).props.frame, block.props.frame)) end++;
+      pendingFrame = layoutFrame(blocks.slice(bi, end) as Paragraph[], width, env);
+      bi = end - 1;
+      continue;
+    }
+    // A framed paragraph is out of the flow wherever its frame sits; an empty one draws nothing
+    // (a footer of framed page numbers takes no height).
+    if (block.type === 'paragraph' && !opts.cell && block.props.frame && !block.props.frame.dropCap && block.content.length === 0 && !block.numbering) continue;
     if (block.type === 'paragraph') {
       const next = blocks[bi + 1]?.type === 'paragraph' ? (blocks[bi + 1] as Paragraph) : null;
       const gap = gapBetween(prevPara, block);
-      y += prevPara ? gap.after + gap.before : gap.before;
+      // Automatic (HTML) space before collapses into the top of a header, cell or text box.
+      y += prevPara ? gap.after + gap.before : !inFlow && block.props.spaceBeforeAuto ? 0 : gap.before;
+      inFlow = true;
       const frame = paraFrame(prevPara, block, next);
       const layout = new ParagraphLayout(block, env);
       const deco = hasDecorations(block.props);
       const lines: Line[] = [];
       let line: Line | null;
       y += frame.topExtra;
-      while ((line = layoutNextLine(layout, width))) {
+      // Floats are anchored to the paragraph, so they are positioned from its top.
+      const paraY = y;
+      placeFrame(paraY);
+      if (wrap) {
+        for (const f of layout.floatDrawings) {
+          const ex = f.hidden ? null : wrap(f, paraY);
+          if (ex) exclusions.push(ex);
+        }
+      }
+      let estimate = layout.markRun.ascent + layout.markRun.descent;
+      for (;;) {
+        const snap = exclusions.length ? layout.snapshot() : null;
+        line = layoutNextLine(layout, width);
+        if (!line) break;
+        // Lines with text flow around the objects; Word leaves an empty line where it is (a logo
+        // over a header's blank paragraphs doesn't make the header taller).
+        if (snap && line.contentRight > line.left) {
+          layout.restore(snap);
+          const placed = wrapLine(layout, exclusions, y, estimate, { x: 0, w: width });
+          if (!placed) break;
+          line = placed.line;
+          y = placed.y;
+        }
+        estimate = line.height;
         const ops = layout.renderLine(line, 0, y);
         const item: BoxItem = { y, height: line.height, ops, notes: line.notes.length ? line.notes : undefined };
-        // Floats are anchored to the paragraph, so they are positioned from its first line.
-        if (lines.length === 0) for (const f of layout.floatDrawings) ops.push({ kind: 'float', drawing: f, x: 0, y, areaWidth: width });
+        if (lines.length === 0) for (const f of layout.floatDrawings) ops.push({ kind: 'float', drawing: f, x: 0, y: paraY, areaWidth: width });
         lines.push(line);
         items.push(item);
         y += line.height;
@@ -172,7 +346,7 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv): BoxRe
           const isFirst = k === first;
           const isLast = k === items.length - 1;
           const top = isFirst ? it.y - frame.topExtra : it.y;
-          const bottom = isLast ? it.y + it.height + frame.bottomExtra + nextGap.after + nextGap.before : it.y + it.height;
+          const bottom = isLast ? it.y + it.height + frame.bottomExtra + nextGap.after + nextGap.before + shadedSpaceAfter(block, frame, next) : it.y + it.height;
           it.ops.unshift(...paraDecorations(block.props, frame, 0, width, top, bottom, isFirst, isLast));
         }
       }
@@ -181,16 +355,64 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv): BoxRe
       prevPara = block;
     } else {
       // Space after the previous paragraph still applies before a table.
-      if (prevPara) y += gapBetween(prevPara, null).after;
-      const t = layoutTableInBox(block, width, env, y);
+      if (prevPara) y += spaceAboveTable(prevPara, block);
+      placeFrame(y);
+      inFlow = true;
+      const t = layoutTableInBox(block, width, env, y, !!opts.cell);
       items.push(...t.items);
       y = t.bottom;
       prevPara = null;
       pendingAfter = 0;
     }
   }
-  if (prevPara) y += pendingAfter;
+  placeFrame(y);
+  // Automatic (HTML) space after collapses into the bottom of a table cell. So does contextual
+  // spacing's in the default paragraph style: Word compares a cell's last paragraph with the
+  // row-end mark, which has that style (a List Paragraph or custom style keeps its space).
+  const contextualEnd = !!prevPara?.props.contextualSpacing && prevPara.props.styleId === env.settings.defaultParagraphStyle;
+  if (prevPara && !(opts.cell && (prevPara.props.spaceAfterAuto || contextualEnd))) y += pendingAfter;
   return { height: y, items };
+}
+
+interface TextFrame {
+  props: FrameProps;
+  /** Left edge in box coordinates. */
+  x: number;
+  width: number;
+  box: BoxResult;
+}
+
+/**
+ * A text frame (w:framePr) positioned against the box and the following paragraph, like Word's page
+ * number frames in headers and footers. Other frames (drop caps, inline frames, frames placed on
+ * the page) flow as ordinary paragraphs.
+ */
+function isBoxFrame(p: Paragraph): boolean {
+  const f = p.props.frame;
+  return !!f && !f.dropCap && f.yAlign !== 'inline' && f.vAnchor === 'text' && (f.hAnchor === 'margin' || f.hAnchor === 'text');
+}
+
+function sameFrame(a: FrameProps | null, b: FrameProps | null): boolean {
+  if (!a || !b) return false;
+  const keys = Object.keys(a) as Array<keyof FrameProps>;
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+}
+
+/** Lays out a frame's paragraphs; a frame without a width is as wide as its widest line. */
+function layoutFrame(paras: Paragraph[], width: number, env: BoxEnv): TextFrame {
+  const props = paras[0].props.frame!;
+  let w = props.width && props.width > 0 ? props.width : 0;
+  if (!w) {
+    for (const p of paras) {
+      const layout = new ParagraphLayout(p, env);
+      for (let line = layoutNextLine(layout, width); line; line = layoutNextLine(layout, width)) w = Math.max(w, line.contentRight + width - line.right);
+    }
+    w = Math.min(Math.max(w, 1), width);
+  }
+  const box = layoutBlocks(paras.map((p) => ({ ...p, props: { ...p.props, frame: null } })), w, env);
+  const align = props.xAlign;
+  const x = align === 'right' || align === 'outside' ? width - w : align === 'center' ? (width - w) / 2 : align ? 0 : props.x ?? 0;
+  return { props, x, width: w, box };
 }
 
 /** Next line using the paragraph's indents (no floats inside boxes). */
@@ -220,6 +442,9 @@ export interface RowLayout {
   height: number;
   /** Width of the row's top border, which content sits below. */
   borderTop: number;
+  /** Cell spacing above and below the row's cells. */
+  spaceTop: number;
+  spaceBottom: number;
 }
 
 export interface TableLayout {
@@ -254,50 +479,219 @@ function gridWidths(table: Table, avail: number): number[] {
   return grid;
 }
 
-export function measureTable(table: Table, avail: number, env: BoxEnv): TableLayout {
-  const grid = gridWidths(table, avail);
+/**
+ * How far below the top of a cell's content its wrapped objects laid out in the cell reach: Word
+ * grows the row to hold them. Objects aligned within the cell, and those in nested tables, don't count.
+ */
+function inCellFloatsBottom(box: BoxResult, marginTop: number): number {
+  let bottom = 0;
+  for (const it of box.items) {
+    for (const op of it.ops) {
+      if (op.kind !== 'float' || op.cell) continue;
+      const d = op.drawing;
+      const a = d.anchor;
+      if (!a || d.hidden || !a.layoutInCell || a.wrap === 'none' || a.posV.align || a.posV.pct !== undefined) continue;
+      const rel = a.posV.relativeFrom;
+      const top = rel === 'paragraph' || rel === 'line' ? op.y : rel === 'page' || rel === 'margin' ? -marginTop : null;
+      if (top === null) continue;
+      // A text-wrapping object cannot rise above its cell, so one raised past the top pushes the
+      // row down by as much.
+      bottom = Math.max(bottom, Math.max(-marginTop, top + (a.posV.offset ?? 0)) + d.height + d.effectB + a.distB);
+    }
+  }
+  return bottom;
+}
+
+/** Word's widest table column: 22 inches. */
+const MAX_COLUMN = 1584;
+
+/** Narrowest and widest a cell's content can be laid out without breaking words. */
+function cellContentWidths(cell: TableCell, env: BoxEnv): { lo: number; hi: number } {
+  let lo = 0;
+  let hi = 0;
+  const wide = 2 * MAX_COLUMN;
+  for (const b of cell.content) {
+    if (b.type === 'table') {
+      // A nested autofit table shrinks to fit its cell (see measureTable), so only a fixed one
+      // holds the column open.
+      const w = b.grid.reduce((a, g) => a + g, 0) + Math.max(0, b.props.indent);
+      if (b.props.layout === 'fixed') lo = Math.max(lo, w);
+      hi = Math.max(hi, w);
+      continue;
+    }
+    const layout = new ParagraphLayout(b, env);
+    lo = Math.max(lo, layout.minContentWidth());
+    for (let line = layoutNextLine(layout, wide); line; line = layoutNextLine(layout, wide)) hi = Math.max(hi, line.contentRight + wide - line.right);
+  }
+  return { lo, hi: Math.max(lo, hi) };
+}
+
+/**
+ * The grid Word lays an autofit table of automatic width out on when it sizes the columns from
+ * their content (it does for files other tools wrote; Word's own files carry the grid it computed).
+ * Each column gets at least its longest word and at most its longest line, or a cell's preferred
+ * width in place of that line; when the widest layout doesn't fit, the room above the minimums is
+ * shared in proportion to how much more each column wants.
+ */
+function autofitGrid(table: Table, maxWidth: number, env: BoxEnv): number[] {
+  const n = table.grid.length;
+  const sp = table.rows[0]?.cellSpacing ?? 0;
+  const min = new Array<number>(n).fill(0);
+  const max = new Array<number>(n).fill(0);
+  const spans: Array<{ from: number; to: number; min: number; max: number }> = [];
+  for (const row of table.rows) {
+    let col = row.gridBefore;
+    for (const cell of row.cells) {
+      const from = col;
+      const to = Math.min(n, col + cell.gridSpan);
+      col += cell.gridSpan;
+      if (from >= n || cell.vMerge === 'continue') continue;
+      const { lo, hi } = cellContentWidths(cell, env);
+      const sides = cell.margins.left + cell.margins.right;
+      const pref = cell.width.type === 'dxa' && cell.width.value > 0 ? cell.width.value : 0;
+      const cellMin = lo + sides;
+      const cellMax = Math.max(cellMin, pref || hi + sides);
+      if (to - from === 1) {
+        min[from] = Math.max(min[from], cellMin);
+        max[from] = Math.max(max[from], cellMax);
+      } else spans.push({ from, to, min: cellMin, max: cellMax });
+    }
+  }
+  // A spanning cell widens the columns it covers evenly where they fall short of it.
+  for (const s of spans) {
+    const inner = 2 * sp * (s.to - s.from - 1);
+    for (const arr of [min, max]) {
+      let have = inner;
+      for (let i = s.from; i < s.to; i++) have += arr[i];
+      const need = arr === min ? s.min : s.max;
+      if (need > have) for (let i = s.from; i < s.to; i++) arr[i] += (need - have) / (s.to - s.from);
+    }
+  }
+  for (let i = 0; i < n; i++) max[i] = Math.min(MAX_COLUMN, Math.max(max[i], min[i]));
+  // Cells sit twice the spacing apart and from the table's edges.
+  const room = maxWidth - 2 * sp * (n + 1);
+  const sumMin = min.reduce((a, b) => a + b, 0);
+  const sumMax = max.reduce((a, b) => a + b, 0);
+  let boxes = max;
+  if (sumMax > room) boxes = sumMin >= room ? min : min.map((m, i) => m + ((max[i] - m) * (room - sumMin)) / (sumMax - sumMin));
+  return boxes.map((b, i) => b + (i === 0 ? 2 * sp : sp) + (i === n - 1 ? 2 * sp : sp));
+}
+
+/**
+ * Whether a row another tool wrote gives every column a fixed preferred width (one cell per column)
+ * that disagrees with the grid. Word sizes such a table's columns from the cells, not from the grid
+ * saved with it. A row Word saved (it carries revision ids), or a grid that cells only partly pin
+ * down (automatic or spanning cells), holds the columns Word computed.
+ */
+function gridContradicted(table: Table): boolean {
+  return table.rows.some((row) => {
+    if (row.stamped || row.gridBefore || row.cells.length !== table.grid.length) return false;
+    let differs = false;
+    for (let i = 0; i < row.cells.length; i++) {
+      const cell = row.cells[i];
+      if (cell.gridSpan !== 1 || cell.width.type !== 'dxa' || cell.width.value <= 0) return false;
+      if (Math.abs(cell.width.value - table.grid[i]) > 1) differs = true;
+    }
+    return differs;
+  });
+}
+
+export function measureTable(table: Table, avail: number, env: BoxEnv, nested = false): TableLayout {
+  // Word snaps lines in table cells to the document grid only when the document asks it to.
+  const cellEnv = env.gridPitch && !env.settings.adjustLineHeightInTable ? { ...env, gridPitch: undefined } : env;
+  let grid = gridWidths(table, avail);
+  // A nested table stays inside its cell's text area: Word shrinks an autofit one that is too wide
+  // and moves one that would start left of the text (a negative indent) back in.
+  const total = grid.reduce((a, b) => a + b, 0);
+  if (nested && table.props.layout !== 'fixed' && total > avail) grid = grid.map((g) => (g * avail) / total);
+  let x = table.props.indent;
+  const aligned = table.props.align === 'center' || table.props.align === 'right';
+  const spacing = table.rows[0]?.cellSpacing ?? 0;
+  if (!aligned && env.compatibilityMode < 15 && !(spacing > 0 && env.compatibilityMode < 14)) {
+    // Before Word 2013 the table indent positions the first cell's text area, not its border, so
+    // the table moves out by the cell margin and (Word 2010) the cell spacing. Word 2007 leaves
+    // tables with spaced cells at the indent.
+    const firstCell = table.rows[0]?.cells[0];
+    x -= (firstCell ? firstCell.margins.left : table.props.cellMargins.left) + 2 * spacing;
+  }
+  if (nested) x = Math.max(0, x);
+  if ((env.settings.generated || gridContradicted(table)) && !nested && table.props.layout === 'autofit' && table.props.width.type === 'auto' && !table.props.floating && grid.length > 0) {
+    // The table may reach the right margin; in Word 2010 mode and before, its last cell's text
+    // does, so that cell's margin and spacing go past the margin.
+    const lastRow = table.rows[table.rows.length - 1];
+    const lastCell = lastRow?.cells[lastRow.cells.length - 1];
+    const past = env.compatibilityMode < 15 && lastCell ? lastCell.margins.right + 2 * lastRow.cellSpacing : 0;
+    grid = autofitGrid(table, (aligned ? avail : avail - x) + past, env);
+  }
   const colX: number[] = [0];
   for (const g of grid) colX.push(colX[colX.length - 1] + g);
   const width = colX[colX.length - 1];
-  let x = table.props.indent;
   if (table.props.align === 'center') x = (avail - width) / 2;
   else if (table.props.align === 'right') x = avail - width;
-  else if (env.compatibilityMode < 15) {
-    // Before Word 2013 the table indent positions the first cell's text, not its border.
-    const firstCell = table.rows[0]?.cells[0];
-    x -= firstCell ? firstCell.margins.left : table.props.cellMargins.left;
-  }
 
   const rows: RowLayout[] = [];
   for (const row of table.rows) {
     const cells: CellLayout[] = [];
     let col = row.gridBefore;
-    for (const cell of row.cells) {
+    // Cell spacing insets every cell of the row on all sides (Word's HTML-style cellspacing).
+    // Word's spacing value is half the gap: adjacent cells sit twice it apart, and the outermost
+    // cells twice it in from the table's edges.
+    const sp = row.cellSpacing;
+    const ri = rows.length;
+    const spaceTop = ri === 0 ? 2 * sp : sp;
+    const spaceBottom = ri === table.rows.length - 1 ? 2 * sp : sp;
+    for (let ci = 0; ci < row.cells.length; ci++) {
+      const cell = row.cells[ci];
       const c0 = Math.min(col, grid.length);
       const c1 = Math.min(col + cell.gridSpan, grid.length);
-      const cx = colX[c0];
-      const cw = Math.max(0, colX[c1] - cx);
+      const lead = ci === 0 ? 2 * sp : sp;
+      const trail = ci === row.cells.length - 1 ? 2 * sp : sp;
+      const cx = colX[c0] + lead;
+      const cw = Math.max(0, colX[c1] - colX[c0] - lead - trail);
       const inner = Math.max(1, cw - cell.margins.left - cell.margins.right);
-      // A continued merge has no content of its own. An empty cell marked hideMark has none
-      // either: Word ignores its paragraph mark, so a row of them collapses to its margins.
-      const empty = cell.vMerge === 'continue' || (cell.hideMark && cell.content.every((b) => b.type === 'paragraph' && b.content.length === 0 && !b.numbering));
-      const box = empty ? { height: 0, items: [] } : layoutBlocks(cell.content, inner, env);
+      // A continued merge has no content of its own. hideMark hides the cell's empty paragraph
+      // marks: a cell of nothing but empty paragraphs takes no room (a row of them collapses to its
+      // margins), and an empty last paragraph after text adds nothing below it.
+      const isEmpty = (b: Block) => b.type === 'paragraph' && b.content.length === 0 && !b.numbering;
+      let content = cell.content;
+      if (cell.hideMark) {
+        if (content.every(isEmpty)) content = [];
+        else if (isEmpty(content[content.length - 1])) content = content.slice(0, -1);
+      }
+      // The empty paragraph that must close a cell after a nested table takes no room in Word: the
+      // cell ends at the nested table's bottom.
+      if (content.length > 1 && isEmpty(content[content.length - 1]) && content[content.length - 2].type === 'table') content = content.slice(0, -1);
+      const empty = cell.vMerge === 'continue' || content.length === 0;
+      let box = empty ? { height: 0, items: [] } : layoutBlocks(content, inner, cellEnv, { cell: true });
+      const floats = inCellFloatsBottom(box, cell.margins.top);
+      if (floats > box.height) box = { ...box, height: floats };
       cells.push({ cell, col, x: cx, width: cw, box, rowSpan: 1 });
       col += cell.gridSpan;
     }
     let h = 0;
     // Word places cell content below the row's top border, so border width adds to the height.
+    // Adjacent rows share one border: the bottom border of the cell above counts too, but only by
+    // what it is wider than the cell's top margin, which it sits in.
     let borderTop = 0;
-    for (const c of cells) borderTop = Math.max(borderTop, c.cell.borders.top?.width ?? 0);
+    const above = rows[ri - 1]?.cells;
+    for (const c of cells) {
+      const up = above?.find((o) => o.col === c.col)?.cell.borders.bottom?.width ?? 0;
+      borderTop = Math.max(borderTop, c.cell.borders.top?.width ?? 0, up - c.cell.margins.top);
+    }
     for (const c of cells) if (c.cell.vMerge !== 'restart' && c.cell.vMerge !== 'continue') h = Math.max(h, c.box.height + c.cell.margins.top + c.cell.margins.bottom);
-    h += borderTop;
+    h += borderTop + spaceTop + spaceBottom;
     // Rows with only merged cells still need room for their own (empty) content.
     if (cells.every((c) => c.cell.vMerge)) for (const c of cells) if (c.cell.vMerge === 'continue') h = Math.max(h, c.cell.margins.top + c.cell.margins.bottom);
     if (cells.length === 0) h = 0;
     if (row.heightRule === 'exact' && row.height > 0) h = row.height;
-    // A minimum row height leaves out the row's top border, as content heights do.
-    else if (row.height > 0) h = Math.max(h, row.height + borderTop);
-    rows.push({ row, cells, height: h, borderTop });
+    // A minimum row height leaves out the row's top border and the cells' top and bottom margins,
+    // as content heights do.
+    else if (row.height > 0) {
+      let margins = 0;
+      for (const c of cells) margins = Math.max(margins, c.cell.margins.top + c.cell.margins.bottom);
+      h = Math.max(h, row.height + margins + borderTop);
+    }
+    rows.push({ row, cells, height: h, borderTop, spaceTop, spaceBottom });
   }
   // The table's bottom border sits below the last row's content.
   const last = rows[rows.length - 1];
@@ -393,7 +787,9 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
       }
       const isMerged = cell.rowSpan > 1;
       const x = ox + tl.x + cell.x;
-      const top = p.y;
+      // Spaced cells sit inside their rows, clear of the spacing above the first and below the last.
+      const top = p.y + tl.rows[spanFrom].spaceTop;
+      height -= tl.rows[spanFrom].spaceTop + tl.rows[Math.min(spanEnd, tl.rows.length) - 1].spaceBottom;
       if (cell.cell.shading) back.push({ kind: 'rect', x, y: top, w: cell.width, h: height, fill: cell.cell.shading });
       const m = cell.cell.margins;
       const innerX = x + m.left;
@@ -426,8 +822,10 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
         if (free > 0 && cell.cell.vAlign === 'center') dy += free / 2;
         else if (free > 0 && cell.cell.vAlign === 'bottom') dy += free;
       }
+      const area = { x: innerX, y: top, w: cell.width - m.left - m.right, h: height };
       for (let k = from; k < to; k++) {
-        content.push(...translateOps(items[k].ops, innerX, dy));
+        // Objects laid out in the cell position from it (the innermost cell of nested tables).
+        for (const op of translateOps(items[k].ops, innerX, dy)) content.push(op.kind === 'float' && !op.cell ? { ...op, cell: area } : op);
         if (items[k].notes) notes.push(...items[k].notes!);
       }
       const b = cell.cell.borders;
@@ -446,8 +844,8 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
 }
 
 /** Tables inside boxes: one item per group of rows tied together by vertical merges. */
-function layoutTableInBox(table: Table, width: number, env: BoxEnv, y0: number): { items: BoxItem[]; bottom: number } {
-  const tl = measureTable(table, width, env);
+function layoutTableInBox(table: Table, width: number, env: BoxEnv, y0: number, nested: boolean): { items: BoxItem[]; bottom: number } {
+  const tl = measureTable(table, width, env, nested);
   const items: BoxItem[] = [];
   const merge: MergeProgress = new Map();
   let y = y0;

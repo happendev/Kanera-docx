@@ -2,5 +2,10 @@ node_modules/
 dist/
 out/
 corpus/
+/benchmarks/word/aspose/bin/
+/benchmarks/word/aspose/obj/
+__pycache__/
+*.[lL][iI][cC]
+*.[lL][iI][cC].[xX][mM][lL]
 *.log
 .DS_Store

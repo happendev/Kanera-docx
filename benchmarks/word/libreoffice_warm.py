@@ -1,0 +1,72 @@
+"""Measure consecutive PDF completions from one headless LibreOffice batch."""
+import ctypes
+import os
+from pathlib import Path
+import select
+from struct import Struct
+import subprocess
+from time import perf_counter
+
+IN_CLOSE_WRITE = 0x00000008
+IN_MOVED_TO = 0x00000080
+EVENT = Struct('iIII')
+
+
+def batch_times(jobs, workspace):
+    output = workspace / 'pdfs'
+    output.mkdir()
+    sources = []
+    for index, (source, _) in enumerate(jobs):
+        # The CLI derives the output filename from the input basename.
+        alias = workspace / f'{index}.docx'
+        alias.hardlink_to(source)
+        sources.append(alias)
+    targets = {f'{i}.pdf': Path(target) for i, (_, target) in enumerate(jobs)}
+    completed = {}
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    watcher = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+    if watcher < 0:
+        raise OSError(ctypes.get_errno(), 'inotify_init1')
+    try:
+        if libc.inotify_add_watch(watcher, os.fsencode(output), IN_CLOSE_WRITE | IN_MOVED_TO) < 0:
+            raise OSError(ctypes.get_errno(), 'inotify_add_watch')
+        command = [
+            'soffice', '-env:UserInstallation=' + (workspace / 'profile').as_uri(),
+            '--headless', '--convert-to', 'pdf:writer_pdf_Export', '--outdir', output, *sources,
+        ]
+        with (workspace / 'libreoffice.log').open('w+') as log:
+            start = perf_counter()
+            with subprocess.Popen(command, stdout=log, stderr=log) as process:
+                try:
+                    while len(completed) < len(targets):
+                        remaining = 300 - (perf_counter() - start)
+                        if remaining <= 0:
+                            raise TimeoutError('LibreOffice warm batch timed out')
+                        if select.select([watcher], [], [], min(0.1, remaining))[0]:
+                            now = perf_counter()
+                            events = os.read(watcher, 65536)
+                            offset = 0
+                            while offset < len(events):
+                                _, _, _, length = EVENT.unpack_from(events, offset)
+                                offset += EVENT.size
+                                name = os.fsdecode(events[offset:offset + length].rstrip(b'\0'))
+                                offset += length
+                                if name in targets and name not in completed:
+                                    completed[name] = now
+                        elif process.poll() is not None:
+                            break
+                    status = process.wait(timeout=10)
+                except BaseException:
+                    process.kill()
+                    raise
+            if status or list(completed) != list(targets):
+                log.seek(0)
+                raise RuntimeError(f'LibreOffice warm batch did not complete in input order: {log.read()}')
+    finally:
+        os.close(watcher)
+
+    for name, target in targets.items():
+        (output / name).replace(target)
+    timestamps = [start, *completed.values()]
+    return [(end - begin) * 1000 for begin, end in zip(timestamps, timestamps[1:])]

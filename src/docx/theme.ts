@@ -36,7 +36,25 @@ export const DEFAULT_THEME: Theme = {
   hasTheme: false,
 };
 
-export function parseTheme(root: XmlElement | undefined): Theme {
+/** The theme's script font for a language (w:themeFontLang), as DrawingML names scripts. */
+function themeScript(lang: string | undefined): string | undefined {
+  const l = lang?.toLowerCase() ?? '';
+  if (!l) return undefined;
+  if (l.startsWith('ja')) return 'Jpan';
+  if (l.startsWith('ko')) return 'Hang';
+  if (/^zh-(tw|hk|mo|hant)/.test(l)) return 'Hant';
+  if (l.startsWith('zh')) return 'Hans';
+  if (/^(ar|fa|ur|ps|sd|ug)\b/.test(l)) return 'Arab';
+  if (l.startsWith('he') || l.startsWith('yi')) return 'Hebr';
+  if (l.startsWith('th')) return 'Thai';
+  return undefined;
+}
+
+/**
+ * The theme's fonts and colours. `langs` is the document's w:themeFontLang: an empty East Asian or
+ * complex script slot takes the theme's font for that language's script (游明朝 for Japanese).
+ */
+export function parseTheme(root: XmlElement | undefined, langs: { eastAsia?: string; bidi?: string } = {}): Theme {
   if (!root) return DEFAULT_THEME;
   const theme: Theme = { ...DEFAULT_THEME, colors: { ...DEFAULT_THEME.colors }, hasTheme: true };
   const scheme = descendant(root, 'a:clrScheme');
@@ -55,10 +73,14 @@ export function parseTheme(root: XmlElement | undefined): Theme {
     const minor = child(fonts, 'a:minorFont');
     theme.majorLatin = child(major, 'a:latin')?.attrs.typeface || theme.majorLatin;
     theme.minorLatin = child(minor, 'a:latin')?.attrs.typeface || theme.minorLatin;
-    theme.majorEastAsia = child(major, 'a:ea')?.attrs.typeface ?? '';
-    theme.minorEastAsia = child(minor, 'a:ea')?.attrs.typeface ?? '';
-    theme.majorCs = child(major, 'a:cs')?.attrs.typeface ?? '';
-    theme.minorCs = child(minor, 'a:cs')?.attrs.typeface ?? '';
+    const script = (font: XmlElement | undefined, lang: string | undefined) => {
+      const s = themeScript(lang);
+      return (s && children(font, 'a:font').find((f) => f.attrs.script === s)?.attrs.typeface) || '';
+    };
+    theme.majorEastAsia = child(major, 'a:ea')?.attrs.typeface || script(major, langs.eastAsia);
+    theme.minorEastAsia = child(minor, 'a:ea')?.attrs.typeface || script(minor, langs.eastAsia);
+    theme.majorCs = child(major, 'a:cs')?.attrs.typeface || script(major, langs.bidi);
+    theme.minorCs = child(minor, 'a:cs')?.attrs.typeface || script(minor, langs.bidi);
   }
   return theme;
 }

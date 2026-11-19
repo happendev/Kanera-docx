@@ -1,9 +1,6 @@
 import { isEastAsian } from './script.js';
 
-/**
- * Fonts shipped in the package's `fonts/` directory. Families are listed so a loader can fetch
- * only what a document needs; the family names must match each file's name table.
- */
+/** Lazy loaders use these family names to match the faces in each font's name table. */
 export interface BundledFont {
   covers?: (cp: number) => boolean;
   file: string;
@@ -20,23 +17,53 @@ const four = (family: string, prefix: string): BundledFont[] => [
   { file: `${prefix}-BoldItalic.ttf`, family, bold: true, italic: true, weight: 700 },
 ];
 
-export const BUNDLED_FONTS: BundledFont[] = [
-  { file: 'NotoSansCJKjp-Regular.ttf', family: 'Noto Sans CJK JP', bold: false, italic: false, weight: 400, covers: isEastAsian },
+/** The opt-in browser pack keeps common Word substitutes and general-purpose glyph fallbacks. */
+export const COMMON_FONTS: BundledFont[] = [
   ...four('Carlito', 'Carlito'),
   ...four('Caladea', 'Caladea'),
   ...four('Liberation Sans', 'LiberationSans'),
   ...four('Liberation Serif', 'LiberationSerif'),
   ...four('Liberation Mono', 'LiberationMono'),
   ...four('Gelasio', 'Gelasio'),
-  ...four('Roboto', 'Roboto'),
-  { file: 'Roboto-Medium.ttf', family: 'Roboto Medium', bold: false, italic: false, weight: 500 },
-  { file: 'Roboto-MediumItalic.ttf', family: 'Roboto Medium', bold: false, italic: true, weight: 500 },
-  { file: 'Roboto-Light.ttf', family: 'Roboto Light', bold: false, italic: false, weight: 300 },
-  { file: 'Roboto-LightItalic.ttf', family: 'Roboto Light', bold: false, italic: true, weight: 300 },
+  ...four('Morrow Sans', 'MorrowSans'),
+  ...four('Morrow Sans Display', 'MorrowSansDisplay'),
+  ...four('Morrow Sans Narrow', 'MorrowSans-Narrow'),
+  { file: 'MorrowSans-Light.ttf', family: 'Morrow Sans Light', bold: false, italic: false, weight: 300 },
+  { file: 'MorrowSans-LightItalic.ttf', family: 'Morrow Sans Light', bold: false, italic: true, weight: 300 },
   { file: 'Selawik-Regular.ttf', family: 'Selawik', bold: false, italic: false, weight: 400 },
   { file: 'Selawik-Bold.ttf', family: 'Selawik', bold: true, italic: false, weight: 700 },
   { file: 'Selawik-Light.ttf', family: 'Selawik Light', bold: false, italic: false, weight: 300 },
   { file: 'Selawik-Semibold.ttf', family: 'Selawik Semibold', bold: false, italic: false, weight: 600 },
   { file: 'DejaVuSans.ttf', family: 'DejaVu Sans', bold: false, italic: false, weight: 400 },
   { file: 'DejaVuSans-Bold.ttf', family: 'DejaVu Sans', bold: true, italic: false, weight: 700 },
+];
+
+/** Font faces available by default in Node and the browser. */
+export const FULL_FONTS: BundledFont[] = [
+  ...COMMON_FONTS,
+  { file: 'NotoSansCJKjp-Regular.ttf', family: 'Noto Sans CJK JP', bold: false, italic: false, weight: 400, covers: isEastAsian },
+  ...four('Liberation Sans Narrow', 'LiberationSansNarrow'),
+  ...four('Morrow Mono', 'MorrowMono'),
+  ...four('Onward', 'Onward'),
+  ...four('Taper', 'Taper'),
+  { file: 'Taper-Light.ttf', family: 'Taper Light', bold: false, italic: false, weight: 400 },
+  { file: 'Taper-LightItalic.ttf', family: 'Taper Light', bold: false, italic: true, weight: 400 },
+  { file: 'Gleis-Regular.ttf', family: 'Gleis', bold: false, italic: false, weight: 400 },
+  { file: 'Gleis-Bold.ttf', family: 'Gleis', bold: true, italic: false, weight: 700 },
+  { file: 'Gleis-Condensed.ttf', family: 'Gleis Condensed', bold: false, italic: false, weight: 400 },
+  { file: 'Gleis-BoldCondensed.ttf', family: 'Gleis Condensed', bold: true, italic: false, weight: 700 },
+  { file: 'Gleis-SemiCondensed.ttf', family: 'Gleis SemiCondensed', bold: false, italic: false, weight: 400 },
+  { file: 'Gleis-BoldSemiCondensed.ttf', family: 'Gleis SemiCondensed', bold: true, italic: false, weight: 700 },
+  { file: 'Anvil.ttf', family: 'Anvil', bold: false, italic: false, weight: 400 },
+  { file: 'ArchivoBlack-Regular.ttf', family: 'Archivo Black', bold: false, italic: false, weight: 400 },
+  ...four('Comic Neue', 'ComicNeue'),
+  ...four('Roboto', 'Roboto'),
+  { file: 'Roboto-Medium.ttf', family: 'Roboto Medium', bold: false, italic: false, weight: 500 },
+  { file: 'Roboto-MediumItalic.ttf', family: 'Roboto Medium', bold: false, italic: true, weight: 500 },
+  { file: 'Roboto-Light.ttf', family: 'Roboto Light', bold: false, italic: false, weight: 300 },
+  { file: 'Roboto-LightItalic.ttf', family: 'Roboto Light', bold: false, italic: true, weight: 300 },
+  { file: 'DejaVuSansMono.ttf', family: 'DejaVu Sans Mono', bold: false, italic: false, weight: 400 },
+  { file: 'DejaVuSansMono-Bold.ttf', family: 'DejaVu Sans Mono', bold: true, italic: false, weight: 700 },
+  { file: 'DejaVuSansMono-Oblique.ttf', family: 'DejaVu Sans Mono', bold: false, italic: true, weight: 400 },
+  { file: 'DejaVuSansMono-BoldOblique.ttf', family: 'DejaVu Sans Mono', bold: true, italic: true, weight: 700 },
 ];
