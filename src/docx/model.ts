@@ -270,6 +270,8 @@ export interface TableCell {
   margins: CellMargins;
   vAlign: 'top' | 'center' | 'bottom';
   noWrap: boolean;
+  /** w:hideMark: an empty cell's paragraph mark doesn't count toward the row height. */
+  hideMark: boolean;
   textDirection: string;
   content: Block[];
 }

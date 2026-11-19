@@ -44,6 +44,19 @@ describe('convertDocx (node)', () => {
     expect(two).toContain('Page 2');
   });
 
+  it('stops stroking text after a synthesised bold run', async () => {
+    // Roboto Light has no bold face, so its bold is drawn with a stroke; the text render
+    // mode outlives ET and must not carry over to the plain paragraph that follows.
+    const body = p('Heading', '', '<w:rFonts w:ascii="Roboto Light" w:hAnsi="Roboto Light"/><w:b/>') + p('Plain');
+    const { pdf } = await convertDocx(makeDocx({ body }), { compress: false });
+    const content = pdfStreams(pdf).join('\n');
+    const stroked = content.split('\n').filter((l) => l.includes(' 2 Tr '));
+    expect(stroked).toHaveLength(1);
+    const at = content.indexOf(stroked[0]);
+    expect(content.slice(0, at).trimEnd().endsWith('q')).toBe(true);
+    expect(content.slice(at + stroked[0].length).trimStart().startsWith('Q')).toBe(true);
+  });
+
   it('accepts ArrayBuffers and file paths', async () => {
     const bytes = sampleDocx();
     const fromBuffer = await docxToPdf(new Uint8Array(bytes).buffer);

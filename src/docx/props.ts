@@ -553,6 +553,7 @@ export interface TcDelta {
   margins?: Partial<CellMargins>;
   vAlign?: 'top' | 'center' | 'bottom';
   noWrap?: boolean;
+  hideMark?: boolean;
   textDirection?: string;
 }
 
@@ -719,6 +720,9 @@ export function parseTcDelta(tcPr: XmlElement | undefined, ctx: PropContext): Tc
       }
       case 'w:noWrap':
         d.noWrap = onOff(el);
+        break;
+      case 'w:hideMark':
+        d.hideMark = onOff(el);
         break;
       case 'w:textDirection':
         d.textDirection = el.attrs['w:val'];

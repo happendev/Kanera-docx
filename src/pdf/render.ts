@@ -106,11 +106,18 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
       const font = op.face.font;
       const toPdfUnits = 1000 / font.unitsPerEm;
       const th = op.scaleX || 1;
-      if (op.alpha !== undefined && op.alpha < 1) out.push(`q /${alphaFor(op.alpha)} gs`);
+      // Text render mode, horizontal scaling, stroke colour and line width outlive ET, so stroked
+      // (bold or outline) and scaled text saves and restores the graphics state; otherwise every
+      // later run would be stroked or scaled too.
+      const stroked = op.syntheticBold || op.outline;
+      const alpha = op.alpha !== undefined && op.alpha < 1;
+      const save = alpha || stroked || th !== 1;
+      if (alpha) out.push(`q /${alphaFor(op.alpha!)} gs`);
+      else if (save) out.push('q');
       let s = `BT /${use.resName} ${num(op.size)} Tf `;
       if (th !== 1) s += `${num(th * 100)} Tz `;
       s += color(op.color, false) + ' ';
-      if (op.syntheticBold || op.outline) {
+      if (stroked) {
         s += `${color(op.color, true)} ${num(op.size * (op.outline ? 0.02 : 0.03))} w ${op.outline ? 1 : 2} Tr `;
       }
       const x0 = op.x + op.xs[0];
@@ -128,7 +135,7 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
       }
       s += '] TJ ET';
       out.push(s);
-      if (op.alpha !== undefined && op.alpha < 1) out.push('Q');
+      if (save) out.push('Q');
     };
 
     const draw = (op: DrawOp) => {

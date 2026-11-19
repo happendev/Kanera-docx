@@ -278,7 +278,10 @@ export function measureTable(table: Table, avail: number, env: BoxEnv): TableLay
       const cx = colX[c0];
       const cw = Math.max(0, colX[c1] - cx);
       const inner = Math.max(1, cw - cell.margins.left - cell.margins.right);
-      const box = cell.vMerge === 'continue' ? { height: 0, items: [] } : layoutBlocks(cell.content, inner, env);
+      // A continued merge has no content of its own. An empty cell marked hideMark has none
+      // either: Word ignores its paragraph mark, so a row of them collapses to its margins.
+      const empty = cell.vMerge === 'continue' || (cell.hideMark && cell.content.every((b) => b.type === 'paragraph' && b.content.length === 0 && !b.numbering));
+      const box = empty ? { height: 0, items: [] } : layoutBlocks(cell.content, inner, env);
       cells.push({ cell, col, x: cx, width: cw, box, rowSpan: 1 });
       col += cell.gridSpan;
     }

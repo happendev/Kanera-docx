@@ -226,6 +226,19 @@ describe('numbering', () => {
     expect(apples.x).toBeCloseTo(72 + 36, 1);
   });
 
+  it("lends a bullet's ascent to the line but never its descent", async () => {
+    // Symbol (ascent 2059/2048, kept although the bullet is drawn from another font) is taller
+    // than Arial and pushes the baseline down. Courier New descends further than Arial but leaves
+    // the line as tall as plain text.
+    const courier = '<w:abstractNum w:abstractNumId="2"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="o"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/></w:rPr></w:lvl></w:abstractNum><w:num w:numId="3"><w:abstractNumId w:val="2"/></w:num>';
+    const r = await layout(makeDocx({ styles: ARIAL_STYLES, numbering: numbering + courier, body: item('One', 1) + item('Two', 1) + item('Three', 3) + item('Four', 3) + p('Five') }));
+    const ys = lines(r.pages[0].body).map((l) => l.y);
+    expect(ys[0]).toBeCloseTo(72 + ((2059 + 67) / 2048) * 11, 2);
+    expect(ys[1] - ys[0]).toBeCloseTo(((2059 + 434 + 67) / 2048) * 11, 2);
+    expect(ys[3] - ys[2]).toBeCloseTo(ARIAL_11, 2);
+    expect(ys[4] - ys[3]).toBeCloseTo(ARIAL_11, 2);
+  });
+
   it('counts multi-level lists and restarts sub-levels', async () => {
     const body = item('One', 2) + item('Sub a', 2, 1) + item('Sub b', 2, 1) + item('Deep', 2, 2) + item('Two', 2) + item('Sub again', 2, 1);
     const r = await layout(makeDocx({ styles: ARIAL_STYLES, numbering, body }));
@@ -256,6 +269,17 @@ describe('tables', () => {
     expect(ls[1].y - ls[0].y).toBeCloseTo(ARIAL_11 + 1, 2);
     const strokes = r.pages[0].body.filter((o) => o.kind === 'line');
     expect(strokes.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('collapses a row of empty cells marked hideMark', async () => {
+    const spacer = (tcPr: string) =>
+      `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid><w:tr>${cell('A1', 3000)}</w:tr><w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/>${tcPr}</w:tcPr><w:p/></w:tc></w:tr></w:tbl>${p('After')}`;
+    const pitch = async (tcPr: string) => {
+      const ls = lines((await layout(makeDocx({ styles: ARIAL_STYLES, body: spacer(tcPr) }))).pages[0].body);
+      return ls[1].y - ls[0].y;
+    };
+    expect(await pitch('<w:hideMark/>')).toBeCloseTo(ARIAL_11, 2);
+    expect(await pitch('')).toBeCloseTo(2 * ARIAL_11, 2);
   });
 
   it('adds the top border to a minimum row height', async () => {
@@ -379,6 +403,14 @@ describe('justification', () => {
     expect(lastA.x + a).toBeCloseTo(72 + fiveWords - 2, 1);
     const left = lines((await layout(makeDocx({ styles: ARIAL_STYLES, body: para('left') }))).pages[0].body);
     expect(left[0].text.match(/aaaa/g)).toHaveLength(4);
+  });
+
+  it("also shrinks the spaces of a paragraph's last line", async () => {
+    const five = p(Array(5).fill('aaaa').join(' '), `<w:ind w:right="${indentRight}"/><w:jc w:val="both"/>`);
+    const ls = lines((await layout(makeDocx({ styles: ARIAL_STYLES, body: five }))).pages[0].body);
+    expect(ls).toHaveLength(1);
+    const glyphs = ls[0].ops.flatMap((o) => o.xs.map((x, i) => ({ x: o.x + x, text: o.texts[i] })));
+    expect(glyphs.filter((g) => g.text === 'a').at(-1)!.x + a).toBeCloseTo(72 + fiveWords - 2, 1);
   });
 
   it('only shrinks spaces in Word 2013+ compatibility mode', async () => {

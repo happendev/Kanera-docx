@@ -61,6 +61,10 @@ const RULES: Record<string, SubstituteRule> = {
   'franklin gothic book': { families: ['liberation sans'], metricCompatible: false },
   'open sans': { families: ['open sans', 'selawik'], metricCompatible: false },
   univers: { families: ['liberation sans'], metricCompatible: false },
+  // Bullets in these fonts are drawn from Unicode fonts; the line still gets the original's
+  // height (Word's PDFs report Symbol's ascent as 1.005 em, taller than Calibri's).
+  symbol: { families: ['dejavu sans', 'noto sans symbols2', 'noto sans symbols', 'symbola'], metricCompatible: false, vmetrics: [2059 / 2048, 442 / 2048, 0] },
+  wingdings: { families: ['dejavu sans', 'noto sans symbols2', 'noto sans symbols', 'symbola'], metricCompatible: false, vmetrics: [1841 / 2048, 432 / 2048, 0] },
   'ms sans serif': { families: ['liberation sans'], metricCompatible: false },
   'ms serif': { families: ['liberation serif'], metricCompatible: false },
   'small fonts': { families: ['liberation sans'], metricCompatible: false },

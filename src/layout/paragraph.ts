@@ -281,7 +281,6 @@ export class ParagraphLayout {
     // Word keeps a word on a justified line when shrinking the line's spaces makes room for it.
     const shrink = this.para.props.align === 'both' && this.env.settings.compatibilityMode >= 15 ? SPACE_SHRINK : 0;
     let spaceSum = 0;
-    let beforeSlack = -1; // break candidate when the line first ran past `right`
     for (; i < atoms.length; i++) {
       const a = atoms[i];
       if (a.k === 'br') {
@@ -321,13 +320,10 @@ export class ParagraphLayout {
         }
         continue;
       }
-      if (w > 0 && x + w > right + EPS && hasContent) {
-        if (x + w > right + shrink * spaceSum + EPS) {
-          if (candidate > start) end = candidate;
-          else end = i; // emergency break inside a word
-          break;
-        }
-        if (beforeSlack < 0) beforeSlack = candidate;
+      if (w > 0 && x + w > right + shrink * spaceSum + EPS && hasContent) {
+        if (candidate > start) end = candidate;
+        else end = i; // emergency break inside a word
+        break;
       }
       xs.push(x);
       ws.push(w);
@@ -339,8 +335,6 @@ export class ParagraphLayout {
       }
     }
     if (end < 0) end = finish(i);
-    // The last line is not justified, so its spaces cannot shrink: break before the overflowing word.
-    if (end >= atoms.length && beforeSlack > start && !brk) end = beforeSlack;
     if (end <= start && start < atoms.length) end = start + 1; // always make progress
     xs.length = end - start;
     ws.length = end - start;
@@ -407,8 +401,16 @@ export class ParagraphLayout {
     const floats: Drawing[] = [];
     const notes: Line['notes'] = [];
     let rpb = false;
+    // A numbering label lends the line its ascent but never its descent: Courier New "o" bullets
+    // leave Calibri lines exactly as tall as plain ones, while Symbol's taller "•" pushes the
+    // baseline down (measured against Word's PDFs).
+    let labelAscent = 0;
     for (let k = start; k < end; k++) {
       const a = atoms[k];
+      if (k < this.labelEnd && (a.k === 'g' || a.k === 'tab')) {
+        if (a.k === 'tab' || a.run.glyphs[a.gi].gid !== -1) labelAscent = Math.max(labelAscent, a.run.ascent + (a.k === 'g' ? a.run.baselineShift : 0));
+        continue;
+      }
       switch (a.k) {
         case 'g':
           if (a.run.glyphs[a.gi].gid === -1) break;
@@ -450,6 +452,8 @@ export class ParagraphLayout {
       textAscent = mark.ascent;
       textDescent = mark.descent;
     }
+    ascent = Math.max(ascent, labelAscent);
+    textAscent = Math.max(textAscent, labelAscent);
     const { height, baseline } = lineHeight(ascent, descent, ext, this.para.props, this.env.gridPitch, textAscent + textDescent + ext);
 
     // Alignment and justification.
@@ -460,7 +464,9 @@ export class ParagraphLayout {
     const justify = { from: start, perGap: 0, perChar: 0 };
     const endsWithLineBreak = brk === 'line';
     const justifyThis = (p.align === 'both' && !isLast && !(endsWithLineBreak && this.env.settings.doNotExpandShiftReturn)) || p.align === 'distribute';
-    if (justifyThis && (used < avail || (p.align === 'both' && used > avail + EPS))) {
+    // A justified line that kept its last word by shrinking its spaces stays shrunk, even when it
+    // is the paragraph's last line (which otherwise isn't justified).
+    if ((justifyThis && used < avail) || (p.align === 'both' && used > avail + EPS)) {
       const extra = avail - used;
       // Only spaces after the last tab stretch.
       let from = start;

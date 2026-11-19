@@ -808,6 +808,7 @@ class DocxParser {
           margins: { ...rowMargins, ...(tcD.margins ?? {}) },
           vAlign: tcD.vAlign ?? 'top',
           noWrap: !!tcD.noWrap,
+          hideMark: !!tcD.hideMark,
           textDirection: tcD.textDirection ?? 'lrTb',
           content: this.parseBlocks(tc, { part: pctx.part, table: tableCtx }),
         };

@@ -22,9 +22,11 @@ Matching Word means reproducing its layout rules, not only its formatting:
   spacing adds its extra space below the text, and that space may hang into the bottom margin;
   spacing before a paragraph is dropped at the top of a page only after a natural page break.
   Superscripts and subscripts are sized in whole half-points as Word does and don't change the line
-  height.
-- **Word's line breaking.** Justified lines in Word 2013+ documents shrink their spaces by up to a
-  quarter to keep one more word, as Word does; older documents only stretch.
+  height. A list bullet can make its line taller but never deeper, and a missing Symbol or
+  Wingdings font keeps its own line metrics.
+- **Word's line breaking.** Justified lines in Word 2013+ documents, a paragraph's last line
+  included, shrink their spaces by up to a quarter to keep one more word, as Word does; older
+  documents only stretch.
 - **Word's pagination.** Widow/orphan control (on by default, as in Word), keep-with-next chains,
   keep-lines-together, page-break-before, table rows that can't split, repeated header rows,
   footnotes reserved at the page bottom, header and footer heights pushing the body down.
@@ -163,7 +165,8 @@ typical document loads only two or three families.
 - Tables: grid and preferred widths (fixed, auto, percent), merged cells both ways, cell and table
   borders, conditional table-style formatting (header row, banding, first column, ...),
   cell margins, vertical alignment, nested tables, rows split across pages, repeated header rows,
-  row-level property exceptions, and floating tables (`w:tblpPr`) with text wrapping beside them.
+  row-level property exceptions, empty cells that don't count toward the row height (`w:hideMark`),
+  and floating tables (`w:tblpPr`) with text wrapping beside them.
 - Sections: page size and orientation, margins, gutters, columns, different first/even headers and
   footers, header and footer inheritance, page number formats and restarts, page borders,
   continuous, even- and odd-page section breaks.
