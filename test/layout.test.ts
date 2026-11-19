@@ -87,9 +87,9 @@ describe('line height and spacing', () => {
     const typo = view.getInt16(os2 + 68) - view.getInt16(os2 + 70) + view.getInt16(os2 + 72);
     const doc = parseDocx(makeDocx({ styles: ARIAL_STYLES, body: p('One', '', '<w:rFonts w:ascii="Typo Sans" w:hAnsi="Typo Sans"/>') + p('Two', '', '<w:rFonts w:ascii="Typo Sans" w:hAnsi="Typo Sans"/>') }));
     const fonts = new FontRegistry();
-    for (const b of BUNDLED_FONTS) fonts.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, load: async () => readFileSync(new URL(`../fonts/${b.file}`, import.meta.url)) }, 'bundled');
+    for (const b of BUNDLED_FONTS) fonts.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load: async () => readFileSync(new URL(`../fonts/${b.file}`, import.meta.url)) }, 'bundled');
     fonts.add({ family: 'Typo Sans', bold: false, italic: false, load: async () => font }, 'user');
-    await fonts.prepare(doc.fontFamilies, doc.codePoints);
+    await fonts.prepare(doc.fontRequests);
     const ys = lines(layoutDocument(doc, fonts).pages[0].body).map((l) => l.y);
     expect(ys[1] - ys[0]).toBeCloseTo((typo / 2048) * 11, 2);
   });

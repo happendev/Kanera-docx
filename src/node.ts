@@ -25,7 +25,7 @@ function bundledProvider(dir: string): FontProvider {
   return {
     register(registry: FontRegistry) {
       for (const b of BUNDLED_FONTS) {
-        registry.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, load: () => readFile(join(dir, b.file)) }, 'bundled');
+        registry.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load: () => readFile(join(dir, b.file)) }, 'bundled');
       }
     },
   };
@@ -149,6 +149,6 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | string, opti
 }
 
 /** Convert a .docx (bytes or a file path) to PDF bytes. */
-export async function docxToPdf(input: Uint8Array | ArrayBuffer | string, options: NodeConvertOptions = {}): Promise<Uint8Array> {
+export async function docxToPdf(input: Uint8Array | ArrayBuffer | string, options: NodeConvertOptions = {}): Promise<Uint8Array<ArrayBuffer>> {
   return (await convertDocx(input, options)).pdf;
 }

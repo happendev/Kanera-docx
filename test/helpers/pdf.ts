@@ -21,7 +21,7 @@ export const ghostscript = hasGhostscript();
  * that the PDF is readable by a third-party parser and says what the document says.
  */
 export function pdfPagesText(pdf: Uint8Array): string[] {
-  const dir = mkdtempSync(join(tmpdir(), 'folio-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'docx2pdf-test-'));
   try {
     const file = join(dir, 'in.pdf');
     writeFileSync(file, pdf);
@@ -43,7 +43,7 @@ export function pdfPagesText(pdf: Uint8Array): string[] {
 
 /** Render page 1 with Ghostscript; throws if Ghostscript reports an error. */
 export function ghostscriptRenders(pdf: Uint8Array): void {
-  const dir = mkdtempSync(join(tmpdir(), 'folio-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'docx2pdf-test-'));
   try {
     const file = join(dir, 'in.pdf');
     writeFileSync(file, pdf);

@@ -12,6 +12,13 @@ export interface Border {
   color: Color;
 }
 
+export interface FontRequest {
+  family: string;
+  bold: boolean;
+  italic: boolean;
+  codePoints: Set<number>;
+}
+
 export interface RunProps {
   fontAscii: string;
   fontHAnsi: string;
@@ -477,8 +484,7 @@ export interface DocxDocument {
   info: DocumentInfo;
   background: Color;
   /** Families referenced anywhere, for font preloading. */
-  fontFamilies: Set<string>;
-  codePoints: Set<number>;
+  fontRequests: FontRequest[];
   embeddedFonts: Array<{ family: string; bold: boolean; italic: boolean; data: Uint8Array }>;
   fontHints: Map<string, { family?: string; pitch?: string; panose?: string; charset?: string; altName?: string }>;
   warnings: string[];

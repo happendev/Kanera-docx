@@ -8,6 +8,6 @@ export { convertDocx };
 export type { ConvertOptions, ConvertResult, FontSource, LayoutStats } from './core.js';
 
 /** Convert a .docx file to PDF bytes. */
-export async function docxToPdf(input: Uint8Array | ArrayBuffer, options: ConvertOptions = {}): Promise<Uint8Array> {
+export async function docxToPdf(input: Uint8Array | ArrayBuffer, options: ConvertOptions = {}): Promise<Uint8Array<ArrayBuffer>> {
   return (await convertDocx(input, options)).pdf;
 }

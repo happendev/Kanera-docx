@@ -85,8 +85,8 @@ class BitReader {
   }
 
   need(n: number): void {
-    while (this.bitCnt < n) {
-      const byte = this.pos < this.data.length ? this.data[this.pos] : 0;
+    while (this.bitCnt < n && this.pos < this.data.length) {
+      const byte = this.data[this.pos];
       this.pos++;
       this.bitBuf |= byte << this.bitCnt;
       this.bitCnt += 8;
@@ -96,6 +96,7 @@ class BitReader {
   bits(n: number): number {
     if (n === 0) return 0;
     this.need(n);
+    if (this.bitCnt < n) throw new Error('inflate: truncated stream');
     const v = this.bitBuf & ((1 << n) - 1);
     this.bitBuf >>>= n;
     this.bitCnt -= n;
@@ -105,7 +106,7 @@ class BitReader {
   decode(h: Huffman): number {
     this.need(FAST_BITS);
     const entry = h.fast[this.bitBuf & ((1 << FAST_BITS) - 1)];
-    if (entry) {
+    if (entry && (entry & 15) <= this.bitCnt) {
       const len = entry & 15;
       this.bitBuf >>>= len;
       this.bitCnt -= len;
@@ -137,51 +138,34 @@ class BitReader {
 class Output {
   buf: Uint8Array;
   len = 0;
-  constructor(size: number) {
-    this.buf = new Uint8Array(Math.max(size, 1024));
+  constructor(size: number, private readonly limit: number) {
+    this.buf = new Uint8Array(Math.min(limit, Math.max(1024, Math.min(size, 65536))));
   }
   ensure(extra: number): void {
+    if (this.len + extra > this.limit) throw new Error('inflate: decoded size exceeds limit');
     if (this.len + extra <= this.buf.length) return;
     let n = this.buf.length * 2;
     while (n < this.len + extra) n *= 2;
-    const nb = new Uint8Array(n);
+    const nb = new Uint8Array(Math.min(n, this.limit));
     nb.set(this.buf.subarray(0, this.len));
     this.buf = nb;
   }
 }
 
 /** Decode raw DEFLATE data. `sizeHint` preallocates the output when the size is known. */
-export function inflateRaw(data: Uint8Array, sizeHint = 0, start = 0): Uint8Array {
+export function inflateRaw(data: Uint8Array, sizeHint = 0, start = 0, limit = 256 * 1024 * 1024): Uint8Array {
   const br = new BitReader(data, start);
-  const out = new Output(sizeHint || data.length * 4);
+  const out = new Output(sizeHint || data.length * 4, limit);
   let final = 0;
   do {
     final = br.bits(1);
     const type = br.bits(2);
     if (type === 0) {
       br.alignToByte();
-      // Remaining whole bytes in the bit buffer come first.
-      const header: number[] = [];
-      while (br.bitCnt >= 8 && header.length < 4) {
-        header.push(br.bitBuf & 255);
-        br.bitBuf >>>= 8;
-        br.bitCnt -= 8;
-      }
-      while (header.length < 4) header.push(data[br.pos++]);
-      const len = header[0] | (header[1] << 8);
+      const len = br.bits(16);
+      if ((len ^ br.bits(16)) !== 0xffff) throw new Error('inflate: invalid stored block length');
       out.ensure(len);
-      // Any bytes still buffered belong to the stored payload.
-      let copied = 0;
-      while (br.bitCnt >= 8 && copied < len) {
-        out.buf[out.len++] = br.bitBuf & 255;
-        br.bitBuf >>>= 8;
-        br.bitCnt -= 8;
-        copied++;
-      }
-      const rest = len - copied;
-      out.buf.set(data.subarray(br.pos, br.pos + rest), out.len);
-      out.len += rest;
-      br.pos += rest;
+      for (let i = 0; i < len; i++) out.buf[out.len++] = br.bits(8);
     } else if (type === 1 || type === 2) {
       let lit: Huffman;
       let dist: Huffman;
@@ -250,5 +234,6 @@ export function inflateZlib(data: Uint8Array, sizeHint = 0): Uint8Array {
   const flg = data[1];
   if ((cmf & 15) !== 8 || ((cmf << 8) | flg) % 31 !== 0) throw new Error('zlib: bad header');
   const start = flg & 0x20 ? 6 : 2;
-  return inflateRaw(data, sizeHint, start);
+  if (data.length < start + 4) throw new Error('zlib: truncated');
+  return inflateRaw(data.subarray(0, data.length - 4), sizeHint, start);
 }

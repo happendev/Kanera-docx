@@ -1,4 +1,4 @@
-import { ZipArchive } from '../util/zip.js';
+import { ZipArchive, type ArchiveLimits } from '../util/zip.js';
 import { children, parseXml, type XmlElement } from '../util/xml.js';
 
 export interface Relationship {
@@ -14,8 +14,8 @@ export class OpcPackage {
   private xmlCache = new Map<string, XmlElement | null>();
   private relsCache = new Map<string, Map<string, Relationship>>();
 
-  constructor(data: Uint8Array) {
-    this.zip = new ZipArchive(data);
+  constructor(data: Uint8Array, limits?: ArchiveLimits) {
+    this.zip = new ZipArchive(data, limits);
   }
 
   xml(part: string): XmlElement | undefined {
@@ -31,6 +31,17 @@ export class OpcPackage {
     }
     this.xmlCache.set(part, el);
     return el ?? undefined;
+  }
+
+  contentType(part: string): string | undefined {
+    const root = this.xml('[Content_Types].xml');
+    const ext = part.split('.').pop()?.toLowerCase();
+    // The XML reader preserves unprefixed names in the OPC content-types namespace.
+    const declarations = children(root);
+    const local = (name: string) => name.split(':').pop();
+    const override = declarations.find((e) => local(e.name) === 'Override' && e.attrs.PartName === '/' + part);
+    const fallback = declarations.find((e) => local(e.name) === 'Default' && e.attrs.Extension?.toLowerCase() === ext);
+    return (override ?? fallback)?.attrs.ContentType?.split(';')[0].trim().toLowerCase();
   }
 
   bytes(part: string): Uint8Array | null {

@@ -1,5 +1,6 @@
+import { fontFor } from '../fonts/script.js';
 import { deobfuscateFont } from '../fonts/odttf.js';
-import { attr, child, children, descendant, resolveAlternateContent, textContent, type XmlElement } from '../util/xml.js';
+import { attr, child, children, decodeEntities, descendant, resolveAlternateContent, textContent, type XmlElement } from '../util/xml.js';
 import { parseDrawing, parseVml, loadImage, type DrawingContext } from './drawing.js';
 import type {
   Block,
@@ -10,6 +11,7 @@ import type {
   DocSettings,
   DocxDocument,
   HeaderFooterRefs,
+  FontRequest,
   ImageRef,
   Inline,
   Link,
@@ -24,6 +26,7 @@ import type {
   TableRow,
 } from './model.js';
 import { Numbering } from './numbering.js';
+import type { ArchiveLimits } from '../util/zip.js';
 import { OpcPackage } from './package.js';
 import {
   finalizePara,
@@ -77,8 +80,8 @@ interface FieldFrame {
 
 const DEFAULT_SECTION_TWIPS = { w: 12240, h: 15840, margin: 1440, header: 720, footer: 720 };
 
-export function parseDocx(data: Uint8Array): DocxDocument {
-  return new DocxParser(data).parse();
+export function parseDocx(data: Uint8Array, limits?: ArchiveLimits): DocxDocument {
+  return new DocxParser(data, limits).parse();
 }
 
 class DocxParser {
@@ -91,16 +94,15 @@ class DocxParser {
   private settings: DocSettings;
   private fieldStack: FieldFrame[] = [];
   private images = new Map<string, ImageRef>();
-  private fontFamilies = new Set<string>();
-  private codePoints = new Set<number>();
+  private fontRequests = new Map<string, FontRequest>();
   private warnings: string[] = [];
   private headerCache = new Map<string, Block[]>();
   private prevHeaders: HeaderFooterRefs = {};
   private prevFooters: HeaderFooterRefs = {};
   private hyperlinkStack: Link[] = [];
 
-  constructor(data: Uint8Array) {
-    this.pkg = new OpcPackage(data);
+  constructor(data: Uint8Array, limits?: ArchiveLimits) {
+    this.pkg = new OpcPackage(data, limits);
     this.main = this.pkg.mainDocumentPart();
     const themeRel = this.pkg.relByType(this.main, '/theme');
     this.theme = themeRel ? parseTheme(this.pkg.xml(themeRel.target)) : DEFAULT_THEME;
@@ -236,8 +238,7 @@ class DocxParser {
       endnoteSeparator,
       info,
       background: bg ? (hexColor(bg.attrs['w:color']) ?? null) : null,
-      fontFamilies: this.fontFamilies,
-      codePoints: this.codePoints,
+      fontRequests: [...this.fontRequests.values()],
       embeddedFonts,
       fontHints,
       warnings: this.warnings,
@@ -257,11 +258,49 @@ class DocxParser {
     );
   }
 
+  private importChunk(el: XmlElement, pctx: PartContext): Block[] {
+    const id = el.attrs['r:id'] ?? '';
+    const rel = this.pkg.rels(pctx.part).get(id);
+    const type = rel && !rel.external ? this.pkg.contentType(rel.target) : undefined;
+    if (!rel || (type !== 'text/html' && type !== 'application/xhtml+xml' && type !== 'text/plain')) {
+      this.warnings.push('Skipped unsupported or missing altChunk import: ' + (rel?.target ?? id));
+      return [];
+    }
+    let text = this.pkg.zip.readText(rel.target);
+    if (text === null) {
+      this.warnings.push('Missing altChunk part: ' + rel.target);
+      return [];
+    }
+    if (type !== 'text/plain') {
+      // Import readable text only. HTML is never attached to a browser DOM or executed.
+      this.warnings.push('Imported HTML altChunk as plain text: ' + rel.target);
+      text = text.replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/<(head|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+        .replace(/\s+/g, ' ')
+        .replace(/<\/?(?:p|div|li|h[1-6]|br|tr|table|section|article)\b[^>]*>/gi, '\n')
+        .replace(/<\/t[dh]\s*>/gi, ' ')
+        .replace(/<\/?[a-z!](?:[^>"']|"[^"]*"|'[^']*')*>/gi, '');
+      text = decodeEntities(text.replace(/&nbsp;/gi, '\u00a0'));
+    }
+    const lines = text.split(/\r\n?|\n/);
+    const blocks: Block[] = [];
+    for (const line of lines) {
+      if (type !== 'text/plain' && !line.trim()) continue;
+      const para = this.parseParagraph({ name: 'w:p', attrs: {}, children: [] }, pctx);
+      this.pushText(para, type === 'text/plain' ? line : line.trim(), para.markProps);
+      blocks.push(para);
+    }
+    return blocks;
+  }
+
   private collectBlocks(container: XmlElement, pctx: PartContext, out: Block[]): void {
     for (const el of children(container)) {
       switch (el.name) {
         case 'w:p':
           out.push(this.parseParagraph(el, pctx));
+          break;
+        case 'w:altChunk':
+          out.push(...this.importChunk(el, pctx));
           break;
         case 'w:tbl':
           out.push(this.parseTable(el, pctx));
@@ -275,9 +314,19 @@ class DocxParser {
         case 'w:smartTag':
           this.collectBlocks(el, pctx, out);
           break;
-        case 'mc:AlternateContent':
-          for (const alt of resolveAlternateContent(el)) this.collectBlocks({ name: 'x', attrs: {}, children: [alt] }, pctx, out);
+        case 'w:del':
+        case 'w:moveFrom':
           break;
+        case 'mc:AlternateContent': {
+          const alternatives = resolveAlternateContent(el);
+          if (!alternatives.length) this.warnings.push('Skipped alternate block without a supported choice or fallback in ' + pctx.part);
+          for (const alt of alternatives) this.collectBlocks({ name: 'x', attrs: {}, children: [alt] }, pctx, out);
+          break;
+        }
+        default:
+          if (descendant(el, 'w:t') || descendant(el, 'w:drawing') || descendant(el, 'w:pict')) {
+            this.warnings.push('Skipped unsupported content block ' + el.name + ' in ' + pctx.part);
+          }
       }
     }
   }
@@ -453,26 +502,25 @@ class DocxParser {
   }
 
   private noteFonts(props: RunProps, text: string): void {
-    this.fontFamilies.add(props.fontAscii);
-    this.fontFamilies.add(props.fontHAnsi);
-    let ea = false;
-    let cs = false;
-    for (const ch of text) {
+    for (const ch of text || ' ') {
       const cp = ch.codePointAt(0)!;
-      this.codePoints.add(cp);
-      if (cp >= 0x2e80) ea = true;
-      if (cp >= 0x590 && cp < 0x900) cs = true;
+      const { family, bold, italic } = fontFor(cp, props);
+      const key = family + '\0' + Number(bold) + Number(italic);
+      let request = this.fontRequests.get(key);
+      if (!request) {
+        request = { family, bold, italic, codePoints: new Set() };
+        this.fontRequests.set(key, request);
+      }
+      request.codePoints.add(cp);
     }
-    if (ea || props.hint === 'eastAsia') this.fontFamilies.add(props.fontEastAsia);
-    if (cs || props.cs || props.rtl) this.fontFamilies.add(props.fontCs);
   }
 
   private pushText(para: Paragraph, text: string, props: RunProps): void {
     if (!text) return;
-    this.noteFonts(props, text);
     const frame = this.fieldStack[this.fieldStack.length - 1];
     if (frame && frame.kind && frame.phase === 'result') frame.cached += text;
     if (this.suppressed() || props.hidden) return;
+    this.noteFonts(props, text);
     const link = this.currentLink();
     const last = para.content[para.content.length - 1];
     if (last && last.type === 'text' && last.props === props && last.link === link) {
@@ -486,8 +534,8 @@ class DocxParser {
     const props = this.runProps(child(r, 'w:rPr'), styleId, pctx, tableOverridesSize);
     // Breaks, tabs and pictures are measured with the run's font too, so load it even when the
     // run has no text.
-    this.noteFonts(props, '');
     const visible = () => !this.suppressed() && !props.hidden;
+    if (visible()) this.noteFonts(props, '');
     const items = children(r);
     for (let idx = 0; idx < items.length; idx++) {
       const el = items[idx];
@@ -673,7 +721,9 @@ class DocxParser {
     const rowEls: XmlElement[] = [];
     const collectRows = (el: XmlElement) => {
       for (const c of children(el)) {
-        if (c.name === 'w:tr') rowEls.push(c);
+        if (c.name === 'w:tr') {
+          if (!child(child(c, 'w:trPr'), 'w:del')) rowEls.push(c);
+        }
         else if (c.name === 'w:sdt') collectRows(child(c, 'w:sdtContent') ?? c);
         else if (c.name === 'w:customXml' || c.name === 'w:ins') collectRows(c);
       }

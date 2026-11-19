@@ -31,6 +31,7 @@ export interface DocxSpec {
   /** External hyperlinks: relationship id → URL. */
   links?: Record<string, string>;
   footnotes?: string;
+  imports?: Record<string, { name: string; contentType: string; text: string }>;
 }
 
 export const A4_SECT = '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>';
@@ -53,6 +54,11 @@ export function makeDocx(spec: DocxSpec): Uint8Array {
   if (spec.settings !== undefined) {
     files.push(['word/settings.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings ${W_NS}>${spec.settings}</w:settings>`]);
     rels.push(`<Relationship Id="rIdSettings" Type="${REL}/settings" Target="settings.xml"/>`);
+  }
+  for (const [id, part] of Object.entries(spec.imports ?? {})) {
+    files.push(['word/' + part.name, part.text]);
+    rels.push('<Relationship Id="' + id + '" Type="' + REL + '/aFChunk" Target="' + part.name + '"/>');
+    overrides.push('<Override PartName="/word/' + part.name + '" ContentType="' + part.contentType + '"/>');
   }
   if (spec.footnotes !== undefined) {
     files.push(['word/footnotes.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:footnotes ${W_NS}>${spec.footnotes}</w:footnotes>`]);

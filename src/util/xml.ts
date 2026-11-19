@@ -57,7 +57,7 @@ export const SUPPORTED_CHOICE_PREFIXES = new Set(['wps', 'wpg', 'wp14', 'w14', '
 
 const ENTITIES: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
 
-function decodeEntities(s: string): string {
+export function decodeEntities(s: string): string {
   if (s.indexOf('&') < 0) return s;
   return s.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (m, ent: string) => {
     if (ent[0] === '#') {

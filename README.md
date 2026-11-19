@@ -1,11 +1,11 @@
-# Folio
+# Kanera DOCX to PDF
 
-`@happendev/folio` converts Word documents (`.docx`) to PDF, aiming to put every line, page break,
+`@happendev/docx2pdf` converts Word documents (`.docx`) to PDF, aiming to put every line, page break,
 image and border where Word puts it. It is plain TypeScript with **no runtime dependencies**: no
 LibreOffice, no native binaries, no WebAssembly. The same code runs in Node and in the browser.
 
 ```ts
-import { docxToPdf } from '@happendev/folio';
+import { docxToPdf } from '@happendev/docx2pdf';
 
 const pdf = await docxToPdf('contract.docx'); // Uint8Array
 ```
@@ -15,9 +15,9 @@ const pdf = await docxToPdf('contract.docx'); // Uint8Array
 Matching Word means reproducing its layout rules, not only its formatting:
 
 - **Fonts that measure like Office fonts.** When a document uses Calibri, Cambria, Arial, Times New
-  Roman, Courier New, Georgia, Segoe UI or Roboto and the font isn't available, Folio uses a bundled
-  open font with the same character widths and line metrics (see [Fonts](#fonts)), so lines wrap at
-  the same words. Fonts embedded in the `.docx` are used first.
+  Roman, Courier New, Georgia, Segoe UI or Roboto and the font isn't available, the library uses
+  a bundled open font with the same character widths and line metrics (see [Fonts](#fonts)), so
+  lines wrap at the same words. Fonts embedded in the `.docx` are used first.
 - **Word's line model.** Line heights use the Windows (GDI) font metrics Word uses; "multiple" line
   spacing adds its extra space below the text, and that space may hang into the bottom margin;
   spacing before a paragraph is dropped at the top of a page only after a natural page break.
@@ -40,8 +40,8 @@ and against where Word last broke pages (`w:lastRenderedPageBreak`) and how many
 
 ## Install
 
-The package is private. Install it from the GitHub repository with npm (installing from git with
-pnpm 11 can hang):
+Install `@happendev/docx2pdf` from the GitHub repository with npm (installing from git with pnpm 11
+can hang):
 
 ```bash
 npm install github:happendev/kanera-docx
@@ -54,7 +54,7 @@ Node 20 or later. In the browser, any engine with ES2022, `fetch` and `TextDecod
 ### Node
 
 ```ts
-import { convertDocx, docxToPdf } from '@happendev/folio'; // or '@happendev/folio/node'
+import { convertDocx, docxToPdf } from '@happendev/docx2pdf'; // or '@happendev/docx2pdf/node'
 
 // A path, Uint8Array, Buffer or ArrayBuffer.
 const pdf = await docxToPdf(await readFile('in.docx'));
@@ -76,25 +76,25 @@ conversion. Pass `true` to scan the usual font folders, or an array of folders t
 ### Browser
 
 ```ts
-import { docxToPdf } from '@happendev/folio'; // resolves to the browser build
+import { docxToPdf } from '@happendev/docx2pdf'; // resolves to the browser build
 
 const file = input.files[0]; // File, Blob, Uint8Array or ArrayBuffer
-const pdf = await docxToPdf(file, { fontBaseUrl: '/assets/folio-fonts/' });
+const pdf = await docxToPdf(file, { fontBaseUrl: '/assets/docx2pdf-fonts/' });
 const url = URL.createObjectURL(new Blob([pdf], { type: 'application/pdf' }));
 ```
 
 The bundled fonts are fetched on demand, only for the families a document uses, and cached for the
-page's lifetime. Copy `node_modules/@happendev/folio/fonts/` to your static assets and point
+page's lifetime. Copy `node_modules/@happendev/docx2pdf/fonts/` to your static assets and point
 `fontBaseUrl` at that folder. Without a bundler, the default (`fonts/` next to the module) works
 as-is. Pass `fetch` to add caching or auth, or `fontBaseUrl: false` to supply every font yourself
 through `fonts`.
 
 ### Core (any runtime)
 
-`@happendev/folio/core` has no font loading of its own: give it every font through `fonts`.
+`@happendev/docx2pdf/core` has no font loading of its own: give it every font through `fonts`.
 
 ```ts
-import { convertDocx } from '@happendev/folio/core';
+import { convertDocx } from '@happendev/docx2pdf/core';
 
 const { pdf } = await convertDocx(bytes, { fonts: [{ data: regular }, { data: bold }] });
 ```
@@ -102,8 +102,8 @@ const { pdf } = await convertDocx(bytes, { fonts: [{ data: regular }, { data: bo
 ### CLI
 
 ```bash
-folio report.docx                  # writes report.pdf next to it
-folio report.docx out.pdf --font BrandSans.ttf --system-fonts
+docx2pdf report.docx               # writes report.pdf next to it
+docx2pdf report.docx out.pdf --font BrandSans.ttf --system-fonts
 ```
 
 ## Options
@@ -111,6 +111,7 @@ folio report.docx out.pdf --font BrandSans.ttf --system-fonts
 | Option          | Where   | Default  | Meaning                                                              |
 | --------------- | ------- | -------- | -------------------------------------------------------------------- |
 | `fonts`         | all     | `[]`     | Fonts to use (`{ data }` or `{ family, bold, italic, load }`). Win over bundled and system fonts. |
+| `archiveLimits` | all | 64 MiB per part, 256 MiB total | Maximum uncompressed bytes per ZIP part (`maxPartBytes`) and across distinct parts read (`maxTotalBytes`). Exceeding either limit stops conversion. |
 | `embeddedFonts` | all     | `true`   | Use fonts embedded in the `.docx` (including obfuscated `.odttf`).   |
 | `info`          | all     | from doc | PDF title, author, subject, keywords, dates.                         |
 | `compress`      | all     | `true`   | Deflate PDF content streams.                                         |
@@ -120,7 +121,7 @@ folio report.docx out.pdf --font BrandSans.ttf --system-fonts
 | `fetch`         | browser | global   | Custom fetch for font downloads.                                     |
 
 Font priority: `fonts` → embedded → system → bundled substitutes → generic fallback (Liberation
-Sans, then DejaVu Sans for characters other fonts lack).
+Sans, DejaVu Sans and Noto Sans CJK JP according to glyph coverage).
 
 ## Fonts
 
@@ -143,12 +144,14 @@ Montserrat, ...) still render, but lines may wrap differently from Word, and the
 an exact match.
 
 Fonts are subset into the PDF (TrueType, keeping glyph IDs) with a `ToUnicode` map, so text can be
-selected, searched and copied. CFF-based OpenType fonts are embedded whole. Missing bold or italic
+selected, searched and copied. CFF-based OpenType fonts and fonts that prohibit subsetting are embedded whole. Fonts that prohibit outline embedding are skipped with a warning. Missing bold or italic
 faces are synthesised the way Word does.
 
 The bundled fonts are under the SIL Open Font License or the Liberation/DejaVu licenses; the
-license texts are in [`fonts/licenses`](fonts/licenses). The fonts are about 13 MB in total, but a
-typical document loads only two or three families.
+license texts are in [`fonts/licenses`](fonts/licenses). The bundled files total about 34 MiB. A regular Arial document fetches only
+Liberation Sans Regular. When a document needs missing East Asian glyphs, the browser can also
+fetch Noto Sans CJK JP (20.7 MiB), which uses Japanese glyph forms. The bundled copy is a
+static regular face generated at weight 400 from the [upstream variable TrueType font](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/Variable/TTF/NotoSansCJKjp-VF.ttf).
 
 ## What is supported
 
@@ -173,7 +176,8 @@ typical document loads only two or three families.
 - Fields: PAGE, NUMPAGES, SECTIONPAGES, external hyperlinks and internal links to bookmarks (as
   clickable PDF links), legacy form checkboxes; other fields (TOC, dates, references) show the
   result Word last saved.
-- Footnotes and endnotes with separators.
+- Footnotes and endnotes with separators, including footnotes continued across pages.
+- Plain-text and HTML/XHTML imports (`w:altChunk`). HTML is rendered as plain text. The warnings identify flattened HTML and unsupported import types.
 - Images: PNG (all colour types, transparency, interlacing), JPEG (including CMYK), GIF and BMP,
   inline or floating, with cropping, rotation, flips and square/tight/top-and-bottom text wrap.
 - Shapes and text boxes (DrawingML and VML): preset geometries, custom paths, fills, outlines, dash

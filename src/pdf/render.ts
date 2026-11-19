@@ -16,7 +16,11 @@ interface FontUse {
   face: FontFace;
   resName: string;
   objNum: number;
-  glyphs: Map<number, string>;
+  // PDF character codes identify text, while CIDs select outlines. Several characters
+  // can share one outline (especially glyph zero when the document font is missing).
+  characters: Map<number, string>;
+  codesByGlyph: Map<number, Map<string, number>>;
+  nextCode: number;
 }
 
 interface ImageUse {
@@ -27,7 +31,7 @@ interface ImageUse {
 const ITALIC_SKEW = 0.2126; // tan(12°), the slant Word uses for synthetic italics
 
 /** Write laid-out pages as a PDF file. */
-export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string[] = []): Uint8Array {
+export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string[] = []): Uint8Array<ArrayBuffer> {
   const pdf = new PdfObjects();
   const catalog = pdf.alloc();
   const pagesNum = pdf.alloc();
@@ -47,7 +51,7 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
   const fontFor = (face: FontFace): FontUse => {
     let use = fonts.get(face);
     if (!use) {
-      use = { face, resName: `F${fonts.size + 1}`, objNum: pdf.alloc(), glyphs: new Map() };
+      use = { face, resName: `F${fonts.size + 1}`, objNum: pdf.alloc(), characters: new Map(), codesByGlyph: new Map(), nextCode: 0 };
       fonts.set(face, use);
     }
     return use;
@@ -124,8 +128,8 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
       s += `1 0 ${op.syntheticItalic ? ITALIC_SKEW : 0} 1 ${num(x0)} ${num(Y(op.y))} Tm [`;
       for (let i = 0; i < op.gids.length; i++) {
         const gid = op.gids[i];
-        if (!use.glyphs.has(gid)) use.glyphs.set(gid, op.texts[i] ?? '');
-        s += `<${gid.toString(16).padStart(4, '0')}>`;
+        const code = characterCode(use, gid, op.texts[i] ?? '');
+        s += `<${code.toString(16).padStart(4, '0')}>`;
         if (i + 1 < op.gids.length) {
           const w = font.advance(gid) * toPdfUnits;
           const d = op.xs[i + 1] - op.xs[i];
@@ -227,7 +231,7 @@ export function renderPdf(pages: Page[], opts: PdfOptions = {}, warnings: string
   pdf.set(pagesNum, `<< /Type /Pages /Kids [${pageNums.map((n) => `${n} 0 R`).join(' ')}] /Count ${pages.length} >>`);
   pdf.set(catalog, `<< /Type /Catalog /Pages ${pagesNum} 0 R >>`);
   const info = opts.info ?? {};
-  const entries = [`/Producer ${textString(opts.producer ?? 'Folio')}`];
+  const entries = [`/Producer ${textString(opts.producer ?? '@happendev/docx2pdf')}`];
   if (info.title) entries.push(`/Title ${textString(info.title)}`);
   if (info.creator) entries.push(`/Author ${textString(info.creator)}`);
   if (info.subject) entries.push(`/Subject ${textString(info.subject)}`);
@@ -244,7 +248,7 @@ function linkAction(link: Link, anchors: Map<string, { page: number; x: number; 
   if (link.url) {
     let url = link.url;
     if (link.anchor && !anchors.has(link.anchor)) url += '#' + link.anchor;
-    const ascii = url.replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c)).replace(/[\\()]/g, (c) => '\\' + c);
+    const ascii = url.replace(/[^\x20-\x7e]/gu, (c) => encodeURIComponent(c)).replace(/[\\()]/g, (c) => '\\' + c);
     return `/A << /S /URI /URI (${ascii}) >>`;
   }
   return null;
@@ -275,33 +279,76 @@ function subsetTag(i: number): string {
   return s;
 }
 
+function characterCode(use: FontUse, gid: number, text: string): number {
+  let codes = use.codesByGlyph.get(gid);
+  if (!codes) use.codesByGlyph.set(gid, (codes = new Map()));
+  const known = codes.get(text);
+  if (known !== undefined) return known;
+  let code = gid;
+  if (use.characters.has(code)) {
+    while (use.characters.has(use.nextCode)) use.nextCode++;
+    code = use.nextCode++;
+    if (code > 0xffff) throw new Error('Too many distinct characters for a PDF font');
+  }
+  codes.set(text, code);
+  use.characters.set(code, text);
+  return code;
+}
+
+function fontEncoding(pdf: PdfObjects, use: FontUse, compress: boolean): string {
+  const pairs: Array<[number, number]> = [];
+  let identity = true;
+  for (const [gid, codes] of use.codesByGlyph) {
+    for (const code of codes.values()) {
+      pairs.push([code, gid]);
+      if (code !== gid) identity = false;
+    }
+  }
+  if (identity) return '/Identity-H';
+  const info = '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>';
+  const name = '/' + use.resName + '-Encoding';
+  const lines = ['/CIDInit /ProcSet findresource begin 12 dict begin begincmap',
+    info + ' def', '/CMapName ' + name + ' def /CMapType 1 def',
+    '1 begincodespacerange <0000> <FFFF> endcodespacerange'];
+  for (let i = 0; i < pairs.length; i += 100) {
+    const chunk = pairs.slice(i, i + 100);
+    lines.push(chunk.length + ' begincidchar');
+    for (const [code, gid] of chunk) lines.push('<' + code.toString(16).padStart(4, '0') + '> ' + gid);
+    lines.push('endcidchar');
+  }
+  lines.push('endcmap CMapName currentdict /CMap defineresource pop end end');
+  const obj = pdf.addStream('/Type /CMap /CMapName ' + name + ' ' + info, latin1(lines.join('\n')), compress);
+  return obj + ' 0 R';
+}
+
 function writeFont(pdf: PdfObjects, use: FontUse, index: number, compress: boolean): void {
   const font = use.face.font;
   const upm = font.unitsPerEm;
   const scale = 1000 / upm;
   const psName = (font.names.postscriptName || use.face.familyName.replace(/\s+/g, '')).replace(/[^\x21-\x7e]/g, '');
-  const baseFont = `${subsetTag(index)}+${psName}`;
-  const gids = [...use.glyphs.keys()].sort((a, b) => a - b);
+  const canSubset = !(font.fsType & 0x100) && !font.isCFF && !!font.table('glyf') && !!font.table('loca');
+  const baseFont = canSubset ? subsetTag(index) + '+' + psName : psName;
+  const gids = [...use.codesByGlyph.keys()].sort((a, b) => a - b);
 
   let fileKey: string;
   let fileNum: number;
   let subtype: string;
-  const sub = subsetTrueType(font, gids);
+  const sub = canSubset ? subsetTrueType(font, gids) : null;
   if (sub) {
     fileNum = pdf.addStream(`/Length1 ${sub.length}`, sub, compress);
     fileKey = 'FontFile2';
     subtype = 'CIDFontType2';
   } else {
-    // CFF outlines: embed the whole OpenType font (as a standalone file when in a collection).
+    // CFF outlines and fonts that prohibit subsetting need a complete standalone font program.
     let data = font.data;
     if (font.dirOffset !== 0) {
       const tables = new Map<string, Uint8Array>();
       for (const tag of font.tables.keys()) tables.set(tag, font.tableBytes(tag)!);
       data = buildSfnt(tables, font.sfntVersion);
     }
-    fileNum = pdf.addStream('/Subtype /OpenType', data, compress);
-    fileKey = 'FontFile3';
-    subtype = 'CIDFontType0';
+    fileNum = pdf.addStream(font.isCFF ? '/Subtype /OpenType' : '/Length1 ' + data.length, data, compress);
+    fileKey = font.isCFF ? 'FontFile3' : 'FontFile2';
+    subtype = font.isCFF ? 'CIDFontType0' : 'CIDFontType2';
   }
 
   // Widths
@@ -328,8 +375,8 @@ function writeFont(pdf: PdfObjects, use: FontUse, index: number, compress: boole
   const cid = pdf.add(
     `<< /Type /Font /Subtype /${subtype} /BaseFont ${pdfName(baseFont)} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ${descriptor} 0 R /DW ${num(font.advance(0) * scale)} /W [${w}]${subtype === 'CIDFontType2' ? ' /CIDToGIDMap /Identity' : ''} >>`,
   );
-  const toUnicode = pdf.addStream('', latin1(toUnicodeCMap(use.glyphs)), compress);
-  pdf.set(use.objNum, `<< /Type /Font /Subtype /Type0 /BaseFont ${pdfName(baseFont)} /Encoding /Identity-H /DescendantFonts [${cid} 0 R] /ToUnicode ${toUnicode} 0 R >>`);
+  const toUnicode = pdf.addStream('', latin1(toUnicodeCMap(use.characters)), compress);
+  pdf.set(use.objNum, `<< /Type /Font /Subtype /Type0 /BaseFont ${pdfName(baseFont)} /Encoding ${fontEncoding(pdf, use, compress)} /DescendantFonts [${cid} 0 R] /ToUnicode ${toUnicode} 0 R >>`);
 }
 
 function utf16Hex(s: string): string {
@@ -344,7 +391,7 @@ function toUnicodeCMap(glyphs: Map<number, string>): string {
   for (let i = 0; i < entries.length; i += 100) {
     const chunk = entries.slice(i, i + 100);
     s += `${chunk.length} beginbfchar\n`;
-    for (const [gid, text] of chunk) s += `<${gid.toString(16).padStart(4, '0').toUpperCase()}> <${utf16Hex(text)}>\n`;
+    for (const [code, text] of chunk) s += `<${code.toString(16).padStart(4, '0').toUpperCase()}> <${utf16Hex(text)}>\n`;
     s += 'endbfchar\n';
   }
   s += 'endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n';

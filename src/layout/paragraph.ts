@@ -24,7 +24,7 @@ export interface ParagraphEnv {
 }
 
 type Atom =
-  | { k: 'g'; run: ShapedRun; gi: number; w: number; cp: number }
+  | { k: 'g'; run: ShapedRun; gi: number; w: number; cp: number; field?: FieldInline }
   | { k: 'tab'; run: ShapedRun; label?: boolean }
   | { k: 'ptab'; run: ShapedRun; alignment: 'left' | 'center' | 'right'; relativeTo: 'margin' | 'indent'; leader: TabStop['leader'] }
   | { k: 'br'; type: 'line' | 'page' | 'column'; run: ShapedRun }
@@ -142,7 +142,13 @@ export class ParagraphLayout {
         }
         case 'field': {
           const text = env.fieldText(inl);
-          for (const run of shapeText(text, inl.props, fonts)) for (let gi = 0; gi < run.glyphs.length; gi++) this.pushGlyph(run, gi);
+          let first = true;
+          for (const run of shapeText(text, inl.props, fonts)) {
+            for (let gi = 0; gi < run.glyphs.length; gi++) {
+              this.pushGlyph(run, gi, first ? inl : undefined);
+              first = false;
+            }
+          }
           break;
         }
         case 'noteRef': {
@@ -172,9 +178,9 @@ export class ParagraphLayout {
     this.computeBreaks();
   }
 
-  private pushGlyph(run: ShapedRun, gi: number): void {
+  private pushGlyph(run: ShapedRun, gi: number, field?: FieldInline): void {
     const g = run.glyphs[gi];
-    this.atoms.push({ k: 'g', run, gi, w: g.advance, cp: g.cp });
+    this.atoms.push({ k: 'g', run, gi, w: g.advance, cp: g.cp, field });
   }
 
   private computeBreaks(): void {
@@ -643,6 +649,7 @@ export class ParagraphLayout {
           const run = a.run;
           cur = {
             kind: 'glyphs',
+            field: a.field,
             x,
             y: baseline - run.baselineShift,
             face: run.face.face,

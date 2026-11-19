@@ -66,7 +66,8 @@ export class StyleSheet {
     if (!root) return;
     const dd = child(root, 'w:docDefaults');
     this.defaultsRun = parseRunDelta(child(child(dd, 'w:rPrDefault'), 'w:rPr'), ctx);
-    this.defaultsPara = parseParaDelta(child(child(dd, 'w:pPrDefault'), 'w:pPr'), ctx);
+    const paraDefault = child(dd, 'w:pPrDefault');
+    this.defaultsPara = parseParaDelta(child(paraDefault, 'w:pPr'), ctx);
     for (const s of children(root, 'w:style')) {
       const id = s.attrs['w:styleId'] ?? '';
       const type = s.attrs['w:type'] ?? 'paragraph';
@@ -101,6 +102,9 @@ export class StyleSheet {
       if (isDefault && type === 'character' && !this.defaultCharacterStyle) this.defaultCharacterStyle = id;
       if (isDefault && type === 'table' && !this.defaultTableStyle) this.defaultTableStyle = id;
     }
+    // Word supplies Normal spacing for a named default paragraph style when the
+    // document specifies run defaults alone. Style and direct overrides still win.
+    if (this.defaultParagraphStyle && dd && !paraDefault) this.defaultsPara = { line: 1.15, spaceAfter: 8 };
   }
 
   get(id: string | undefined): StyleDef | undefined {

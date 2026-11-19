@@ -1,5 +1,16 @@
 import { inflateRaw } from './inflate.js';
 
+export interface ArchiveLimits {
+  maxPartBytes?: number;
+  maxTotalBytes?: number;
+}
+
+function byteLimit(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 0) throw new RangeError('ZIP byte limits must be non-negative safe integers');
+  return value;
+}
+
 export interface ZipEntry {
   name: string;
   method: number;
@@ -27,7 +38,12 @@ export class ZipArchive {
   private readonly lower = new Map<string, ZipEntry>();
   private readonly cache = new Map<string, Uint8Array>();
 
-  constructor(private readonly data: Uint8Array) {
+  private readonly maxPartBytes: number;
+  private remainingBytes: number;
+
+  constructor(private readonly data: Uint8Array, limits: ArchiveLimits = {}) {
+    this.maxPartBytes = byteLimit(limits.maxPartBytes, 64 * 1024 * 1024);
+    this.remainingBytes = byteLimit(limits.maxTotalBytes, 256 * 1024 * 1024);
     let eocd = -1;
     for (let i = data.length - 22; i >= Math.max(0, data.length - 22 - 65535); i--) {
       if (u32(data, i) === 0x06054b50) {
@@ -106,11 +122,15 @@ export class ZipArchive {
     const lh = entry.localHeaderOffset;
     if (u32(d, lh) !== 0x04034b50) throw new Error(`ZIP: bad local header for ${entry.name}`);
     const start = lh + 30 + u16(d, lh + 26) + u16(d, lh + 28);
+    if (entry.size > this.maxPartBytes || entry.size > this.remainingBytes) throw new Error('ZIP: decoded byte limit exceeded for ' + entry.name);
+    if (start + entry.compressedSize > d.length) throw new Error('ZIP: truncated part ' + entry.name);
     const raw = d.subarray(start, start + entry.compressedSize);
     let out: Uint8Array;
     if (entry.method === 0) out = raw;
-    else if (entry.method === 8) out = inflateRaw(raw, entry.size);
+    else if (entry.method === 8) out = inflateRaw(raw, entry.size, 0, entry.size);
     else throw new Error(`ZIP: unsupported compression method ${entry.method} for ${entry.name}`);
+    if (out.length !== entry.size) throw new Error('ZIP: incorrect decoded size for ' + entry.name);
+    this.remainingBytes -= out.length;
     this.cache.set(entry.name, out);
     return out;
   }

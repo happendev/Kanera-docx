@@ -205,6 +205,34 @@ export function geometryPath(d: Drawing, x: number, y: number, w: number, h: num
       const t = ss * adj('adj1', 12500);
       return [...poly([x, y, x + w, y, x + w, y + h, x, y + h]), ...poly([x + t, y + t, x + t, y + h - t, x + w - t, y + h - t, x + w - t, y + t])];
     }
+    case 'noSmoking': {
+      // Cut two circular segments out of the ellipse. The strip between their chords
+      // forms the diagonal slash and shares the shape's fill, rotation and opacity.
+      const thickness = Math.max(0, Math.min(ss / 2, ss * adj('adj', 18750)));
+      const rx = w / 2 - thickness, ry = h / 2 - thickness;
+      const segs = ellipse(x, y, w, h);
+      if (rx <= 0 || ry <= 0) return segs;
+      const angle = Math.PI / 4;
+      const gap = Math.asin(Math.min(1, thickness * Math.hypot(1 / rx, 1 / ry) / (2 * Math.SQRT2)));
+      const cx = x + w / 2, cy = y + h / 2;
+      for (const base of [angle, angle + Math.PI]) {
+        let a = base + gap;
+        segs.push({ op: 'M', pts: [cx + rx * Math.cos(a), cy + ry * Math.sin(a)] });
+        const step = (Math.PI - 2 * gap) / 2;
+        const k = 4 / 3 * Math.tan(step / 4);
+        for (let i = 0; i < 2; i++) {
+          const b = a + step;
+          segs.push({ op: 'C', pts: [
+            cx + rx * (Math.cos(a) - k * Math.sin(a)), cy + ry * (Math.sin(a) + k * Math.cos(a)),
+            cx + rx * (Math.cos(b) + k * Math.sin(b)), cy + ry * (Math.sin(b) - k * Math.cos(b)),
+            cx + rx * Math.cos(b), cy + ry * Math.sin(b),
+          ] });
+          a = b;
+        }
+        segs.push({ op: 'Z', pts: [] });
+      }
+      return segs;
+    }
     case 'donut': {
       const t = ss * adj('adj', 25000);
       return [...ellipse(x, y, w, h), ...ellipse(x + t, y + t, w - 2 * t, h - 2 * t)];

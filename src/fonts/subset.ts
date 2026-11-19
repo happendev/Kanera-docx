@@ -46,7 +46,7 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>): Ui
     p += piece.length;
   }
 
-  const head = font.tableBytes('head')!.slice();
+  const head = new Uint8Array(font.tableBytes('head')!);
   // indexToLocFormat = 1 (long offsets); checkSumAdjustment zeroed until the end.
   head[50] = 0;
   head[51] = 1;
@@ -63,7 +63,7 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>): Ui
   const post = font.tableBytes('post');
   if (post && post.length >= 32) {
     // Version 3.0 drops glyph names, which the PDF does not need.
-    const p3 = post.slice(0, 32);
+    const p3 = new Uint8Array(post.subarray(0, 32));
     p3[0] = 0;
     p3[1] = 3;
     p3[2] = 0;
@@ -109,11 +109,15 @@ export function buildSfnt(tables: Map<string, Uint8Array>, version: number): Uin
     const data = tables.get(tag)!;
     const rec = 12 + i * 16;
     for (let k = 0; k < 4; k++) out[rec + k] = tag.charCodeAt(k);
-    dv.setUint32(rec + 4, checksum(data));
     dv.setUint32(rec + 8, offset);
     dv.setUint32(rec + 12, data.length);
     out.set(data, offset);
-    if (tag === 'head') headOffset = offset;
+    if (tag === 'head') {
+      headOffset = offset;
+      // Rebuilding a collection face may copy an old adjustment into the new file.
+      dv.setUint32(offset + 8, 0);
+    }
+    dv.setUint32(rec + 4, checksum(out.subarray(offset, offset + data.length)));
     offset += (data.length + 3) & ~3;
   });
   if (headOffset >= 0) {

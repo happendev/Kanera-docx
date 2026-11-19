@@ -12,9 +12,9 @@ const FONT_DIR = fileURLToPath(new URL('../../fonts/', import.meta.url));
 export async function layout(docx: Uint8Array): Promise<LayoutResult> {
   const doc = parseDocx(docx);
   const fonts = new FontRegistry();
-  for (const b of BUNDLED_FONTS) fonts.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, load: async () => readFileSync(FONT_DIR + b.file) }, 'bundled');
+  for (const b of BUNDLED_FONTS) fonts.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load: async () => readFileSync(FONT_DIR + b.file) }, 'bundled');
   for (const [family, hints] of doc.fontHints) fonts.setHints(family, hints);
-  await fonts.prepare(doc.fontFamilies, doc.codePoints);
+  await fonts.prepare(doc.fontRequests);
   return layoutDocument(doc, fonts);
 }
 

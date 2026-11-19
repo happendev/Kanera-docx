@@ -7,7 +7,7 @@ export interface BrowserConvertOptions extends ConvertOptions {
   /**
    * URL of a folder serving the package's `fonts/` files. Defaults to the folder next to this
    * module, which works when the package is served as-is (not bundled). With a bundler, copy
-   * `node_modules/@happendev/folio/fonts` to your static assets and point this at it.
+   * `node_modules/@happendev/docx2pdf/fonts` to your static assets and point this at it.
    * Set to `false` to use only `options.fonts`.
    */
   fontBaseUrl?: string | URL | false;
@@ -39,7 +39,7 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, option
               family: b.family,
               bold: b.bold,
               italic: b.italic,
-              weight: b.weight,
+              weight: b.weight, covers: b.covers,
               load: () => {
                 let p = fontCache.get(url);
                 if (!p) {
@@ -63,6 +63,6 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, option
 }
 
 /** Convert a .docx to PDF bytes in the browser. */
-export async function docxToPdf(input: Uint8Array | ArrayBuffer | Blob, options: BrowserConvertOptions = {}): Promise<Uint8Array> {
+export async function docxToPdf(input: Uint8Array | ArrayBuffer | Blob, options: BrowserConvertOptions = {}): Promise<Uint8Array<ArrayBuffer>> {
   return (await convertDocx(input, options)).pdf;
 }

@@ -33,7 +33,7 @@ export class PdfObjects {
   }
 
   /** Serialise all objects. `root` is the catalog, `info` the document information dictionary. */
-  finish(root: number, info?: number): Uint8Array {
+  finish(root: number, info?: number): Uint8Array<ArrayBuffer> {
     const parts: Uint8Array[] = [];
     let offset = 0;
     const push = (b: Uint8Array) => {
@@ -63,7 +63,7 @@ export function latin1(s: string): Uint8Array {
   return out;
 }
 
-export function concat(parts: Uint8Array[]): Uint8Array {
+export function concat(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
   let n = 0;
   for (const p of parts) n += p.length;
   const out = new Uint8Array(n);

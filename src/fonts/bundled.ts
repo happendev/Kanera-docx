@@ -1,8 +1,11 @@
+import { isEastAsian } from './script.js';
+
 /**
  * Fonts shipped in the package's `fonts/` directory. Families are listed so a loader can fetch
  * only what a document needs; the family names must match each file's name table.
  */
 export interface BundledFont {
+  covers?: (cp: number) => boolean;
   file: string;
   family: string;
   bold: boolean;
@@ -18,6 +21,7 @@ const four = (family: string, prefix: string): BundledFont[] => [
 ];
 
 export const BUNDLED_FONTS: BundledFont[] = [
+  { file: 'NotoSansCJKjp-Regular.ttf', family: 'Noto Sans CJK JP', bold: false, italic: false, weight: 400, covers: isEastAsian },
   ...four('Carlito', 'Carlito'),
   ...four('Caladea', 'Caladea'),
   ...four('Liberation Sans', 'LiberationSans'),

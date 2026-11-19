@@ -1,9 +1,11 @@
 import type { FontFace } from '../fonts/registry.js';
-import type { Color, Drawing, ImageRef, Link } from '../docx/model.js';
+import type { Color, Drawing, FieldInline, ImageRef, Link } from '../docx/model.js';
 
 /** A run of glyphs drawn with one font at one size. Coordinates: points, origin top-left, y down. */
 export interface GlyphOp {
   kind: 'glyphs';
+  /** Field beginning at this glyph run, for pagination-dependent values. */
+  field?: FieldInline;
   x: number;
   /** Baseline y. */
   y: number;

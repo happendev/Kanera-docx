@@ -24,5 +24,5 @@ doc.body.slice(from, to).forEach((b, i) => {
 const s = doc.finalSection;
 console.log('final section', { w: s.pageWidth, h: s.pageHeight, mt: s.marginTop, mb: s.marginBottom, ml: s.marginLeft, mr: s.marginRight, header: s.header, footer: s.footer, type: s.type, titlePage: s.titlePage, cols: s.columns.count });
 console.log('settings', doc.settings);
-console.log('fonts', [...doc.fontFamilies]);
+console.log('fonts', [...new Set(doc.fontRequests.map((r) => r.family))]);
 console.log('warnings', doc.warnings);

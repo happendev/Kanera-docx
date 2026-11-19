@@ -4,7 +4,7 @@ import { basename, dirname, extname, join } from 'node:path';
 import { convertDocx } from './node.js';
 import type { FontSource } from './core.js';
 
-const USAGE = `Usage: folio <input.docx> [output.pdf] [options]
+const USAGE = `Usage: docx2pdf <input.docx> [output.pdf] [options]
 
 Options:
   --font <file>      Use this TTF/OTF/TTC font (repeatable)

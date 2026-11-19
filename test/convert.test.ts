@@ -64,7 +64,7 @@ describe('convertDocx (node)', () => {
     const { writeFileSync, mkdtempSync, rmSync } = await import('node:fs');
     const { join } = await import('node:path');
     const { tmpdir } = await import('node:os');
-    const dir = mkdtempSync(join(tmpdir(), 'folio-test-'));
+    const dir = mkdtempSync(join(tmpdir(), 'docx2pdf-test-'));
     try {
       writeFileSync(join(dir, 'in.docx'), bytes);
       expect((await convertDocx(join(dir, 'in.docx'))).pageCount).toBe(2);

@@ -1,3 +1,4 @@
+import type { FontRequest } from '../docx/model.js';
 import { SfntFont, collectionSize } from './sfnt.js';
 import {
   GENERIC_FALLBACKS,
@@ -97,7 +98,7 @@ export interface ResolvedFace {
   symbolMap?: SymbolFontKind;
 }
 
-const ORIGIN_RANK: Record<FontOrigin, number> = { embedded: 0, user: 1, system: 2, bundled: 3 };
+const ORIGIN_RANK: Record<FontOrigin, number> = { embedded: 1, user: 0, system: 2, bundled: 3 };
 
 function toBytes(d: Uint8Array | ArrayBuffer): Uint8Array {
   return d instanceof Uint8Array ? d : new Uint8Array(d);
@@ -144,6 +145,11 @@ export class FontRegistry {
   }
 
   private addFace(face: FontFace): void {
+    const rights = face.font.fsType;
+    if ((rights & 0x0e) === 2 || (rights & 0x200)) {
+      this.warnings.add('Font "' + face.familyName + '" disallows outline embedding and was skipped');
+      return;
+    }
     this.faces.push(face);
     for (const fam of face.families) {
       let list = this.byFamily.get(fam);
@@ -178,48 +184,41 @@ export class FontRegistry {
     return genericFamily(family, this.hints.get(normalizeFamily(family)));
   }
 
-  /** Load the fonts needed to render `families` (any style) plus the generic fallbacks. */
-  async prepare(families: Iterable<string>, codePoints?: Iterable<number>): Promise<void> {
-    const wanted = new Set<string>();
-    for (const f of families) for (const c of this.candidateFamilies(f)) wanted.add(c);
-    for (const f of GENERIC_FALLBACKS.sans) wanted.add(f);
-    wanted.add('dejavu sans');
-    // Stop at the first candidate available for each request so unrelated fonts are not fetched.
-    const load: PendingFont[] = [];
-    for (const f of families) {
-      for (const c of this.candidateFamilies(f)) {
-        const pend = this.pending.filter((p) => !p.loaded && p.families.includes(c));
-        if (this.byFamily.has(c) && pend.length === 0) break;
-        if (pend.length) {
-          load.push(...pend);
-          break;
-        }
+  /** Load the closest face of a candidate family, retrying failed or restricted sources. */
+  private async prepareFamily(family: string, bold: boolean, italic: boolean, missing?: number[]): Promise<boolean> {
+    const candidates = this.pending.filter((p) => !p.loaded && p.families.includes(family) && (!missing || !p.covers || missing.some(p.covers)));
+    candidates.sort((a, b) => this.styleScore(a, bold, italic) - this.styleScore(b, bold, italic));
+    for (const p of candidates) {
+      const loaded = this.byFamily.get(family);
+      if (loaded?.some((face) => this.styleScore(face, bold, italic) <= this.styleScore(p, bold, italic))) break;
+      await this.loadPending(p);
+    }
+    return this.byFamily.has(family);
+  }
+
+  async prepare(requests: FontRequest[]): Promise<void> {
+    for (const { family, bold, italic } of requests) {
+      for (const candidate of this.candidateFamilies(family)) {
+        if (await this.prepareFamily(candidate, bold || /\bbold\b/i.test(family), italic || /\b(italic|oblique)\b/i.test(family))) break;
       }
     }
-    for (const fallback of ['liberation sans', 'dejavu sans']) load.push(...this.pending.filter((p) => p.families.includes(fallback)));
-    await Promise.all([...new Set(load)].map((p) => this.loadPending(p)));
 
-    // Glyph coverage: load fallback fonts for characters the loaded fonts lack.
-    if (codePoints) {
-      const missing: number[] = [];
-      for (const cp of codePoints) {
-        if (cp < 0x20) continue;
-        if (!this.faces.some((f) => f.font.hasGlyph(cp))) missing.push(cp);
+    for (const { family, bold, italic, codePoints } of requests) {
+      const primary = this.resolve(family, bold, italic);
+      let missing = [...codePoints].map((cp) => primary.symbolMap ? mapSymbolChar(primary.symbolMap, cp) : cp)
+        .filter((cp) => cp >= 32 && !primary.face.font.hasGlyph(cp));
+      for (const fallback of [...GENERIC_FALLBACKS[this.generic(family)], ...GLYPH_FALLBACKS]) {
+        if (!missing.length) break;
+        if (await this.prepareFamily(fallback, bold, italic, missing)) {
+          missing = missing.filter((cp) => !this.byFamily.get(fallback)!.some((face) => face.font.hasGlyph(cp)));
+        }
       }
-      if (missing.length) {
-        const extra: PendingFont[] = [];
-        for (const fam of GLYPH_FALLBACKS) {
-          for (const p of this.pending) {
-            if (p.loaded || !p.families.includes(fam)) continue;
-            if (p.covers && !missing.some((cp) => p.covers!(cp))) continue;
-            extra.push(p);
-          }
+      for (const p of this.pending) {
+        if (!missing.length) break;
+        if (!p.loaded && p.covers && missing.some(p.covers)) {
+          await this.loadPending(p);
+          missing = missing.filter((cp) => !this.faces.some((face) => face.font.hasGlyph(cp)));
         }
-        // Coverage-aware pending fonts (system fonts) for anything still unaccounted for.
-        for (const p of this.pending) {
-          if (!p.loaded && p.covers && missing.some((cp) => p.covers!(cp)) && !extra.includes(p) && !p.bold && !p.italic) extra.push(p);
-        }
-        await Promise.all(extra.slice(0, 8).map((p) => this.loadPending(p)));
       }
     }
   }
@@ -241,21 +240,13 @@ export class FontRegistry {
     return p.promise;
   }
 
+  private styleScore(face: FontFace | PendingFont, bold: boolean, italic: boolean): number {
+    return Math.abs(face.weight - (bold ? 700 : 400)) / 100 + (face.bold !== bold ? 3 : 0)
+      + (face.italic !== italic ? 5 : 0) + ORIGIN_RANK[face.origin] * 0.01;
+  }
+
   private pickStyle(list: FontFace[], bold: boolean, italic: boolean): FontFace {
-    const targetWeight = bold ? 700 : 400;
-    let best = list[0];
-    let bestScore = Infinity;
-    for (const f of list) {
-      let score = ORIGIN_RANK[f.origin] * 0.01;
-      score += Math.abs(f.weight - targetWeight) / 100;
-      if (f.bold !== bold) score += 3;
-      if (f.italic !== italic) score += 5;
-      if (score < bestScore) {
-        bestScore = score;
-        best = f;
-      }
-    }
-    return best;
+    return list.reduce((best, face) => this.styleScore(face, bold, italic) < this.styleScore(best, bold, italic) ? face : best);
   }
 
   private styled(face: FontFace, bold: boolean, italic: boolean, symbolMap?: SymbolFontKind, vmetrics?: [number, number, number]): ResolvedFace {

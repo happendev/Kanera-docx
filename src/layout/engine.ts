@@ -61,6 +61,15 @@ interface Column {
   w: number;
 }
 
+interface FootnotePiece {
+  id: string;
+  box: BoxResult;
+  /** Coordinates in the original note, retained when a note continues on another page. */
+  start: number;
+  end: number;
+  offset: number;
+}
+
 interface PageState {
   section: Section;
   sectionIndex: number;
@@ -79,7 +88,9 @@ interface PageState {
   body: DrawOp[];
   floats: FloatEntry[];
   exclusions: Exclusion[];
-  notes: Array<{ id: string; noteType: 'footnote'; box: BoxResult }>;
+  notes: FootnotePiece[];
+  overflow: FootnotePiece[];
+  continuation: boolean;
   noteHeight: number;
   /** Lowest content y per column of the current section on this page. */
   colBottoms: number[];
@@ -93,6 +104,7 @@ interface Checkpoint {
   floats: number;
   exclusions: number;
   notes: number;
+  overflow: number;
   noteHeight: number;
   col: number;
   y: number;
@@ -116,10 +128,22 @@ const FIELD_FORMATS: Record<string, string> = {
 };
 
 export function layoutDocument(doc: DocxDocument, fonts: FontRegistry): LayoutResult {
-  return new Paginator(doc, fonts).run();
+  // Field width can change wrapping, so feed measured page values back into normal layout.
+  const values = new Map<FieldInline, string>();
+  for (let pass = 0; ; pass++) {
+    const paginator = new Paginator(doc, fonts, values);
+    const result = paginator.run();
+    if (!paginator.fieldsChanged) return result;
+    if (pass === 7) {
+      result.warnings.push('Page fields did not stabilize after repeated pagination');
+      return result;
+    }
+  }
 }
 
 class Paginator {
+  fieldsChanged = false;
+  private measuredFields = new Map<FieldInline, { value: string; section: Section }>();
   private pages: PageState[] = [];
   private page!: PageState;
   private col = 0;
@@ -154,6 +178,7 @@ class Paginator {
   constructor(
     private doc: DocxDocument,
     private fonts: FontRegistry,
+    private fieldValues: Map<FieldInline, string>,
   ) {
     this.env = {
       fonts,
@@ -174,9 +199,14 @@ class Paginator {
     const page = ctx?.number ?? this.page?.number ?? 1;
     const sectFmt = ctx?.format ?? this.section?.pageNumberFormat ?? 'decimal';
     const fmt = f.format ? (FIELD_FORMATS[f.format] ?? sectFmt) : sectFmt;
+    if (!ctx) {
+      const value = this.fieldValues.get(f) ?? (f.field === 'page' ? formatNumber(page, fmt) : f.cached || '1');
+      this.measuredFields.set(f, { value, section: this.section });
+      return value;
+    }
     if (f.field === 'page') return formatNumber(page, fmt);
-    if (f.field === 'numpages') return ctx?.total != null ? formatNumber(ctx.total, f.format ? fmt : 'decimal') : f.cached || '1';
-    if (f.field === 'sectionpages') return ctx?.sectionTotal != null ? formatNumber(ctx.sectionTotal, f.format ? fmt : 'decimal') : f.cached || '1';
+    if (f.field === 'numpages') return ctx?.total != null ? formatNumber(ctx.total, f.format ? fmt : 'decimal') : this.fieldValues.get(f) ?? (f.cached || '1');
+    if (f.field === 'sectionpages') return ctx?.sectionTotal != null ? formatNumber(ctx.sectionTotal, f.format ? fmt : 'decimal') : this.fieldValues.get(f) ?? (f.cached || '1');
     return f.cached;
   }
 
@@ -238,6 +268,7 @@ class Paginator {
       this.sectionBlockBase += blocks.length;
     }
     this.placeEndnotes();
+    this.flushContinuations();
     const pages = this.finish();
     return { pages, stats: this.stats, warnings: this.warnings };
   }
@@ -336,6 +367,11 @@ class Paginator {
   }
 
   private newPage(sectionStart: boolean): void {
+    this.flushContinuations();
+    this.openPage(sectionStart);
+  }
+
+  private openPage(sectionStart: boolean): void {
     if (this.page) this.closeColSet(Math.max(this.y, ...this.page.colBottoms));
     const s = this.section;
     const prevNumber = this.pages.length ? this.pages[this.pages.length - 1].number : 0;
@@ -383,6 +419,8 @@ class Paginator {
       floats: [],
       exclusions: [],
       notes: [],
+      overflow: [],
+      continuation: false,
       noteHeight: 0,
       colBottoms: cols.map(() => top),
       colSets: [{ section: s, cols, top, bottom: top }],
@@ -455,6 +493,7 @@ class Paginator {
       floats: p.floats.length,
       exclusions: p.exclusions.length,
       notes: p.notes.length,
+      overflow: p.overflow.length,
       noteHeight: p.noteHeight,
       col: this.col,
       y: this.y,
@@ -477,6 +516,7 @@ class Paginator {
     p.floats.length = cp.floats;
     p.exclusions.length = cp.exclusions;
     p.notes.length = cp.notes;
+    p.overflow.length = cp.overflow;
     p.noteHeight = cp.noteHeight;
     p.colBottoms = cp.colBottoms.slice();
     p.colTop = cp.colTop;
@@ -649,9 +689,9 @@ class Paginator {
           this.page.body.push(...paraDecorations(para.props, frame, col.x, col.w, top, bottom, line.first, line.last));
         }
         this.page.body.push(...layout.renderLine(line, col.x + left, y));
-        this.addNotes(line.notes);
         this.y = y + line.height;
         this.markPlaced(this.y);
+        this.addNotes(line.notes);
         linesHere++;
         if (line.brk === 'page') {
           this.breakPage('hard');
@@ -895,7 +935,9 @@ class Paginator {
       if (n.noteType !== 'footnote') continue;
       if (this.page.notes.some((p) => p.id === n.id)) continue;
       if (this.page.noteHeight === 0 && h === 0) h += this.footnoteSeparator(width).height;
-      h += this.noteBox('footnote', n.id, width).height;
+      const box = this.noteBox('footnote', n.id, width);
+      const first = box.items[0];
+      if (first) h += first.y + first.height;
     }
     return h;
   }
@@ -911,12 +953,63 @@ class Paginator {
         if (!this.endnotesUsed.includes(n.id)) this.endnotesUsed.push(n.id);
         continue;
       }
-      if (this.page.notes.some((p) => p.id === n.id)) continue;
-      if (this.page.notes.length === 0) this.page.noteHeight += this.footnoteSeparator(width).height;
+      if (this.page.notes.some((p) => p.id === n.id) || this.page.overflow.some((p) => p.id === n.id)) continue;
       const box = this.noteBox('footnote', n.id, width);
-      this.page.notes.push({ id: n.id, noteType: 'footnote', box });
-      this.page.noteHeight += box.height;
+      if (box.items.length) this.reserveNote({ id: n.id, box, start: 0, end: box.items.length, offset: 0 });
     }
+  }
+
+  private noteSeparator(): BoxResult {
+    if (this.page.continuation && this.doc.footnoteContinuationSeparator) {
+      return layoutBlocks(this.doc.footnoteContinuationSeparator, this.footnoteWidth(), this.env);
+    }
+    return this.footnoteSeparator(this.footnoteWidth());
+  }
+
+  private reserveNote(piece: FootnotePiece): void {
+    const page = this.page;
+    if (page.overflow.length) {
+      page.overflow.push(piece);
+      return;
+    }
+    const separator = page.notes.length ? 0 : this.noteSeparator().height;
+    const available = page.bottom - Math.max(...page.colBottoms) - page.noteHeight - separator;
+    const { box, start, offset } = piece;
+    let end = start;
+    let height = 0;
+    while (end < piece.end) {
+      const item = box.items[end];
+      const nextHeight = item.y + item.height - offset;
+      if (nextHeight > available + EPS) break;
+      height = nextHeight;
+      end++;
+    }
+    if (end === start && page.continuation && !page.notes.length) {
+      throw new Error('A footnote line or object is taller than the printable page');
+    }
+    if (end > start) {
+      page.notes.push({ ...piece, end });
+      page.noteHeight += separator + height;
+    }
+    if (end < piece.end) page.overflow.push({ ...piece, start: end, offset: box.items[end].y });
+  }
+
+  /** Keep overflow with its reference section even when the next body page restarts numbering. */
+  private flushContinuations(): void {
+    if (!this.page?.overflow.length) return;
+    const { section, sectionIndex, restartNumber } = this;
+    this.section = this.page.section;
+    this.sectionIndex = this.page.sectionIndex;
+    this.restartNumber = null;
+    while (this.page.overflow.length) {
+      const remaining = this.page.overflow;
+      this.openPage(false);
+      this.page.continuation = true;
+      for (const piece of remaining) this.reserveNote(piece);
+    }
+    this.section = section;
+    this.sectionIndex = sectionIndex;
+    this.restartNumber = restartNumber;
   }
 
   private placeEndnotes(): void {
@@ -965,7 +1058,10 @@ class Paginator {
       this.addNotes(seg.notes);
       pieces = [];
     };
-    const newColumn = () => {
+    const headerHasFields = tl.rows.slice(0, tl.headerRows).some((row) =>
+      row.cells.some((cell) => cell.box.items.some((item) => item.ops.some((op) => op.kind === 'glyphs' && op.field))),
+    );
+    const newColumn = (rowIndex: number) => {
       flush();
       this.breakColumn('soft');
       const c = this.column;
@@ -975,7 +1071,24 @@ class Paginator {
       }
       col = c;
       rowsOnPage = 0;
-      // Header rows repeat at the top of each page.
+      if (rowIndex < tl.headerRows) return;
+      if (headerHasFields) {
+        // A repeated PAGE field has a different value on each page. Shape this copy
+        // in its own page context so it cannot overwrite the first header's field.
+        this.fieldPage = { number: this.page.number, format: this.section.pageNumberFormat, total: null, sectionTotal: null };
+        const header = measureTable({ ...table, rows: table.rows.slice(0, tl.headerRows) }, col.w, this.env);
+        this.fieldPage = null;
+        const repeats = header.rows.map((row, r) => {
+          const y = this.y;
+          this.y += row.height;
+          return { r, y, height: row.height };
+        });
+        const seg = renderSegment(header, repeats, col.x, new Map());
+        for (const op of seg.ops) if (op.kind === 'glyphs') delete op.field;
+        this.extractFloats(seg.ops, this.page, this.page.body, this.page.floats);
+        this.addNotes(seg.notes);
+        return;
+      }
       for (let h = 0; h < tl.headerRows; h++) {
         pieces.push({ r: h, y: this.y, height: tl.rows[h].height });
         this.y += tl.rows[h].height;
@@ -985,7 +1098,8 @@ class Paginator {
     for (let r = 0; r < tl.rows.length; r++) {
       const row = tl.rows[r];
       let first = true;
-      for (let guard = 0; guard < 500; guard++) {
+      for (let guard = 0; ; guard++) {
+        if (guard === 500) throw new Error('Table row exceeds the pagination limit');
         const remainingH = this.rowRemainingHeight(tl, r, progress);
         const fitsWhole = this.y + remainingH <= this.colBottom + EPS;
         if (fitsWhole || (this.atTop && rowsOnPage === 0 && !this.canSplit(tl, r))) {
@@ -996,10 +1110,10 @@ class Paginator {
           rowsOnPage++;
           break;
         }
-        const emptyHere = this.atTop || rowsOnPage === 0;
+        const emptyHere = this.atTop;
         if (!emptyHere && (row.row.cantSplit || !this.canSplit(tl, r))) {
           if (first && r === 0) moved = true;
-          newColumn();
+          newColumn(r);
           first = false;
           continue;
         }
@@ -1007,7 +1121,7 @@ class Paginator {
         const split = this.splitRow(tl, r, progress, this.colBottom - this.y, emptyHere);
         if (!split) {
           if (first && r === 0) moved = true;
-          newColumn();
+          newColumn(r);
           first = false;
           continue;
         }
@@ -1015,7 +1129,7 @@ class Paginator {
         this.y += split.height;
         this.markPlaced(this.y);
         rowsOnPage++;
-        newColumn();
+        newColumn(r);
         first = false;
       }
     }
@@ -1092,8 +1206,12 @@ class Paginator {
   private finish(): Page[] {
     if (this.page) this.closeColSet(Math.max(this.y, ...this.page.colBottoms));
     const total = this.pages.length;
-    const sectionTotals = new Map<number, number>();
-    for (const p of this.pages) sectionTotals.set(p.sectionIndex, (sectionTotals.get(p.sectionIndex) ?? 0) + 1);
+    const sectionTotals = new Map<Section, number>();
+    for (const p of this.pages) {
+      for (const section of new Set(p.colSets.map((set) => set.section))) {
+        sectionTotals.set(section, (sectionTotals.get(section) ?? 0) + 1);
+      }
+    }
     const out: Page[] = [];
     for (const p of this.pages) {
       const s = p.section;
@@ -1101,7 +1219,7 @@ class Paginator {
       const floats = p.floats.slice();
       const hf = this.headerFooterFor(s, p.number, p.firstOfSection);
       const hfWidth = p.width - p.marginLeft - p.marginRight;
-      this.fieldPage = { number: p.number, format: s.pageNumberFormat, total, sectionTotal: sectionTotals.get(p.sectionIndex) ?? null };
+      this.fieldPage = { number: p.number, format: s.pageNumberFormat, total, sectionTotal: sectionTotals.get(p.section) ?? null };
       if (hf.header) {
         const box = layoutBlocks(hf.header, hfWidth, this.env);
         for (const it of box.items) this.extractFloats(translateOps(it.ops, p.marginLeft, s.header), p, hfOps, floats);
@@ -1117,12 +1235,17 @@ class Paginator {
       const body = p.body.slice();
       if (p.notes.length) {
         let y = p.bottom - p.noteHeight;
-        const sep = this.footnoteSeparator(hfWidth);
+        const sep = p.continuation && this.doc.footnoteContinuationSeparator
+          ? layoutBlocks(this.doc.footnoteContinuationSeparator, hfWidth, this.env)
+          : this.footnoteSeparator(hfWidth);
         for (const it of sep.items) body.push(...translateOps(it.ops, p.marginLeft, y));
         y += sep.height;
         for (const n of p.notes) {
-          for (const it of n.box.items) this.extractFloats(translateOps(it.ops, p.marginLeft, y), p, body, floats);
-          y += n.box.height;
+          for (let i = n.start; i < n.end; i++) {
+            this.extractFloats(translateOps(n.box.items[i].ops, p.marginLeft, y - n.offset), p, body, floats);
+          }
+          const last = n.box.items[n.end - 1];
+          y += last.y + last.height - n.offset;
         }
       }
 
@@ -1155,6 +1278,20 @@ class Paginator {
       for (const f of floats) (f.behind ? behind : front).push(...f.ops);
       const borders = this.pageBorders(p);
       if (borders.length) (s.pageBorders?.zOrder === 'back' ? behind : front).push(...borders);
+      for (const layer of [body, behind, front]) {
+        for (const op of layer) {
+          if (op.kind !== 'glyphs' || !op.field) continue;
+          const measured = this.measuredFields.get(op.field);
+          if (!measured) continue;
+          this.fieldPage = { number: p.number, format: measured.section.pageNumberFormat, total, sectionTotal: sectionTotals.get(measured.section) ?? 1 };
+          const value = this.fieldText(op.field);
+          this.fieldPage = null;
+          if (value !== measured.value) {
+            this.fieldValues.set(op.field, value);
+            this.fieldsChanged = true;
+          }
+        }
+      }
       out.push({ width: p.width, height: p.height, behind, headerFooter: hfOps, body, front, section: p.sectionIndex, number: p.number, numberFormat: s.pageNumberFormat });
     }
     return out;

@@ -8,6 +8,8 @@ export type { FontSource } from './fonts/registry.js';
 export type { LayoutStats } from './layout/engine.js';
 
 export interface ConvertOptions {
+  /** Maximum uncompressed bytes per ZIP part and across all parts read. */
+  archiveLimits?: import('./util/zip.js').ArchiveLimits;
   /** Fonts to use, in addition to fonts embedded in the document. They win over bundled fonts. */
   fonts?: FontSource[];
   /** Use fonts embedded in the .docx (default true). */
@@ -19,7 +21,7 @@ export interface ConvertOptions {
 }
 
 export interface ConvertResult {
-  pdf: Uint8Array;
+  pdf: Uint8Array<ArrayBuffer>;
   pageCount: number;
   /** Things that could not be reproduced exactly (missing fonts, unsupported images, ...). */
   warnings: string[];
@@ -37,7 +39,7 @@ function toBytes(input: Uint8Array | ArrayBuffer): Uint8Array {
 
 /** Convert a .docx file to PDF. */
 export async function convertDocx(input: Uint8Array | ArrayBuffer, options: ConvertOptions = {}, providers: FontProvider[] = []): Promise<ConvertResult> {
-  const doc = parseDocx(toBytes(input));
+  const doc = parseDocx(toBytes(input), options.archiveLimits);
   const fonts = new FontRegistry();
   for (const f of options.fonts ?? []) fonts.add(f, 'user');
   if (options.embeddedFonts !== false) {
@@ -51,7 +53,7 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer, options: Conv
   }
   for (const p of providers) await p.register(fonts);
   for (const [family, hints] of doc.fontHints) fonts.setHints(family, hints);
-  await fonts.prepare(doc.fontFamilies, doc.codePoints);
+  await fonts.prepare(doc.fontRequests);
   const layout = layoutDocument(doc, fonts);
   const warnings = [...doc.warnings, ...layout.warnings];
   const pdf = renderPdf(layout.pages, { info: { ...doc.info, ...options.info }, compress: options.compress }, warnings);
