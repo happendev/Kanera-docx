@@ -51,7 +51,14 @@ out/benchmark-word/venv/bin/python benchmarks/word/score.py
 ```
 
 Scoring a completed full comparison updates the benchmark summary near the top of the main README,
-its comparison table, and the breakdown below. All three use the recorded run date in UTC.
+its comparison table, and the breakdown below. The breakdown shows the recorded run date in UTC.
+Scoring uses up to eight processes by default. Use `score.py --jobs 1` to score one case at a
+time, or set a different worker count with `--jobs`. Cold and warm conversion timings are serial.
+
+If `convert.py` exits with an error during the warm pass, run it again with the same engine flags
+and build. It reuses the cold timings and PDFs from `conversion-cold.json` and reruns the warm
+pass. Use `--fresh` to start from cold conversions. Run `score.py` after conversion finishes
+successfully.
 
 ### Fast Kanera-only run
 
@@ -66,6 +73,33 @@ out/benchmark-word/venv/bin/python benchmarks/word/score.py --kanera-only
 The results go in `out/benchmark-word/kanera-only/`. Add `--gallery` to the scoring command to
 generate the side-by-side screenshots. The full comparison generates a gallery by default and
 accepts `--no-gallery` for a report and CSV without screenshots.
+Scoring a Kanera-only run refreshes the Kanera rows in the main README. The breakdown here
+reflects the last full comparison.
+
+### Compare bundled CJK font loading
+
+After building the package and fetching the fixtures, compare the default Node loader (`sparse`)
+with full reads of the same fonts using an explicit `fontDir` (`full`). For the packaged Noto CJK
+faces, the default loader caches layout tables and reads the required outline ranges asynchronously
+at PDF embedding time. Documents with equations use full fonts so layout can measure glyph bounds.
+
+```sh
+fixture=out/benchmark-word/cases/upstream-nthu_article/input.docx
+mkdir -p out/cjk-font-comparison
+for mode in full sparse; do
+  /usr/bin/time -f '%M KiB peak RSS, %e s elapsed' \
+    node benchmarks/word/cjk-fonts.mjs "$mode" "$fixture" "out/cjk-font-comparison/$mode.pdf"
+done
+cmp out/cjk-font-comparison/full.pdf out/cjk-font-comparison/sparse.pdf
+```
+
+The worker also accepts `--batch jobs.json` in place of the input and output paths. Each job is
+an `[inputPath, outputPath]` pair. It emits times in milliseconds in input order.
+
+On 2026-11-20 with Node 24.18.0, all 278 cold PDFs and all 278 PDFs in each of three warm batches
+matched the pre-change Node build byte for byte. With the automatic JPEG cap active in both builds,
+the maximum cold peak RSS fell from 230.4 to 200.1 MiB. The median cold peak rounded to 84.1 MiB
+in both builds.
 
 ### Include Aspose.Words for .NET
 
@@ -126,36 +160,41 @@ out/benchmark-word/venv/bin/python benchmarks/word/convert.py --rust
 out/benchmark-word/venv/bin/python benchmarks/word/score.py --rust
 ```
 
-`--rust` combines with `--aspose` and `--syncfusion`. These engines are young, so a failed
-conversion, or one that runs longer than five minutes, does not stop the run. The failure is
-recorded in `conversion.json`, and that document scores zero. The report counts failed
-conversions for every engine. Speed and memory figures cover successful conversions only.
+`--rust` combines with `--aspose` and `--syncfusion`.
+
+For every engine, a failed conversion, or one that runs longer than five minutes, does not stop
+the run. The failure is recorded in `conversion.json`, and that document scores zero. A PDF that
+Poppler cannot rasterize, or whose text extraction crashes or hangs, is scored the same way: the
+scorer skips it, counts it as a failed conversion, and names the reason in the `unreadable_pdf`
+column of `results.csv`. The report
+counts failed conversions for every engine. Speed and memory figures cover successful conversions
+only.
 
 ## Latest results
 
-Ink overlap by suite, from the run summarised in the [main README](../../README.md#benchmark):
+Ink overlap by suite from the [last full comparison](../../README.md#benchmark).
 
 <!-- benchmark-breakdown:start -->
-**Last full benchmark run** 2026-11-20 (UTC), 208 documents.
+**Last full benchmark run** 2026-11-20 (UTC), 278 documents.
 
 | Cases | Reference | @kanera/docx2pdf | EigenPal | LibreOffice | Aspose.Words (.NET) | Syncfusion DocIO (.NET) | dxpdf (Rust) | rdocx (Rust) | office2pdf (Rust) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 150 classic | Microsoft 365 Word page images | **99.1%** | 74.0% | 91.2% | 51.0% | 58.4% | 36.9% | 44.8% | 57.1% |
-| 30 Hugging Face | Word for Mac PDFs | **93.4%** | 74.9% | 79.5% | 55.3% | 54.7% | 34.0% | 47.0% | 44.9% |
-| 20 issues | Microsoft 365 Word PDFs | **88.5%** | 71.1% | 53.7% | 49.8% | 51.9% | 31.2% | 18.7% | 32.3% |
+| 100 Hugging Face | Word for Mac PDFs | **83.2%** | 66.9% | 70.3% | 54.4% | 54.2% | 37.7% | 39.4% | 40.9% |
+| 20 issues | Microsoft 365 Word PDFs | **90.5%** | 71.1% | 53.7% | 49.8% | 51.9% | 31.2% | 18.7% | 32.3% |
 | 8 issues | LibreOffice PDFs | 58.6% | 62.9% | **68.1%** | 49.4% | 48.6% | 24.7% | 26.8% | 42.4% |
 
 Per-document ink overlap differences under half a percentage point count as ties.
 
 | Compared with | Kanera higher | Kanera lower | Ties |
 | --- | ---: | ---: | ---: |
-| EigenPal | 179 | 9 | 20 |
-| LibreOffice | 117 | 15 | 76 |
-| Aspose.Words (.NET) | 197 | 5 | 6 |
-| Syncfusion DocIO (.NET) | 202 | 3 | 3 |
-| dxpdf (Rust) | 205 | 2 | 1 |
-| rdocx (Rust) | 177 | 1 | 30 |
-| office2pdf (Rust) | 206 | 2 | 0 |
+| EigenPal | 216 | 26 | 36 |
+| LibreOffice | 163 | 25 | 90 |
+| Aspose.Words (.NET) | 252 | 15 | 11 |
+| Syncfusion DocIO (.NET) | 252 | 13 | 13 |
+| dxpdf (Rust) | 269 | 6 | 3 |
+| rdocx (Rust) | 242 | 3 | 33 |
+| office2pdf (Rust) | 270 | 5 | 3 |
 <!-- benchmark-breakdown:end -->
 
 On 2026-11-20, LibreOffice ran as a Flatpak on the host, launched from a container. The timings
@@ -171,7 +210,9 @@ Liberation and DejaVu.
 - **Warm speed.** Each engine converts an initial fixture once before timing the full set in the
   same process. Timings still include reading the DOCX and writing the PDF. LibreOffice gets the
   documents in one CLI batch. Its per-file timing is the interval between successive PDF write
-  completions, observed with Linux inotify. The report includes median and p95 per-document
+  completions, observed with Linux inotify. office2pdf is timed the same way. If such a batch
+  exits partway, the document it stopped on gets no warm time and a new batch resumes after it.
+  The report includes median and p95 per-document
   latency. Warm docs/sec is the number of successful timed conversions divided by the sum of
   their durations, excluding the warm-up conversion.
 - **Memory.** GNU time records peak resident set size (RSS) for each cold invocation, including runtime
@@ -227,6 +268,12 @@ scores 2,650 DOCX files from two sources.
 The runner uses the same 96 DPI ink score as the benchmark, averaging pages within each document
 and giving each document equal weight. Missing and extra pages score zero. A failed conversion
 scores zero, is listed in the report, and makes the command exit with status 1.
+A completed run of both corpora refreshes the full-corpus ink score and run date in the main README.
+Each worker reuses a Node process across documents and replaces it after a conversion error or
+timeout. Output pages are rasterized as temporary raw RGB images to avoid PNG compression.
+Rendered reference pages are cached as lossless grayscale PNGs under `out/word-reference-rasters/`.
+The cache key includes the reference digest, raster settings, and rendering environment. Use
+`--reference-cache-dir` to store the rendered pages elsewhere.
 
 Use Python 3.11–3.13, pnpm and Node, and put Poppler (`pdftoppm`) on PATH. Set up the Python
 environment once, then run the accuracy check before and after a renderer change.

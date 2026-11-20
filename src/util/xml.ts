@@ -56,6 +56,8 @@ const NS: Record<string, string> = {
   'http://schemas.microsoft.com/office/drawing/2008/diagram': 'dsp',
 };
 
+export class XmlDepthError extends Error {}
+
 /** Namespaces whose mc:Choice branches we can render (others fall back to mc:Fallback). */
 export const SUPPORTED_CHOICE_PREFIXES = new Set(['wps', 'wpg', 'wp14', 'w14', 'w15', 'a14', 'asvg', 'wpc', 'w', 'a', 'wp', 'pic', 'r', 'm', 'v', 'o']);
 
@@ -69,7 +71,7 @@ export function decodeEntities(s: string): string {
       if (!Number.isFinite(cp) || cp < 0 || cp > 0x10ffff) return m;
       return String.fromCodePoint(cp);
     }
-    return ENTITIES[ent] ?? m;
+    return Object.hasOwn(ENTITIES, ent) ? ENTITIES[ent] : m;
   });
 }
 
@@ -82,7 +84,7 @@ function keepsWhitespace(name: string): boolean {
 export function parseXml(src: string): XmlElement {
   const root: XmlElement = { name: '#document', attrs: {}, children: [] };
   const stack: XmlElement[] = [root];
-  const nsStack: Array<Record<string, string>> = [{ xml: 'http://www.w3.org/XML/1998/namespace' }];
+  const nsStack: Array<Record<string, string>> = [Object.assign(Object.create(null), { xml: 'http://www.w3.org/XML/1998/namespace' })];
   let i = 0;
   const n = src.length;
 
@@ -92,14 +94,14 @@ export function parseXml(src: string): XmlElement {
       if (isAttr) return qname;
       const uri = scope[''];
       if (uri === undefined) return qname;
-      const canon = NS[uri];
+      const canon = Object.hasOwn(NS, uri) ? NS[uri] : undefined;
       return canon ? `${canon}:${qname}` : qname;
     }
     const prefix = qname.slice(0, colon);
     const local = qname.slice(colon + 1);
     const uri = scope[prefix];
     if (uri === undefined) return qname;
-    const canon = NS[uri];
+    const canon = Object.hasOwn(NS, uri) ? NS[uri] : undefined;
     return canon ? `${canon}:${local}` : qname;
   };
 
@@ -151,6 +153,7 @@ export function parseXml(src: string): XmlElement {
       }
       continue;
     }
+    if (stack.length > 128) throw new XmlDepthError('XML nesting limit exceeded');
     // Start tag
     let j = i + 1;
     while (j < n && !isNameEnd(src.charCodeAt(j))) j++;
@@ -198,11 +201,11 @@ export function parseXml(src: string): XmlElement {
     let scope = parentScope;
     for (const [an, av] of rawAttrs) {
       if (an === 'xmlns' || an.startsWith('xmlns:')) {
-        if (scope === parentScope) scope = { ...parentScope };
+        if (scope === parentScope) scope = Object.create(parentScope);
         scope[an === 'xmlns' ? '' : an.slice(6)] = av;
       }
     }
-    const attrs: Record<string, string> = {};
+    const attrs: Record<string, string> = Object.create(null);
     for (const [an, av] of rawAttrs) {
       if (an === 'xmlns' || an.startsWith('xmlns:')) continue;
       attrs[resolve(an, scope, true)] = av;
@@ -214,7 +217,7 @@ export function parseXml(src: string): XmlElement {
         .filter(Boolean)
         .map((p) => {
           const uri = scope[p];
-          return (uri && NS[uri]) || p;
+          return uri === undefined ? p : Object.hasOwn(NS, uri) ? NS[uri] : '#unknown';
         })
         .join(' ');
     }

@@ -427,6 +427,8 @@ export interface Section {
 export interface ImageRef {
   id: string;
   data: Uint8Array;
+  /** Metafile raster with a separate pixel array. In this case data holds the DIB header and palette. */
+  dibBits?: Uint8Array;
   contentType?: string;
   svg?: ImageRef;
   /** Brightness and contrast (Word's picture corrections and Washout): each colour component c (0–1) is drawn as slope·c + offset, clipped. */
@@ -442,7 +444,8 @@ export interface Fill {
 
 /** A DrawingML gradient: colour stops at positions 0..1, along a line or out from a focus. */
 export interface GradientFill {
-  stops: Array<{ pos: number; color: string }>;
+  /** Colour stops, with their opacity where it is below 1. */
+  stops: Array<{ pos: number; color: string; alpha?: number }>;
   /** A linear gradient's direction, in degrees clockwise from east. */
   angle: number;
   /** The angle is for the unit square, stretched with the shape (a:lin scaled). */
@@ -584,7 +587,7 @@ export interface ChartSeries {
   smooth: boolean;
   labels?: ChartLabels;
   /** Per-point formatting (c:dPt), by point index. */
-  points: Array<{ idx: number; shape: ChartShape }>;
+  points: Map<number, ChartShape>;
   /** Pie slice explosion (percent of radius). */
   explosion: number;
   trendlines?: ChartTrendline[];
@@ -733,6 +736,8 @@ export interface DocumentInfo {
   creator?: string;
   keywords?: string;
   description?: string;
+  created?: Date;
+  modified?: Date;
 }
 
 export interface DocSettings {
@@ -774,6 +779,8 @@ export interface DocxDocument {
   endnoteSeparator: Block[] | null;
   info: DocumentInfo;
   background: Color;
+  /** Equation layout measures ink bounds directly from glyph outlines. */
+  hasMath: boolean;
   /** Families referenced anywhere, for font preloading. */
   fontRequests: FontRequest[];
   embeddedFonts: Array<{ family: string; bold: boolean; italic: boolean; data: Uint8Array }>;

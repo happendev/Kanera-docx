@@ -314,7 +314,7 @@ function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx:
       format: vals.format ?? 'General',
       shape: shape(child(s, 'c:spPr'), ctx, type === 'scatter' && !p.lines ? { fill: null, line: null } : dflt),
       smooth: flag(child(s, 'c:smooth'), false) || (type === 'scatter' && scatterStyle.startsWith('smooth')),
-      points: [],
+      points: new Map(),
       explosion: numVal(child(s, 'c:explosion')) ?? 0,
     };
     if (child(child(s, 'c:cat') ?? child(s, 'c:xVal'), 'c:numRef') || child(child(s, 'c:cat') ?? child(s, 'c:xVal'), 'c:numLit')) {
@@ -334,7 +334,7 @@ function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx:
     for (const dPt of children(s, 'c:dPt')) {
       const i = numVal(child(dPt, 'c:idx')) ?? 0;
       const base: ChartShape = p.varyColors && (sers.length === 1 || type === 'pie' || type === 'doughnut') ? { ...ser.shape, fill: ser.shape.fill && { color: autoColor(i, ctx), alpha: 1 } } : ser.shape;
-      ser.points.push({ idx: i, shape: shape(child(dPt, 'c:spPr'), ctx, base) });
+      if (!ser.points.has(i)) ser.points.set(i, shape(child(dPt, 'c:spPr'), ctx, base));
     }
     const l = labels(child(s, 'c:dLbls'), plotLabels, text, ctx);
     if (l) ser.labels = l;
@@ -381,7 +381,7 @@ function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx:
     for (const ser of p.series) {
       const n = Math.max(ser.values.length, ser.categories.length);
       for (let i = 0; i < n; i++)
-        if (!ser.points.some((q) => q.idx === i)) ser.points.push({ idx: i, shape: { ...ser.shape, fill: ser.shape.fill && { color: autoColor(i, ctx), alpha: ser.shape.fill.alpha } } });
+        if (!ser.points.has(i)) ser.points.set(i, { ...ser.shape, fill: ser.shape.fill && { color: autoColor(i, ctx), alpha: ser.shape.fill.alpha } });
     }
   return p;
 }

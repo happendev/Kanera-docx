@@ -1,7 +1,9 @@
 from argparse import ArgumentParser, BooleanOptionalAction
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from html import escape
+from os import cpu_count
 from platform import platform, processor
 import csv
 import json
@@ -13,9 +15,11 @@ import numpy as np
 import pymupdf
 from PIL import Image, ImageDraw, ImageFont
 
-from fetch import BENCHMARK_FIXTURES, HERE, MANIFEST, UPSTREAM, OUTPUT, benchmark_reference, verify_reference
+from fetch import (BENCHMARK_FIXTURES, HERE, MANIFEST, UPSTREAM, OUTPUT, benchmark_lock,
+                   benchmark_reference, verify_reference)
+from pdf_text import extract as extract_text
 from ink import page_scores, render, render_reference
-from readme import markdown_table, update_readmes
+from readme import markdown_table, update_kanera_readme, update_readmes
 
 ENGINES = {
     'reference': 'Reference',
@@ -98,10 +102,13 @@ def comparison(fixture, rasters, rows, page, out):
         draw.text((x, 41), label, font=LABEL_FONT, fill='#263849')
         if engine in by_engine:
             row = by_engine[engine]
-            if row['failed']:
+            if row['unreadable_pdf']:
+                caption = f"Unreadable PDF ({row['unreadable_pdf']}), scored as failed"
+            elif row['failed']:
                 caption = f"Conversion failed after {row['cold_ms']:.1f} ms"
             else:
-                caption = (f"{row['cold_ms']:.1f} ms cold · {row['warm_ms']:.1f} ms warm · "
+                warm = 'no warm time' if row['warm_ms'] is None else f"{row['warm_ms']:.1f} ms warm"
+                caption = (f"{row['cold_ms']:.1f} ms cold · {warm} · "
                            f"{row['peak_rss_kib'] / 1024:.1f} MiB · {row['ink_f1']:.1f}% document ink overlap")
             draw.text((x, 64), caption, font=SMALL_FONT, fill='#263849')
         if engine not in images:
@@ -133,6 +140,7 @@ def score_case(fixture, engines, metrics, visuals, *, output=None):
 
     rasters = {'reference': reference}
     extracted = {}
+    invalid = {}
     for engine in engines[1:]:
         pdf = directory / f'{engine}.pdf'
         if 'error' in metrics[name, engine]:
@@ -140,20 +148,35 @@ def score_case(fixture, engines, metrics, visuals, *, output=None):
             rasters[engine] = []
             extracted[engine] = []
             continue
-        with pymupdf.open(pdf) as doc:
-            if engine in LICENSED and any(LICENSED[engine] in page.get_text().lower() for page in doc):
+        unreadable = None
+        text = extract_text(pdf)
+        if text is None:
+            unreadable = 'text extraction crashed'
+        else:
+            pdf_words, pdf_text = text
+            if engine in LICENSED and LICENSED[engine] in pdf_text:
                 raise ValueError(f'Evaluation watermark detected in {name}')
-            if reference_words is not None:
-                extracted[engine] = words(doc)
-            page_count = len(doc)
-        rasters[engine] = render(pdf)
-        if page_count != len(rasters[engine]):
-            raise ValueError(f'Inconsistent page count for {name} ({engine})')
+            try:
+                pages = render(pdf)
+            except subprocess.CalledProcessError:
+                pages = None
+                unreadable = 'rasterization failed'
+            if pages is not None and len(pdf_words) != len(pages):
+                unreadable = 'page counts disagree between text extraction and rasterization'
+        if unreadable:
+            # A PDF the readers cannot process counts as a failed conversion and scores zero.
+            print(f'Unreadable PDF for {name} ({engine}): {unreadable}; scoring it as failed', flush=True)
+            invalid[engine] = unreadable
+            rasters[engine] = []
+            extracted[engine] = []
+            continue
+        rasters[engine] = pages
+        extracted[engine] = pdf_words
 
     rows = []
     for engine in engines[1:]:
         pages = rasters[engine]
-        failed = 'error' in metrics[name, engine]
+        failed = 'error' in metrics[name, engine] or engine in invalid
         scores = page_scores(reference, pages)
         recall, offset, matched = (page_metrics(reference_words, extracted[engine])
                                    if reference_words is not None else (None, None, None))
@@ -165,8 +188,10 @@ def score_case(fixture, engines, metrics, visuals, *, output=None):
             'reference_format': 'pdf' if reference_words is not None else 'png',
             'engine': engine,
             'failed': failed,
+            'unreadable_pdf': invalid.get(engine),
             'cold_ms': round(metrics[name, engine]['cold_ms'], 2),
-            'warm_ms': None if failed else metrics[name, engine]['warm_ms'],
+            # A document a warm batch stopped on has no warm time (see resumable_warm in convert.py).
+            'warm_ms': None if failed else metrics[name, engine].get('warm_ms'),
             'peak_rss_kib': metrics[name, engine]['peak_rss_kib'],
             'reference_pages': len(reference),
             'pages': len(pages),
@@ -200,16 +225,19 @@ def summary_table(rows, engines, count):
             continue
         # Speed and memory cover successful conversions; failures score zero for accuracy.
         cold = statistics.median(row['cold_ms'] for row in converted)
-        warm_times = [row['warm_ms'] for row in converted]
-        warm = statistics.median(warm_times)
-        warm_p95 = statistics.quantiles(warm_times, n=100, method='inclusive')[94] if len(warm_times) > 1 else warm
-        throughput = 1000 / statistics.mean(warm_times)
+        warm_times = [row['warm_ms'] for row in converted if row['warm_ms'] is not None]
+        warm_columns = ('–',) * 3
+        if warm_times:
+            warm = statistics.median(warm_times)
+            warm_p95 = statistics.quantiles(warm_times, n=100, method='inclusive')[94] if len(warm_times) > 1 else warm
+            throughput = 1000 / statistics.mean(warm_times)
+            warm_columns = (f'{warm:.1f} ms', f'{warm_p95:.1f} ms', f'{throughput:.1f}')
         rss = [row['peak_rss_kib'] / 1024 for row in converted]
         matches = sum(row['pages'] == row['reference_pages'] for row in scores)
         ink = statistics.mean(row['ink_f1'] for row in scores)
         pdf_bytes = sum(row['pdf_bytes'] for row in scores)
-        yield (ENGINES[engine], f'{cold:.1f} ms', f'{warm:.1f} ms', f'{warm_p95:.1f} ms',
-               f'{throughput:.1f}', f'{statistics.median(rss):.1f} MiB', f'{max(rss):.1f} MiB',
+        yield (ENGINES[engine], f'{cold:.1f} ms', *warm_columns,
+               f'{statistics.median(rss):.1f} MiB', f'{max(rss):.1f} MiB',
                f'{failed}/{count}', f'{matches}/{count}', f'{ink:.1f}%', f'{pdf_bytes / 1024**2:.2f} MiB')
 
 
@@ -280,17 +308,7 @@ figcaption { margin-bottom: .3rem; }
     yield '</html>'
 
 
-def main():
-    parser = ArgumentParser(description='Score locally converted PDFs against the pinned reference pages.')
-    parser.add_argument('--kanera-only', action='store_true', help='Score the Kanera-only run.')
-    parser.add_argument('--gallery', action=BooleanOptionalAction,
-                        help='Generate the screenshot gallery (default: on for the full comparison).')
-    parser.add_argument('--aspose', action='store_true', help='Include the licensed Aspose run.')
-    parser.add_argument('--syncfusion', action='store_true', help='Include the licensed Syncfusion DocIO run.')
-    parser.add_argument('--rust', action='store_true', help='Include the dxpdf, rdocx and office2pdf runs.')
-    args = parser.parse_args()
-    if args.kanera_only and (args.aspose or args.syncfusion or args.rust):
-        parser.error('--kanera-only cannot be combined with --aspose, --syncfusion or --rust')
+def score_outputs(args):
     output = OUTPUT / 'kanera-only' if args.kanera_only else OUTPUT
     include_gallery = not args.kanera_only if args.gallery is None else args.gallery
     engines = ('reference', 'ours') if args.kanera_only else tuple(
@@ -318,10 +336,24 @@ def main():
     else:
         (output / 'gallery.html').unlink(missing_ok=True)
         visuals = None
-    rows = []
-    for fixture in BENCHMARK_FIXTURES:
-        print(f"Scoring {fixture['case']}", flush=True)
-        rows.extend(score_case(fixture, engines, metrics, visuals, output=output))
+    scored = {}
+    print(f'Scoring {len(BENCHMARK_FIXTURES)} documents with {args.jobs} workers', flush=True)
+    with ProcessPoolExecutor(max_workers=args.jobs) as pool:
+        futures = {}
+        for fixture in BENCHMARK_FIXTURES:
+            name = fixture['case']
+            case_metrics = {(name, engine): metrics[name, engine] for engine in engines[1:]}
+            future = pool.submit(score_case, fixture, engines, case_metrics, visuals, output=output)
+            futures[future] = name
+        try:
+            for future in as_completed(futures):
+                name = futures[future]
+                scored[name] = future.result()
+                print(f'Scored {name}', flush=True)
+        except BaseException:
+            pool.shutdown(cancel_futures=True)
+            raise
+    rows = [row for fixture in BENCHMARK_FIXTURES for row in scored[fixture['case']]]
     with (output / 'results.csv').open('w', newline='') as file:
         writer = csv.DictWriter(file, fieldnames=rows[0])
         writer.writeheader()
@@ -333,9 +365,30 @@ def main():
     (output / 'report.md').write_text(summary, encoding='utf-8')
     if include_gallery:
         (output / 'gallery.html').write_text('\n'.join(gallery(table, output)), encoding='utf-8')
-    if not args.kanera_only:
+    if args.kanera_only:
+        update_kanera_readme(HERE.parents[1], table, versions, count)
+    else:
         update_readmes(HERE.parents[1], rows, table, engines[1:], versions, run_date)
     print(summary.split('\n## Cases', 1)[0])
+
+
+def main():
+    parser = ArgumentParser(description='Score locally converted PDFs against the pinned reference pages.')
+    parser.add_argument('--kanera-only', action='store_true', help='Score the Kanera-only run.')
+    parser.add_argument('--gallery', action=BooleanOptionalAction,
+                        help='Generate the screenshot gallery (default: on for the full comparison).')
+    parser.add_argument('--jobs', type=int, default=min(8, cpu_count() or 1),
+                        help='Concurrent scoring processes (default: %(default)s).')
+    parser.add_argument('--aspose', action='store_true', help='Include the licensed Aspose run.')
+    parser.add_argument('--syncfusion', action='store_true', help='Include the licensed Syncfusion DocIO run.')
+    parser.add_argument('--rust', action='store_true', help='Include the dxpdf, rdocx and office2pdf runs.')
+    args = parser.parse_args()
+    if args.kanera_only and (args.aspose or args.syncfusion or args.rust):
+        parser.error('--kanera-only cannot be combined with --aspose, --syncfusion or --rust')
+    if args.jobs < 1:
+        parser.error('--jobs must be positive')
+    with benchmark_lock(OUTPUT):
+        score_outputs(args)
 
 
 if __name__ == '__main__':

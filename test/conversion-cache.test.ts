@@ -1,11 +1,15 @@
-import { readFile } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { copyFile, mkdtemp, readFile, rm, stat, utimes } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { convertDocx as convertBrowser } from '../src/browser.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChartPointBudget } from '../src/docx/chart.js';
 import { parseDocx } from '../src/docx/parser.js';
-import { FontBudget } from '../src/fonts/sfnt.js';
-import { FontRegistry } from '../src/fonts/registry.js';
+import { FontBudget, SfntFont } from '../src/fonts/sfnt.js';
+import { loadCjkFont, fontVersion } from '../src/fonts/node-cjk.js';
+import { subsetTrueType } from '../src/fonts/subset.js';
+import { BundledFontData, FontRegistry } from '../src/fonts/registry.js';
 import { convertDocx } from '../src/node.js';
 import { nodeCompression } from '../src/util/node-compression.js';
 import { makeDocx, p, zipStore } from './helpers/docx.js';
@@ -105,7 +109,7 @@ describe('conversion caches', () => {
     expect(reserve.mock.calls).toEqual([[3], [3]]);
   });
 
-  it('shares an in-flight packaged font and its parsed tables, and reloads an explicit font directory', async () => {
+  it('shares an in-flight packaged font and its parsed tables, and refreshes changed files in an explicit font directory', async () => {
     const face = vi.spyOn(FontRegistry.prototype, 'resolve');
     const doc = makeDocx({ body: p('AV', '', '<w:rFonts w:ascii="Gelasio"/><w:kern w:val="2"/>') });
     const mappings = vi.spyOn(FontBudget.prototype, 'chargeMappingsTo');
@@ -124,11 +128,87 @@ describe('conversion caches', () => {
     expect(new Set(mappings.mock.calls.map(([target]) => target)).size).toBe(2);
     expect(kerning.mock.calls).toHaveLength(2);
     expect(new Set(kerning.mock.calls.map(([target]) => target)).size).toBe(2);
+    const fontDir = await mkdtemp(join(tmpdir(), 'kanera-fonts-'));
+    try {
+      const path = join(fontDir, 'Gelasio-Regular.ttf');
+      await copyFile(new URL('../fonts/Gelasio-Regular.ttf', import.meta.url), path);
+      await convertDocx(doc, { fontDir });
+      await convertDocx(doc, { fontDir });
+      expect(gelasioReads()).toHaveLength(2);
+      expect(new Set(fonts().map((f) => f.font)).size).toBe(2);
+      await utimes(path, new Date(0), new Date(0));
+      await convertDocx(doc, { fontDir });
+      expect(gelasioReads()).toHaveLength(3);
+      expect(new Set(fonts().map((f) => f.font)).size).toBe(3);
+    } finally {
+      await rm(fontDir, { recursive: true, force: true });
+    }
+  });
+
+  it('embeds the same CJK glyphs in concurrent conversions, including equation bounds', async () => {
     const fontDir = fileURLToPath(new URL('../fonts/', import.meta.url));
-    await convertDocx(doc, { fontDir });
-    await convertDocx(doc, { fontDir });
-    expect(gelasioReads()).toHaveLength(3);
-    expect(new Set(fonts().map((f) => f.font)).size).toBe(3);
+    const props = '<w:rFonts w:ascii="Noto Sans CJK JP" w:eastAsia="Noto Sans CJK JP"/>';
+    const equation = '<w:p><m:oMath><m:r><w:rPr>' + props + '</w:rPr><m:t>漢</m:t></m:r></m:oMath></w:p>';
+    const docs = [p('日本語', '', props), p('東京', '', props), equation].map(body => makeDocx({ body }));
+    const full = await Promise.all(docs.map(doc => convertDocx(doc, { fontDir })));
+    const actual = await Promise.all(docs.map(doc => convertDocx(doc)));
+    for (const [i, result] of actual.entries()) {
+      expect(pdfText(result.pdf)).toContain('NotoSansCJKJP-Regular');
+      expect(Buffer.from(result.pdf).equals(full[i].pdf)).toBe(true);
+      expect(result.warnings).toEqual(full[i].warnings);
+    }
+  });
+
+  it('loads composite dependencies and rejects outlines from a changed font file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kanera-outlines-'));
+    try {
+      const path = join(dir, 'composite.ttf');
+      await copyFile(new URL('../fonts/DejaVuSans.ttf', import.meta.url), path);
+      const load = async () => {
+        const data = await loadCjkFont(path, fontVersion(await stat(path, { bigint: true })));
+        if (!(data instanceof BundledFontData) || !data.font.readSubsetGlyphs) throw new Error('Expected detached outlines');
+        return { font: data.font, read: data.font.readSubsetGlyphs };
+      };
+      const original = new SfntFont(await readFile(path));
+      const gids = [original.glyphId(0xe9), original.glyphId(0x20)];
+      const expected = subsetTrueType(original, gids);
+      const { font, read } = await load();
+      const outlines = await read(gids);
+      expect(original.compositeComponents(gids[0])).toHaveLength(2);
+      expect(subsetTrueType(font, gids, outlines)).toEqual(expected);
+      await utimes(path, new Date(0), new Date(0));
+      await expect(read(gids)).rejects.toThrow(/changed during conversion/);
+      const refreshed = await load();
+      expect(subsetTrueType(refreshed.font, gids, await refreshed.read(gids))).toEqual(expected);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('shares parsed browser fonts and resolves a relative font URL without a window', async () => {
+    const requests: URL[] = [];
+    let active = 0;
+    let peak = 0;
+    const fetchFont: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      requests.push(url);
+      peak = Math.max(peak, ++active);
+      const data = await readFile(new URL('../fonts/' + basename(url.pathname), import.meta.url));
+      active--;
+      return new Response(new Uint8Array(data));
+    };
+    const resolve = vi.spyOn(FontRegistry.prototype, 'resolve');
+    const doc = makeDocx({ body: p('Body', '', '<w:rFonts w:ascii="Gelasio"/>') + p('Text', '', '<w:rFonts w:ascii="Carlito"/>') });
+    const options = { fetch: fetchFont, fontBaseUrl: './assets/fonts' };
+    await convertBrowser(doc, options);
+    const count = requests.length;
+    await convertBrowser(doc, options);
+    expect(peak).toBeGreaterThan(1);
+    expect(requests).toHaveLength(count);
+    expect(requests.some((url) => url.pathname.endsWith('/assets/fonts/Gelasio-Regular.ttf'))).toBe(true);
+    const faces = new Set(resolve.mock.results.map((r) => r.value.face).filter((face) => face.familyName === 'Gelasio'));
+    expect(faces.size).toBe(2);
+    expect(new Set([...faces].map((face) => face.font)).size).toBe(1);
   });
 
   it('retries a failed packaged font read on a later conversion', async () => {

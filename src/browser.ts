@@ -1,5 +1,7 @@
 import { convertDocx as convertCore } from './index.js';
 import type { ConvertOptions, ConvertResult, FontProvider } from './core.js';
+import { BundledFontData } from './fonts/registry.js';
+import { isFontCollection } from './fonts/sfnt.js';
 import { COMMON_FONTS, FULL_FONTS } from './fonts/bundled.js';
 
 export type { ConvertOptions, ConvertResult, FontSource, LayoutStats } from './core.js';
@@ -21,7 +23,7 @@ export interface BrowserConvertOptions extends ConvertOptions {
   fetch?: typeof fetch;
 }
 
-const fontCaches = new WeakMap<typeof fetch, Map<string, Promise<ArrayBuffer>>>();
+const fontCaches = new WeakMap<typeof fetch, Map<string, Promise<BundledFontData | Uint8Array>>>();
 
 function defaultBase(): URL {
   // Kept out of a literal `new URL('…', import.meta.url)` so bundlers don't try to inline a folder.
@@ -34,7 +36,7 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, option
   const data = input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : input;
   const providers: FontProvider[] = [];
   if (options.fontBaseUrl !== false) {
-    const base = options.fontBaseUrl ? new URL(String(options.fontBaseUrl), globalThis.location?.href) : defaultBase();
+    const base = options.fontBaseUrl ? new URL(String(options.fontBaseUrl), globalThis.location?.href ?? import.meta.url) : defaultBase();
     if (!base.pathname.endsWith('/')) base.pathname += '/';
     const doFetch = options.fetch ?? fetch;
     let fontCache = fontCaches.get(doFetch);
@@ -56,9 +58,10 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, option
               load: () => {
                 let p = fontCache.get(url);
                 if (!p) {
-                  p = doFetch(url).then((r) => {
+                  p = doFetch(url).then(async (r) => {
                     if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
-                    return r.arrayBuffer();
+                    const bytes = new Uint8Array(await r.arrayBuffer());
+                    return isFontCollection(bytes) ? bytes : new BundledFontData(bytes);
                   });
                   p.catch(() => fontCache.delete(url));
                   fontCache.set(url, p);

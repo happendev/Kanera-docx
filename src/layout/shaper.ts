@@ -8,6 +8,8 @@ export interface ShapedGlyph {
   text: string;
   cp: number;
   advance: number;
+  /** How far the glyph is drawn from its position (a proportional form's shift). */
+  dx?: number;
 }
 
 export interface ShapedRun {
@@ -126,6 +128,8 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
       gid = full;
       advance = glyphSize * sx;
     }
+    const prop = half || full !== undefined ? undefined : resolved.proportional?.get(cp);
+    if (prop) advance += prop.advance * glyphSize * sx;
     if (cp === 0x2003 && gid === font.glyphId(0x20)) advance = glyphSize * sx;
     if (cp === 0x2002 && gid === font.glyphId(0x20)) advance = (glyphSize * sx) / 2;
     advance += props.spacing;
@@ -136,7 +140,7 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
     }
     // Symbol-font characters (Wingdings, Symbol PUA codes) copy as the Unicode they were mapped to.
     const text = mapped !== cp && !resolved.char && (mapped < 0xe000 || mapped > 0xf8ff) ? String.fromCodePoint(mapped) : display;
-    cur.glyphs.push({ gid, text, cp, advance });
+    cur.glyphs.push(prop?.x ? { gid, text, cp, advance, dx: prop.x * glyphSize * sx } : { gid, text, cp, advance });
   }
   return out;
 }

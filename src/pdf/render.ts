@@ -3,8 +3,8 @@ import type { Compression } from '../util/compression.js';
 import type { FontFace } from '../fonts/registry.js';
 import { buildSfnt, canSubsetTrueType, subsetTrueType } from '../fonts/subset.js';
 import { ImageBudget, type ImageLimits } from '../image/budget.js';
-import { adjustImage, sniffImage, toPdfImage, type PdfImage } from '../image/image.js';
-import type { DrawOp, GlyphOp, Page, PathSeg } from '../layout/types.js';
+import { adjustImage, dibToPdf, sniffImage, toPdfImage, type PdfImage } from '../image/image.js';
+import type { DrawOp, GlyphOp, Page, PathSeg, ShadeGeometry } from '../layout/types.js';
 import { latin1, num, PdfObjects, pdfName, textString } from './objects.js';
 
 export interface PdfOptions {
@@ -50,7 +50,10 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
   const imageBudget = new ImageBudget(opts.imageLimits);
   const schemes = new Set(['https', 'http', 'mailto', ...(opts.additionalLinkSchemes ?? []).map((s) => s.toLowerCase())]);
   const images = new Map<string, ImageUse | null>();
-  const alphas = new Map<string, string>();
+  const rasterImages = new WeakMap<Uint8Array, PdfImage | null>();
+  const masks = new WeakMap<Uint8Array, number>();
+  // Gradients' sampled colours, shared by gradients that sample the same.
+  const shadeFunctions = new Map<string, number>();
   const anchors = new Map<string, { page: number; x: number; y: number }>();
   const pageNums = pages.map(() => pdf.alloc());
   const compress = opts.compress !== false;
@@ -91,36 +94,43 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
       if (!images.has(ref.svg.id)) await loadSvg(ref.svg);
       if (imageFor(ref) !== undefined) return;
     }
-    if (/\.svg$/i.test(ref.id) || sniffImage(ref.data) === 'svg') {
+    const data = ref.data;
+    if (!ref.dibBits && (/\.svg$/i.test(ref.id) || sniffImage(data) === 'svg')) {
       await loadSvg(ref);
       if (!images.get(ref.id)) warnings.push(`Image ${ref.id} uses unsupported SVG features and was skipped`);
       return;
     }
-    const img = await toPdfImage(ref.data, compression, imageBudget, quality);
+    let img = rasterImages.get(data);
+    if (img === undefined) {
+      img = ref.dibBits ? dibToPdf(data, ref.dibBits, compression, imageBudget) : await toPdfImage(data, compression, imageBudget, quality);
+      rasterImages.set(data, img);
+    }
     if (!img) {
       warnings.push(`Image ${ref.id} uses an unsupported format and was skipped`);
       images.set(ref.id, null);
       return;
     }
-    const use = { resName: `Im${images.size + 1}`, objNum: writeImage(pdf, ref.adjust ? adjustImage(img, ref.adjust) : img) };
+    const use = { resName: `Im${images.size + 1}`, objNum: writeImage(pdf, ref.adjust ? adjustImage(img, ref.adjust) : img, masks) };
     images.set(ref.id, use);
   };
 
-  const alphaFor = (a: number): string => {
-    const key = num(a);
-    let name = alphas.get(key);
-    if (!name) {
-      name = `GS${alphas.size + 1}`;
-      alphas.set(key, name);
-    }
-    return name;
-  };
-
   for (const [pi, page] of pages.entries()) {
+    const alphas = new Map<string, string>();
+    const alphaFor = (a: number): string => {
+      const key = num(a);
+      let name = alphas.get(key);
+      if (!name) {
+        name = `GS${alphas.size + 1}`;
+        alphas.set(key, name);
+      }
+      return name;
+    };
     const H = page.height;
     const out: string[] = [];
     const usedFonts = new Set<FontUse>();
     const usedImages = new Set<ImageUse>();
+    const shadings: string[] = [];
+    const softMasks: string[] = [];
     const annots: string[] = [];
     const Y = (y: number) => H - y;
     const color = (hex: string, stroke: boolean) => {
@@ -160,7 +170,8 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
       if (th !== 1) s += `${num(th * 100)} Tz `;
       s += color(op.color, false) + ' ';
       if (stroked) {
-        s += `${color(op.color, true)} ${num(op.size * (op.outline ? 0.02 : 0.03))} w ${op.outline ? 1 : 2} Tr `;
+        // A dash pattern a line or border left set would dash the glyphs' outlines too.
+        s += `${color(op.color, true)} ${num(op.size * (op.outline ? 0.02 : 0.03))} w [] 0 d ${op.outline ? 1 : 2} Tr `;
       }
       const x0 = op.x + op.xs[0] + (grid && op.lineX !== undefined ? snap(op.lineX) - op.lineX : 0);
       s += `1 0 ${op.syntheticItalic ? ITALIC_SKEW : 0} 1 ${num(x0)} ${num(Y(grid ? snap(op.y) : op.y))} Tm [`;
@@ -168,7 +179,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
         const gid = op.gids[i];
         const code = characterCode(use, gid, op.texts[i] ?? '');
         s += `<${code.toString(16).padStart(4, '0')}>`;
-        if (i + 1 < op.gids.length) {
+        if (size !== 0 && i + 1 < op.gids.length) {
           const w = font.advance(gid) * toPdfUnits;
           const d = op.xs[i + 1] - op.xs[i];
           const adj = w - (d * 1000) / (size * th);
@@ -207,6 +218,30 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
             const dash = op.dash ? `[${op.dash.map(num).join(' ')}] 0 d` : '[] 0 d';
             out.push(`${a ? `q /${alphaFor(op.strokeAlpha!)} gs ` : ''}${num(op.strokeWidth ?? 0.75)} w 0 J 1 j ${dash} ${color(op.stroke, true)} ${path}S${a ? ' Q' : ''}`);
           }
+          break;
+        }
+        case 'shade': {
+          const g = op.geometry;
+          const fn = sampledFunction(pdf, shadeFunctions, op.colors.flatMap(rgbBytes), 3, compress);
+          const name = `Sh${shadings.length + 1}`;
+          shadings.push(`/${name} ${shadingObject(pdf, g, fn, 'DeviceRGB', Y, compress)} 0 R`);
+          // A radial shading is a circle's, scaled to the ellipse.
+          const cm = g.type === 'radial' ? `${num(g.rx)} 0 0 ${num(g.ry)} ${num(g.cx)} ${num(Y(g.cy))} cm ` : '';
+          let s = 'q ';
+          if (op.alphas) {
+            // Opacity that varies across the gradient is a soft mask: the same shading in grey.
+            const maskFn = sampledFunction(pdf, shadeFunctions, op.alphas.map((a) => Math.round(Math.max(0, Math.min(1, a)) * 255)), 1, compress);
+            const [l, t, r, b] = op.bbox;
+            const form = pdf.addStream(
+              `/Type /XObject /Subtype /Form /BBox [${num(l - 1)} ${num(Y(b) - 1)} ${num(r + 1)} ${num(Y(t) + 1)}] /Group << /S /Transparency /CS /DeviceGray >> /Resources << /Shading << /Sh ${shadingObject(pdf, g, maskFn, 'DeviceGray', Y, compress)} 0 R >> >>`,
+              latin1(`${cm}/Sh sh`),
+              compress,
+            );
+            const mask = `SM${softMasks.length + 1}`;
+            softMasks.push(`/${mask} ${pdf.add(`<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G ${form} 0 R >> >>`)} 0 R`);
+            s += `/${mask} gs `;
+          } else if (op.alpha !== undefined && op.alpha < 1) s += `/${alphaFor(op.alpha)} gs `;
+          out.push(`${s}${cm}/${name} sh Q`);
           break;
         }
         case 'image': {
@@ -260,16 +295,21 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
     const content = pdf.addStream('', latin1(out.join('\n')), compress);
     const fontRes = [...usedFonts].map((f) => `/${f.resName} ${f.objNum} 0 R`).join(' ');
     const imgRes = [...usedImages].map((i) => `/${i.resName} ${i.objNum} 0 R`).join(' ');
-    const gsRes = [...alphas].map(([a, n]) => `/${n} << /Type /ExtGState /ca ${a} /CA ${a} >>`).join(' ');
+    const gsRes = [...[...alphas].map(([a, n]) => `/${n} << /Type /ExtGState /ca ${a} /CA ${a} >>`), ...softMasks].join(' ');
+    const shRes = shadings.join(' ');
     const annotNums = annots.map((a) => pdf.add(a));
     pdf.set(
       pageNums[pi],
-      `<< /Type /Page /Parent ${pagesNum} 0 R /MediaBox [0 0 ${num(page.width)} ${num(page.height)}] /Resources << /ProcSet [/PDF /Text /ImageB /ImageC /ImageI]${fontRes ? ` /Font << ${fontRes} >>` : ''}${imgRes ? ` /XObject << ${imgRes} >>` : ''}${gsRes ? ` /ExtGState << ${gsRes} >>` : ''} >> /Contents ${content} 0 R${annotNums.length ? ` /Annots [${annotNums.map((n) => `${n} 0 R`).join(' ')}]` : ''} >>`,
+      `<< /Type /Page /Parent ${pagesNum} 0 R /MediaBox [0 0 ${num(page.width)} ${num(page.height)}] /Resources << /ProcSet [/PDF /Text /ImageB /ImageC /ImageI]${fontRes ? ` /Font << ${fontRes} >>` : ''}${imgRes ? ` /XObject << ${imgRes} >>` : ''}${gsRes ? ` /ExtGState << ${gsRes} >>` : ''}${shRes ? ` /Shading << ${shRes} >>` : ''} >> /Contents ${content} 0 R${annotNums.length ? ` /Annots [${annotNums.map((n) => `${n} 0 R`).join(' ')}]` : ''} >>`,
     );
   }
 
   let fi = 0;
-  for (const use of fonts.values()) writeFont(pdf, use, fi++, compress);
+  for (const use of fonts.values()) {
+    const gids = [...use.codesByGlyph.keys()].sort((a, b) => a - b);
+    const read = use.face.font.readSubsetGlyphs;
+    writeFont(pdf, use, fi++, compress, gids, read ? await read(gids) : undefined);
+  }
 
   pdf.set(pagesNum, `<< /Type /Pages /Kids [${pageNums.map((n) => `${n} 0 R`).join(' ')}] /Count ${pages.length} >>`);
   pdf.set(catalog, `<< /Type /Catalog /Pages ${pagesNum} 0 R >>`);
@@ -279,6 +319,15 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
   if (info.creator) entries.push(`/Author ${textString(info.creator)}`);
   if (info.subject) entries.push(`/Subject ${textString(info.subject)}`);
   if (info.keywords) entries.push(`/Keywords ${textString(info.keywords)}`);
+  // PDF dates are D:YYYYMMDDHHmmSS, here in UTC (Z); a year outside 0000-9999 has no form.
+  const pdfDate = (d: Date | undefined) => {
+    const iso = d instanceof Date && !isNaN(d.getTime()) ? d.toISOString() : '';
+    return /^\d{4}-/.test(iso) ? `(D:${iso.replace(/\D/g, '').slice(0, 14)}Z)` : undefined;
+  };
+  const created = pdfDate(info.created);
+  const modified = pdfDate(info.modified);
+  if (created) entries.push(`/CreationDate ${created}`);
+  if (modified) entries.push(`/ModDate ${modified}`);
   const infoNum = pdf.add(`<< ${entries.join(' ')} >>`);
   return pdf.finish(catalog, infoNum);
 }
@@ -293,17 +342,75 @@ function linkAction(link: Link, anchors: Map<string, { page: number; x: number; 
     let url = link.url;
     if (link.anchor) url += '#' + link.anchor;
     const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1].toLowerCase();
-    if (!scheme || !schemes.has(scheme) || /[\x00-\x1f\x7f]/.test(url)) return null;
+    if (!scheme || !schemes.has(scheme) || /[\x00-\x1f\x7f\uD800-\uDFFF]/u.test(url)) return null;
     const ascii = url.replace(/[^\x20-\x7e]/gu, (c) => encodeURIComponent(c)).replace(/[\\()]/g, (c) => '\\' + c);
     return `/A << /S /URI /URI (${ascii}) >>`;
   }
   return null;
 }
 
-function writeImage(pdf: PdfObjects, img: PdfImage): number {
+const rgbBytes = (hex: string): number[] => {
+  const v = parseInt(hex.slice(0, 6), 16) || 0;
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+};
+
+/** A sampled function (FunctionType 0) from 0..1 to `samples`, `comps` bytes per evenly spaced step. */
+function sampledFunction(pdf: PdfObjects, cache: Map<string, number>, samples: number[], comps: number, compress: boolean): number {
+  const key = `${comps}:${samples.join(',')}`;
+  let n = cache.get(key);
+  if (n === undefined) {
+    const range = Array.from({ length: comps }, () => '0 1').join(' ');
+    n = pdf.addStream(`/FunctionType 0 /Domain [0 1] /Range [${range}] /Size [${samples.length / comps}] /BitsPerSample 8`, Uint8Array.from(samples), compress);
+    cache.set(key, n);
+  }
+  return n;
+}
+
+/**
+ * A shading of `geometry` (page coordinates, flipped by `Y`) coloured by `fn`. A radial one is the
+ * unit circle's, to be scaled to its ellipse; a rectangular one is a mesh of triangles from the
+ * inner rectangle's edges (at 0) to the outer's (at 1), along which the rings' colour runs straight.
+ */
+function shadingObject(pdf: PdfObjects, g: ShadeGeometry, fn: number, space: string, Y: (y: number) => number, compress: boolean): number {
+  const head = `/ColorSpace /${space} /Function ${fn} 0 R`;
+  if (g.type === 'axial') return pdf.add(`<< /ShadingType 2 ${head} /Coords [${num(g.x0)} ${num(Y(g.y0))} ${num(g.x1)} ${num(Y(g.y1))}] /Extend [true true] >>`);
+  if (g.type === 'radial') return pdf.add(`<< /ShadingType 3 ${head} /Coords [0 0 0 0 0 1] /Extend [true true] >>`);
+  const [ol, ot, or, ob] = g.outer;
+  const [il, it, ir, ib] = g.inner;
+  const [x0, x1, y0, y1] = [ol, or, Y(ob), Y(ot)];
+  const O = [[ol, ot], [or, ot], [or, ob], [ol, ob]];
+  const I = [[il, it], [ir, it], [ir, ib], [il, ib]];
+  const triangles: Array<Array<[number[], number]>> = [];
+  for (let k = 0; k < 4; k++) {
+    const [o0, o1, i0, i1] = [O[k], O[(k + 1) % 4], I[k], I[(k + 1) % 4]];
+    triangles.push([[o0, 1], [o1, 1], [i1, 0]], [[o0, 1], [i1, 0], [i0, 0]]);
+  }
+  triangles.push([[I[0], 0], [I[1], 0], [I[2], 0]], [[I[0], 0], [I[2], 0], [I[3], 0]]);
+  // Each vertex: an edge flag byte, x and y as 32-bit fractions of the box, its position as a 16-bit one.
+  const data = new Uint8Array(triangles.length * 3 * 11);
+  const view = new DataView(data.buffer);
+  const frac = (v: number, lo: number, hi: number) => Math.round(Math.max(0, Math.min(1, (v - lo) / (hi - lo || 1))) * 0xffffffff);
+  let p = 0;
+  for (const tri of triangles) {
+    for (const [[x, y], t] of tri) {
+      view.setUint8(p, 0);
+      view.setUint32(p + 1, frac(x, x0, x1));
+      view.setUint32(p + 5, frac(Y(y), y0, y1));
+      view.setUint16(p + 9, t * 0xffff);
+      p += 11;
+    }
+  }
+  return pdf.addStream(`/ShadingType 4 ${head} /BitsPerCoordinate 32 /BitsPerComponent 16 /BitsPerFlag 8 /Decode [${num(x0)} ${num(x1)} ${num(y0)} ${num(y1)} 0 1]`, data, compress);
+}
+
+function writeImage(pdf: PdfObjects, img: PdfImage, masks: WeakMap<Uint8Array, number>): number {
   let smask = '';
   if (img.smask) {
-    const n = pdf.addStream(`/Type /XObject /Subtype /Image /Width ${img.width} /Height ${img.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode`, img.smask, false);
+    let n = masks.get(img.smask);
+    if (n === undefined) {
+      n = pdf.addStream(`/Type /XObject /Subtype /Image /Width ${img.width} /Height ${img.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode`, img.smask, false);
+      masks.set(img.smask, n);
+    }
     smask = ` /SMask ${n} 0 R`;
   }
   const parms = img.decodeParms ? ` /DecodeParms ${img.decodeParms}` : '';
@@ -367,21 +474,20 @@ function fontEncoding(pdf: PdfObjects, use: FontUse, compress: boolean): string 
   return obj + ' 0 R';
 }
 
-function writeFont(pdf: PdfObjects, use: FontUse, index: number, compress: boolean): void {
+function writeFont(pdf: PdfObjects, use: FontUse, index: number, compress: boolean, gids: number[], outlines?: ReadonlyMap<number, Uint8Array>): void {
   const font = use.face.font;
   const upm = font.unitsPerEm;
   const scale = 1000 / upm;
-  const psName = (font.names.postscriptName || use.face.familyName.replace(/\s+/g, '')).replace(/[^\x21-\x7e]/g, '');
+  const psName = (font.names.postscriptName || use.face.familyName.replace(/\s+/g, '')).replace(/[^\x21-\x7e]/g, '') || use.resName;
   const canSubset = canSubsetTrueType(font);
   const baseFont = canSubset ? subsetTag(index) + '+' + psName : psName;
-  const gids = [...use.codesByGlyph.keys()].sort((a, b) => a - b);
 
   let fileKey: string;
   let fileNum: number;
   let subtype: string;
   let cidToGidMap = '/Identity';
   if (canSubset) {
-    const { data, glyphIds } = subsetTrueType(font, gids);
+    const { data, glyphIds } = subsetTrueType(font, gids, outlines);
     fileNum = pdf.addStream(`/Length1 ${data.length}`, data, compress);
     fileKey = 'FontFile2';
     subtype = 'CIDFontType2';

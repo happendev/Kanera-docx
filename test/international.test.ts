@@ -270,6 +270,38 @@ describe('vertical text', () => {
 describe('right-to-left text', () => {
   const cps = (s: string) => [...s].map((c) => c.codePointAt(0)!);
 
+  // Liberation Sans, Arial's stand-in, has Hebrew: a Hebrew run is shaped as one.
+  const arial = '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/></w:rPr></w:rPrDefault></w:docDefaults>';
+
+  it('underlines and links a right-to-left run where it is drawn', async () => {
+    const body = '<w:p><w:pPr><w:bidi/></w:pPr><w:hyperlink w:anchor="here"><w:r><w:rPr><w:rtl/><w:u w:val="single"/></w:rPr><w:t>שמש דגל</w:t></w:r></w:hyperlink>' +
+      '<w:bookmarkStart w:id="0" w:name="here"/><w:bookmarkEnd w:id="0"/></w:p>';
+    const ops = (await layout(makeDocx({ styles: arial, body }))).pages[0].body;
+    expect(glyphOps(ops)).toHaveLength(1);
+    const xs = chars(ops).map((c) => c.x);
+    const rules = ops.filter((o) => o.kind === 'line');
+    const links = ops.filter((o) => o.kind === 'link');
+    expect(rules).toHaveLength(1);
+    expect(links).toHaveLength(1);
+    const rule = rules[0].kind === 'line' ? rules[0] : null;
+    expect(rule!.x1).toBeCloseTo(Math.min(...xs), 1);
+    expect(rule!.x2).toBeGreaterThan(Math.max(...xs));
+    expect(links[0].kind === 'link' && links[0].w).toBeCloseTo(rule!.x2 - rule!.x1, 1);
+  });
+
+  it('underlines the pieces of a run that right-to-left text sets apart, not the text between them', async () => {
+    // The run "abc שמש" is followed by " דגל": once the Hebrew is reordered the second run's word
+    // sits between the first run's Latin and Hebrew.
+    const body = '<w:p><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t xml:space="preserve">abc שמש</w:t></w:r><w:r><w:t xml:space="preserve"> דגל</w:t></w:r></w:p>';
+    const ops = (await layout(makeDocx({ styles: arial, body }))).pages[0].body;
+    const cs = chars(ops);
+    const rules = ops.flatMap((o) => (o.kind === 'line' ? [o] : []));
+    const covered = (t: string) => cs.filter((c) => c.t === t).every((c) => rules.some((r) => c.x > r.x1 - 0.5 && c.x < r.x2 - 0.5));
+    expect(rules).toHaveLength(2);
+    for (const t of 'abcשמ') expect(covered(t), t).toBe(true);
+    for (const t of 'דגל') expect(cs.filter((c) => c.t === t).some((c) => rules.some((r) => c.x > r.x1 + 0.5 && c.x < r.x2 - 0.5)), t).toBe(false);
+  });
+
   it('joins Arabic letters, with lam and alef as one ligature', () => {
     // سلام: seen initial, lam-alef final (the alef folds into it), meem isolated after the alef.
     expect(arabicForms(cps('سلام'))).toEqual([0xfeb3, 0xfefc, 0, 0xfee1]);
@@ -364,5 +396,32 @@ describe('notes, frames and substitutes', () => {
     const ls = lines(r.pages[0].body);
     expect(ls[1].y - ls[0].y).toBeCloseTo(12 * (0.735 + 0.249), 2);
     expect(ls[0].ops[0].face.font.names.family).toBe('Liberation Serif');
+  });
+
+  it("sets a proportional Japanese font's kana and punctuation in its stand-in's proportional forms", async () => {
+    const span = async (font: string) => {
+      const rPr = `<w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:eastAsia="${font}"/><w:sz w:val="20"/>`;
+      const cs = chars((await layout(makeDocx({ body: p('あ、いあ', '', rPr) }))).pages[0].body);
+      return cs[3].x - cs[0].x;
+    };
+    // MS Gothic sets each an em wide; MS PGothic's comma takes about half an em.
+    expect(await span('MS Gothic')).toBeCloseTo(30, 2);
+    expect(await span('MS PGothic')).toBeLessThan(26);
+  });
+
+  it('draws an HG font named for a bold weight bold', async () => {
+    const op = async (font: string) => {
+      const rPr = `<w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:eastAsia="${font}"/>`;
+      return glyphOps((await layout(makeDocx({ body: p('文字', '', rPr) }))).pages[0].body)[0];
+    };
+    expect((await op('HG創英角ｺﾞｼｯｸUB')).syntheticBold).toBe(true);
+    expect((await op('HGｺﾞｼｯｸE')).syntheticBold).toBe(true);
+    expect((await op('HGｺﾞｼｯｸM')).syntheticBold).toBe(false);
+  });
+
+  it("draws Century with Gelasio set to Century's wider widths", async () => {
+    const op = glyphOps((await layout(makeDocx({ body: p('Text', '', '<w:rFonts w:ascii="Century" w:hAnsi="Century"/>') }))).pages[0].body)[0];
+    expect(op.face.familyName).toBe('Gelasio');
+    expect(op.scaleX).toBeCloseTo(1.048, 3);
   });
 });

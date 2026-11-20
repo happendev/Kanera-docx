@@ -22,6 +22,8 @@ interface SubstituteRule {
    * widths match but whose own vertical metrics differ, so line heights still match Word.
    */
   vmetrics?: [number, number, number];
+  /** By substitute family, how much wider the original sets text: the substitute is drawn that much wider to keep Word's line breaks. */
+  widths?: Record<string, number>;
 }
 
 // Line metrics (`vmetrics`) of the Office and web fonts below are those Word reports for them in its
@@ -83,7 +85,9 @@ const RULES: Record<string, SubstituteRule> = {
   'franklin gothic book': { families: ['liberation sans'], metricCompatible: false },
   'open sans': { families: ['open sans', 'selawik'], metricCompatible: false, vmetrics: [1.069, 0.293, 0] },
   univers: { families: ['liberation sans'], metricCompatible: false },
-  century: { families: ['gelasio', 'liberation serif'], metricCompatible: false, generic: 'serif', vmetrics: [0.986, 0.216, 0] },
+  // Century has Century Schoolbook's widths (TeX Gyre Schola's), on average 4.8% wider than
+  // Gelasio's (measured on the text of Word's PDFs).
+  century: { families: ['tex gyre schola', 'c059', 'gelasio', 'liberation serif'], metricCompatible: false, generic: 'serif', vmetrics: [0.986, 0.216, 0], widths: { gelasio: 1.048 } },
   'century schoolbook': { families: ['tex gyre schola', 'c059', 'gelasio', 'liberation serif'], metricCompatible: false, vmetrics: [0.986, 0.216, 0] },
   'arial rounded mt bold': { families: ['liberation sans'], metricCompatible: false, vmetrics: [0.946, 0.211, 0] },
   lato: { families: ['liberation sans'], metricCompatible: false, vmetrics: [0.987, 0.213, 0] },
@@ -356,6 +360,24 @@ export function halfWidthLatin(family: string): boolean {
   return HALF_WIDTH_LATIN.has(unstyledFamily(normalizeFamily(family)));
 }
 
+/**
+ * Whether a family's name selects a bold face: "Arial Bold", or a Japanese HG font named for its
+ * weight (B bold, E and EB extra bold, UB ultra bold: HG創英角ｺﾞｼｯｸUB, HGPｺﾞｼｯｸE).
+ */
+export function boldByName(family: string): boolean {
+  const n = normalizeFamily(family);
+  return /\bbold\b/.test(n) || /^(hg|ｈｇ)\S*?(ub|eb|e|b)(-pro)?$/.test(n);
+}
+
+/**
+ * Whether `family` is a Japanese font with proportional kana and punctuation: the "P" fonts (MS
+ * PGothic, MS PMincho, the HGP families) and the UI fonts. MS Gothic, MS Mincho and the HG and HGS
+ * fonts set them an em wide.
+ */
+export function proportionalKana(family: string): boolean {
+  return /^(ms p(gothic|mincho)|ｍｓ ｐ(ゴシック|明朝)|ms ui gothic|ｍｓ ui gothic|hgp|ｈｇｐ|meiryo ui|メイリオ ui|yu gothic ui)/.test(unstyledFamily(normalizeFamily(family)));
+}
+
 // Noto Sans CJK's line metrics (its win ascent and descent). An East Asian font of unknown metrics
 // keeps them when Noto Serif CJK stands in, whose lines are 0.8% shorter, so the glyph style never
 // moves the layout: on a document grid that small difference can halve the height of every line.
@@ -411,9 +433,9 @@ export function cjkFallbackLine(family: string, cp: number): [number, number, nu
 }
 
 /** Families tried, in order, for a missing font; `compatible` are those with the same widths. */
-export function substituteFamilies(family: string): { families: string[]; compatible: string[]; vmetrics?: [number, number, number] } | null {
+export function substituteFamilies(family: string): { families: string[]; compatible: string[]; vmetrics?: [number, number, number]; widths?: Record<string, number> } | null {
   const rule = fontRule(normalizeFamily(family));
-  return rule ? { families: [...rule.families, ...(rule.close ?? [])], compatible: rule.metricCompatible ? rule.families : [], vmetrics: rule.vmetrics } : null;
+  return rule ? { families: [...rule.families, ...(rule.close ?? [])], compatible: rule.metricCompatible ? rule.families : [], vmetrics: rule.vmetrics, widths: rule.widths } : null;
 }
 
 export interface FontTableHints {

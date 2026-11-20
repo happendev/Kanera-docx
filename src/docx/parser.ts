@@ -1,6 +1,7 @@
 import { MAX_FONT_FACES } from '../fonts/sfnt.js';
 import { fontFor } from '../fonts/script.js';
 import { deobfuscateFont } from '../fonts/odttf.js';
+import { isMetafile, metafileText } from '../image/metafile.js';
 import { attr, child, children, decodeEntities, descendant, descendants, elements, parseXml, path, resolveAlternateContent, textContent, type XmlElement } from '../util/xml.js';
 import { ChartPointBudget, chartTexts } from './chart.js';
 import { parseDrawing, parseVml, loadImage, type DrawingContext } from './drawing.js';
@@ -34,6 +35,7 @@ import type { InflateBytes } from '../util/compression.js';
 import type { ArchiveLimits } from '../util/zip.js';
 import { OpcPackage } from './package.js';
 import {
+  DEFAULT_RUN,
   finalizePara,
   finalizeRun,
   mergePara,
@@ -115,6 +117,7 @@ class DocxParser {
   private charts = new Map<string, Chart | undefined>();
   private chartBudget = new ChartPointBudget();
   private images = new Map<string, ImageRef>();
+  private hasMath = false;
   private fontRequests = new Map<string, FontRequest>();
   private warnings: string[] = [];
   private headerCache = new Map<string, Block[]>();
@@ -253,15 +256,35 @@ class DocxParser {
       }
     }
 
+    // EMF and WMF pictures draw their text in the fonts they name, shaped as layout's metafile
+    // text is, so lazily loaded fonts are ready when the picture plays. Each picture part is read once.
+    for (const image of this.images.values()) {
+      if (!isMetafile(image.data)) continue;
+      for (const t of metafileText(image.data)) {
+        const f = t.family;
+        this.noteFonts({ ...DEFAULT_RUN, fontAscii: f, fontHAnsi: f, fontEastAsia: f, fontCs: f, bold: t.bold, italic: t.italic, boldCs: t.bold, italicCs: t.italic }, t.text);
+      }
+    }
+
     const info: DocxDocument['info'] = {};
-    const core = this.pkg.xml('docProps/core.xml');
+    const core = this.pkg.xml(this.pkg.relByType('', '/core-properties')?.target ?? 'docProps/core.xml');
     if (core) {
       const get = (n: string) => textContent(child(core, n)).trim() || undefined;
+      // W3CDTF dates: a year, month or day, or a time with its zone. Fractions of a second are dropped
+      // (PDF dates stop at seconds) and anything else is ignored.
+      const date = (n: string) => {
+        const v = get(n);
+        if (!v || !/^\d{4}(?:-\d\d(?:-\d\d(?:T\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:\d\d))?)?)?$/.test(v)) return undefined;
+        const d = new Date(v.replace(/\.\d+/, ''));
+        return isNaN(d.getTime()) ? undefined : d;
+      };
       info.title = get('dc:title');
       info.subject = get('dc:subject');
       info.creator = get('dc:creator');
       info.keywords = get('cp:keywords');
       info.description = get('dc:description');
+      info.created = date('dcterms:created');
+      info.modified = date('dcterms:modified');
     }
 
     const bg = child(doc, 'w:background');
@@ -276,6 +299,7 @@ class DocxParser {
       endnoteSeparator,
       info,
       background: bg ? (hexColor(bg.attrs['w:color']) ?? null) : null,
+      hasMath: this.hasMath,
       fontRequests: [...this.fontRequests.values()],
       embeddedFonts,
       fontHints,
@@ -394,6 +418,9 @@ class DocxParser {
     const directNoStyle = { ...direct };
     delete directNoStyle.styleId;
     merged = mergePara(merged, directNoStyle);
+    // "Don't use HTML paragraph auto spacing" (compat doNotUseHTMLParagraphAutoSpacing): Word spaces
+    // an auto-spaced paragraph by its stated space before and after, as if auto were off.
+    if (this.settings.doNotUseHTMLParagraphAutoSpacing) merged = { ...merged, spaceBeforeAuto: false, spaceAfterAuto: false };
 
     const normalSize = this.styles.paraStyleRun(styleId).size ?? this.styles.defaultsRun.size ?? 10;
     // With overrideTableStyleFontSizeAndJustification on (Word 2013+), the default paragraph style's
@@ -511,6 +538,7 @@ class DocxParser {
       },
     };
     const parse = (m: XmlElement) => {
+      this.hasMath = true;
       const math = parseOmml(m, ctx);
       for (const t of mathTexts(math)) this.noteFonts(t.props, t.text);
       return math;
@@ -752,7 +780,7 @@ class DocxParser {
         case 'w:sym': {
           const font = el.attrs['w:font'];
           const code = parseInt(el.attrs['w:char'] ?? '0', 16);
-          if (!code) break;
+          if (!(code > 0 && code <= 0x10ffff)) break;
           const symProps: RunProps = font ? { ...props, fontAscii: font, fontHAnsi: font, fontEastAsia: font, fontCs: font } : props;
           this.pushText(para, String.fromCodePoint(code), symProps);
           break;
@@ -925,7 +953,8 @@ class DocxParser {
             if (!child(child(c, 'w:tcPr'), 'w:cellDel')) out.push(c);
           }
           else if (c.name === 'w:sdt') walk(child(c, 'w:sdtContent') ?? c);
-          else if (c.name === 'w:customXml') walk(c);
+          // As with rows, tracked insertions show and deletions (w:del, not walked) stay hidden.
+          else if (c.name === 'w:customXml' || c.name === 'w:ins') walk(c);
         }
       };
       walk(tr);
@@ -1144,7 +1173,7 @@ class DocxParser {
       if (type !== 'default' && type !== 'first' && type !== 'even') continue;
       const rel = this.pkg.rels(pctx.part).get(ref.attrs['r:id'] ?? '');
       if (!rel) continue;
-      const blocks = this.headerFooter(rel.target, ref.name === 'w:headerReference' ? 'w:hdr' : 'w:ftr');
+      const blocks = this.headerFooter(rel.target);
       if (ref.name === 'w:headerReference') headers[type] = blocks;
       else footers[type] = blocks;
     }
@@ -1208,13 +1237,13 @@ class DocxParser {
     return pb;
   }
 
-  private headerFooter(part: string, rootName: string): Block[] {
+  private headerFooter(part: string): Block[] {
     const cached = this.headerCache.get(part);
     if (cached) return cached;
     const root = this.pkg.xml(part);
     const savedFields = this.fieldStack;
     this.fieldStack = [];
-    const blocks = root && root.name === rootName ? this.parseBlocks(root, { part }) : root ? this.parseBlocks(root, { part }) : [];
+    const blocks = root ? this.parseBlocks(root, { part }) : [];
     this.fieldStack = savedFields;
     this.headerCache.set(part, blocks);
     return blocks;
@@ -1323,8 +1352,10 @@ export function analyzeField(instr: string): { kind?: 'page' | 'numpages' | 'sec
   const s = instr.trim();
   const m = /^(\S+)/.exec(s);
   const name = (m?.[1] ?? '').toUpperCase();
-  const fmt = /\\\*\s*(\w+)/.exec(s)?.[1];
-  const format = fmt && fmt.toUpperCase() !== 'MERGEFORMAT' && fmt.toUpperCase() !== 'CHARFORMAT' ? fmt : undefined;
+  // \* switches stack: MERGEFORMAT and CHARFORMAT only keep formatting, and a case switch (Upper,
+  // Caps...) does not replace a number format such as ROMAN.
+  const switches = [...s.matchAll(/\\\*\s*(\w+)/g)].map((sw) => sw[1]).filter((f) => !/^(?:MERGEFORMAT|CHARFORMAT)$/i.test(f));
+  const format = switches.find((f) => !/^(?:Upper|Lower|Caps|FirstCap)$/i.test(f)) ?? switches[0];
   if (name === 'PAGE') return { kind: 'page', format };
   if (name === 'NUMPAGES') return { kind: 'numpages', format };
   if (name === 'SECTIONPAGES') return { kind: 'sectionpages', format };
@@ -1332,8 +1363,9 @@ export function analyzeField(instr: string): { kind?: 'page' | 'numpages' | 'sec
     const link: Link = {};
     const url = /^HYPERLINK\s+"([^"]*)"/i.exec(s) ?? /^HYPERLINK\s+(\S+)/i.exec(s);
     if (url && !url[1].startsWith('\\')) link.url = url[1];
-    const anchor = /\\l\s+"([^"]*)"/.exec(s);
-    if (anchor) link.anchor = anchor[1];
+    // Like the URL, the bookmark may be unquoted; the switch letter's case is ignored, as for TOC's.
+    const anchor = /\\l\s+(?:"([^"]*)"|([^\s"\\]+))/i.exec(s);
+    if (anchor) link.anchor = anchor[1] ?? anchor[2];
     return { link };
   }
   return {};

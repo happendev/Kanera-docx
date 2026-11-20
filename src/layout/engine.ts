@@ -8,6 +8,7 @@ import {
   layoutBlocks,
   measureTable,
   paraDecorations,
+  dashFor,
   shadedSpaceAfter,
   sideBorderRunOn,
   findSlot,
@@ -28,9 +29,9 @@ import {
   type RowPiece,
   type TableLayout,
 } from './box.js';
-import { renderDrawing } from './drawing.js';
+import { fittedHeight, renderDrawing } from './drawing.js';
 import { ParagraphLayout, type Line } from './paragraph.js';
-import { translateOps, type DrawOp, type FloatOp, type Page } from './types.js';
+import { appendOps, translateOps, type DrawOp, type FloatOp, type Page } from './types.js';
 import { turnVertical } from './vertical.js';
 
 const EPS = 0.01;
@@ -155,8 +156,9 @@ export function layoutDocument(doc: DocxDocument, fonts: FontRegistry): LayoutRe
   const notePages = new Map<string, number>();
   const staticBoxes = new WeakMap<Block[], Map<string, BoxResult>>();
   const noteFields = new WeakMap<FieldInline, Map<number, FieldInline>>();
+  const fits = new WeakMap<Drawing, { drawing: Drawing; fixed: boolean }>();
   for (let pass = 0; ; pass++) {
-    const paginator = new Paginator(doc, fonts, values, early, notePages, staticBoxes, noteFields);
+    const paginator = new Paginator(doc, fonts, values, early, notePages, staticBoxes, noteFields, fits);
     const result = paginator.run();
     if (!paginator.fieldsChanged && !paginator.earlyChanged) return result;
     if (pass === 7) {
@@ -220,6 +222,7 @@ class Paginator {
     private notePages: Map<string, number>,
     private staticBoxes: WeakMap<Block[], Map<string, BoxResult>>,
     private noteFields: WeakMap<FieldInline, Map<number, FieldInline>>,
+    private fits: WeakMap<Drawing, { drawing: Drawing; fixed: boolean }>,
   ) {
     this.env = {
       fonts,
@@ -228,6 +231,7 @@ class Paginator {
       fieldText: (f) => this.fieldText(f),
       noteRefText: (type, id) => this.noteRefText(type, id),
       drawInline: (d, x, y) => renderDrawing(d, x, y, this.env),
+      fitDrawing: (d) => this.fitDrawing(d, this.env),
     };
   }
 
@@ -308,6 +312,24 @@ class Paginator {
     return box;
   }
 
+  /**
+   * A text box fitted to its text (see fittedHeight). As with cachedBox, a fit that read no page
+   * field or note number holds for every pass; one that did is measured again each time it is laid
+   * out, into the same fitted copy, so a float placed early (see placeFloats) is still known by it.
+   */
+  private fitDrawing(d: Drawing, env: BoxEnv): Drawing {
+    const known = this.fits.get(d);
+    if (known?.fixed) return known.drawing;
+    const reads = this.contextReads;
+    const height = fittedHeight(d, env);
+    const fixed = reads === this.contextReads;
+    let drawing = known?.drawing;
+    if (!drawing) drawing = fixed && (height === undefined || Math.abs(height - d.height) <= 0.01) ? d : { ...d };
+    if (drawing !== d && height !== undefined) drawing.height = height;
+    this.fits.set(d, { drawing, fixed });
+    return drawing;
+  }
+
   private layoutNote(blocks: Block[], width: number, number = ''): BoxResult {
     const key = `note:${this.sectionIndex}:${width}:${number}`;
     return this.cachedBox(blocks, key, () => {
@@ -323,6 +345,7 @@ class Paginator {
           return placed;
         },
         drawInline: (d, x, y) => renderDrawing(d, x, y, env),
+        fitDrawing: (d) => this.fitDrawing(d, env),
       };
       return layoutBlocks(blocks, width, env);
     });
@@ -463,7 +486,7 @@ class Paginator {
       if (parity >= 0 && (last + 1) % 2 !== parity) this.blankPage(last + 1);
     } else if ((parity >= 0 || this.doc.settings.evenAndOddHeaders) && this.restartNumber % 2 === last % 2) this.blankPage(last + 1);
     this.newPage(true);
-    this.page.body.push(...anchors);
+    appendOps(this.page.body, anchors);
   }
 
   // -------------------------------------------------------------------------------------------
@@ -510,6 +533,7 @@ class Paginator {
     if (this.page) this.closeColSet(Math.max(this.y, ...this.page.colBottoms));
     const s = this.section;
     const prevNumber = this.pages.length ? this.pages[this.pages.length - 1].number : 0;
+    if (this.pages.length >= 10_000) throw new Error('Document page limit exceeded');
     let number = prevNumber + 1;
     if (this.restartNumber !== null) {
       number = this.restartNumber;
@@ -882,7 +906,7 @@ class Paginator {
           const bottom = line.last ? y + line.height + frame.bottomExtra + nextGap.after + nextGap.before + shadedSpaceAfter(para, frame, nextPara) : y + line.height;
           this.page.body.push(...paraDecorations(para.props, frame, col.x, col.w, top, bottom, line.first, line.last, line.last ? sideBorderRunOn(para, frame, nextPara) : 0));
         }
-        this.page.body.push(...layout.renderLine(line, col.x + left, y));
+        appendOps(this.page.body, layout.renderLine(line, col.x + left, y));
         const bottom = Math.max(y + line.height, besideBottom);
         // The paragraph's next line may continue beside an object wrapped on both sides.
         const base = layout.lineBounds(col.w);
@@ -1269,7 +1293,7 @@ class Paginator {
         origin = this.y - it.y;
       }
       const c = this.column;
-      this.page.body.push(...translateOps(it.ops, c.x, origin));
+      appendOps(this.page.body, translateOps(it.ops, c.x, origin));
       this.y = origin + it.y + it.height;
       this.markPlaced(this.y);
     }
@@ -1346,12 +1370,17 @@ class Paginator {
         const row = tl.rows[r];
         if (guard === 500) throw new Error('Table row exceeds the pagination limit');
         const remainingH = this.rowRemainingHeight(tl, r, progress);
-        const fitsWhole = this.y + remainingH <= this.colBottom + EPS;
+        // As with a paragraph's lines, a row fits only with the start of its footnotes below it,
+        // reserved as it is placed so the rows after it fit above them too.
+        const notes = this.rowNotes(tl, r, progress);
+        const noteH = this.notesHeight(notes);
+        const fitsWhole = this.y + remainingH + noteH <= this.colBottom + EPS;
         if (fitsWhole || (this.atTop && rowsOnPage === 0 && !this.canSplit(tl, r))) {
           const slices = this.sliceRest(tl, r, progress);
           pieces.push({ r, y: this.y, height: remainingH, slices });
           this.y += remainingH;
           this.markPlaced(this.y);
+          this.addNotes(notes);
           rowsOnPage++;
           break;
         }
@@ -1363,15 +1392,28 @@ class Paginator {
         const started = row.cells.some((c) => (progress.get(c) ?? 0) > 0);
         const continuesMerge = row.cells.some((c) => c.cell.vMerge === 'continue');
         const onlyHeightOverflows = !continuesMerge
-          && this.y + this.rowRemainingHeight(tl, r, progress, true) + (started ? 0 : row.borderTop) <= this.colBottom + EPS;
-        if (!emptyHere && (row.row.cantSplit || !this.canSplit(tl, r) || onlyHeightOverflows)) {
+          && this.y + this.rowRemainingHeight(tl, r, progress, true) + (started ? 0 : row.borderTop) + noteH <= this.colBottom + EPS;
+        // Nor does Word start a row with a minimum height where that height doesn't fit: the row
+        // moves on whole and splits, if it must, further down.
+        const minHeightOverflows = !started && !continuesMerge && row.row.heightRule === 'atLeast' && this.y + row.row.height > this.colBottom + EPS;
+        if (!emptyHere && (row.row.cantSplit || !this.canSplit(tl, r) || onlyHeightOverflows || minHeightOverflows)) {
           if (first && r === 0) moved = true;
           newColumn(r);
           first = false;
           continue;
         }
-        // Split the row at the column bottom.
-        const split = this.splitRow(tl, r, progress, this.colBottom - this.y, emptyHere);
+        // Split the row at the column bottom, above the footnotes of the part that stays here.
+        const before = new Map(progress);
+        let split = this.splitRow(tl, r, progress, this.colBottom - this.y, emptyHere);
+        const splitNoteH = split ? this.notesHeight(this.rowNotes(tl, r, before, split.slices)) : 0;
+        if (split && splitNoteH && this.y + split.height + splitNoteH > this.colBottom + EPS) {
+          for (const c of row.cells) {
+            if (before.has(c)) progress.set(c, before.get(c)!);
+            else progress.delete(c);
+          }
+          split = this.splitRow(tl, r, progress, this.colBottom - this.y - splitNoteH, emptyHere);
+        }
+        if (split) this.addNotes(this.rowNotes(tl, r, before, split.slices));
         if (!split) {
           if (first && r === 0) moved = true;
           newColumn(r);
@@ -1396,6 +1438,17 @@ class Paginator {
     // Turned text runs the full height of its row, so the row moves to the next page whole.
     if (row.row.cantSplit || row.row.heightRule === 'exact' || row.cells.some((c) => c.turned)) return false;
     return row.cells.some((c) => c.rowSpan === 1 && !c.cell.vMerge && c.box.items.length > 1);
+  }
+
+  /** The notes referenced in what is left of row r, or in the given slices of it. */
+  private rowNotes(tl: TableLayout, r: number, progress: Map<CellLayout, number>, slices?: Map<CellLayout, { from: number; to: number }>): Line['notes'] {
+    const out: Line['notes'] = [];
+    for (const c of tl.rows[r].cells) {
+      const s = slices?.get(c);
+      const items = c.box.items;
+      for (let i = s?.from ?? progress.get(c) ?? 0; i < (s?.to ?? items.length); i++) if (items[i].notes) out.push(...items[i].notes!);
+    }
+    return out;
   }
 
   /** Height of what is left of row r after earlier split pieces; with `content`, of its content alone. */
@@ -1456,7 +1509,7 @@ class Paginator {
     }
     if (!advanced) return null;
     for (const [c, s] of slices) progress.set(c, s.to);
-    return { height: Math.min(Math.max(height, 0), Math.max(avail, height)), slices };
+    return { height: Math.max(height, 0), slices };
   }
 
   // -------------------------------------------------------------------------------------------
@@ -1496,16 +1549,16 @@ class Paginator {
       hfFloats.sort((a, b) => a.z - b.z);
       for (const f of hfFloats) {
         if (f.behind) floats.push(f);
-        else hfOps.push(...f.ops);
+        else appendOps(hfOps, f.ops);
       }
       this.fieldPage = null;
 
       // Footnotes sit at the bottom of the body area.
-      const body = p.body.slice();
+      let body = p.body.slice();
       if (p.notes.length) {
         let y = p.bottom - p.noteHeight;
         const sep = p.notes[0].separator!;
-        for (const it of sep.items) body.push(...translateOps(it.ops, p.marginLeft, y));
+        for (const it of sep.items) appendOps(body, translateOps(it.ops, p.marginLeft, y));
         y += sep.height;
         for (const n of p.notes) {
           for (let i = n.start; i < n.end; i++) {
@@ -1522,9 +1575,7 @@ class Paginator {
         const free = p.bottom - contentBottom;
         if (free > 0) {
           const dy = s.vAlign === 'bottom' ? free : free / 2;
-          const shifted = translateOps(body, 0, dy);
-          body.length = 0;
-          body.push(...shifted);
+          body = translateOps(body, 0, dy);
         }
       }
 
@@ -1538,12 +1589,12 @@ class Paginator {
         }
       }
 
-      if (real) body.splice(0, body.length, ...turnVertical(body, frame.width));
+      if (real) body = turnVertical(body, frame.width);
       const behind: DrawOp[] = [];
       const front: DrawOp[] = [];
       if (this.doc.background && this.doc.settings.displayBackgroundShape) behind.push({ kind: 'rect', x: 0, y: 0, w: frame.width, h: frame.height, fill: this.doc.background });
       floats.sort((a, b) => a.z - b.z);
-      for (const f of floats) (f.behind ? behind : front).push(...f.ops);
+      for (const f of floats) appendOps(f.behind ? behind : front, f.ops);
       let borders = p.blank ? [] : this.pageBorders(p);
       if (real && borders.length) borders = turnVertical(borders, frame.width);
       if (borders.length) (s.pageBorders?.zOrder === 'back' ? behind : front).push(...borders);
@@ -1585,14 +1636,29 @@ class Paginator {
       x2 = p.width - p.marginRight + (pb.right?.space ?? 4) + (pb.right?.width ?? 0) / 2;
       y2 = p.height - s.marginBottom + (pb.bottom?.space ?? 1) + (pb.bottom?.width ?? 0) / 2;
     }
-    const edge = (b: typeof pb.top, ax: number, ay: number, bx: number, by: number) => {
+    // `out` is the side away from the page's middle (-1 up or left, 1 down or right).
+    const edge = (b: typeof pb.top, ax: number, ay: number, bx: number, by: number, out: number) => {
       if (!b) return;
-      ops.push({ kind: 'line', x1: ax, y1: ay, x2: bx, y2: by, width: b.width, color: b.color ?? '000000', cap: 'square' });
+      const color = b.color ?? '000000';
+      if (b.style === 'double') {
+        // Two lines a third of the width each, a third apart. The outer lines run on and the inner
+        // ones stop short, so each pair meets the next edge's in a square corner.
+        const w = b.width / 3;
+        const horiz = ay === by;
+        for (const side of [1, -1]) {
+          const [nx, ny] = horiz ? [0, out * side * w] : [out * side * w, 0];
+          const [ex, ey] = horiz ? [side * w, 0] : [0, side * w];
+          ops.push({ kind: 'line', x1: ax + nx - ex, y1: ay + ny - ey, x2: bx + nx + ex, y2: by + ny + ey, width: w, color, cap: 'square' });
+        }
+        return;
+      }
+      const dash = dashFor(b);
+      ops.push({ kind: 'line', x1: ax, y1: ay, x2: bx, y2: by, width: b.width, color, ...(dash ? { dash } : { cap: 'square' }) });
     };
-    edge(pb.top, x1, y1, x2, y1);
-    edge(pb.bottom, x1, y2, x2, y2);
-    edge(pb.left, x1, y1, x1, y2);
-    edge(pb.right, x2, y1, x2, y2);
+    edge(pb.top, x1, y1, x2, y1, -1);
+    edge(pb.bottom, x1, y2, x2, y2, 1);
+    edge(pb.left, x1, y1, x1, y2, -1);
+    edge(pb.right, x2, y1, x2, y2, 1);
     return ops;
   }
 }

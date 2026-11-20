@@ -1,14 +1,14 @@
-import type { SfntFont } from './sfnt.js';
+import { glyphComponents, type SfntFont } from './sfnt.js';
 
 export function canSubsetTrueType(font: SfntFont): boolean {
-  if ((font.fsType & 0x100) || font.isCFF || !font.table('glyf') || !font.table('loca')) return false;
+  if ((font.fsType & 0x100) || font.isCFF || (!font.table('glyf') && !font.readSubsetGlyphs) || !font.table('loca')) return false;
   const metrics = font.numberOfHMetrics;
   return metrics > 0 && metrics <= font.numGlyphs &&
     (font.table('hmtx')?.length ?? 0) >= 2 * (font.numGlyphs + metrics);
 }
 
 /** Glyph zero is reserved. Drawn glyphs follow, then composite dependencies. */
-export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>): { data: Uint8Array; glyphIds: Map<number, number> } {
+export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>, outlines?: ReadonlyMap<number, Uint8Array>): { data: Uint8Array; glyphIds: Map<number, number> } {
   const glyphIds = new Map<number, number>([[0, 0]]);
   for (const gid of usedGlyphs) {
     if (gid < 0 || gid >= font.numGlyphs) throw new Error('Invalid glyph ID for TrueType subset');
@@ -17,7 +17,7 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>): { 
   const components = new Map<number, ReturnType<SfntFont['compositeComponents']>>();
   // Iterating the map visits newly appended components as well, including nested composites.
   for (const gid of glyphIds.keys()) {
-    const children = font.compositeComponents(gid);
+    const children = outlines ? glyphComponents(outlines.get(gid)!) : font.compositeComponents(gid);
     if (children.length) components.set(gid, children);
     for (const child of children) {
       if (child.gid >= font.numGlyphs) throw new Error('Invalid component ID for TrueType subset');
@@ -39,9 +39,8 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>): { 
     const bearing = gid < longMetrics ? gid * 4 + 2 : (longMetrics + gid) * 2;
     metrics.setUint16(id * 4, font.advance(gid));
     metrics.setInt16(id * 4 + 2, originalMetrics.getInt16(bearing));
-    const [start, end] = font.glyphRange(gid)!;
-    if (start === end) continue;
-    let bytes = font.data.subarray(start, end);
+    let bytes = outlines ? outlines.get(gid)! : font.data.subarray(...font.glyphRange(gid)!);
+    if (!bytes.length) continue;
     const children = components.get(gid);
     if (children) {
       bytes = new Uint8Array(bytes);

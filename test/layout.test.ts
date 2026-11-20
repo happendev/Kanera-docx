@@ -15,7 +15,10 @@ import { glyphOps, layout, lines, pageText } from './helpers/layout.js';
 import { anchoredImage, inlineImage, redPng } from './helpers/sample.js';
 import { formatNumber } from '../src/layout/chart.js';
 import { applyColorMods } from '../src/docx/values.js';
-import type { DrawOp as DrawOpLike, PathOp } from '../src/layout/types.js';
+import type { DrawOp as DrawOpLike, PathOp, ShadeOp } from '../src/layout/types.js';
+import { convertDocx } from '../src/node.js';
+import type { DrawingInline, Paragraph } from '../src/docx/model.js';
+import { ghostscript, ghostscriptPixels, pdfStreams } from './helpers/pdf.js';
 
 const ARIAL_STYLES =
   '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>';
@@ -146,6 +149,16 @@ describe('line height and spacing', () => {
     expect(y('Before') - y('First')).toBeCloseTo(ARIAL_11 + 14, 1);
     expect(y('Cell') - y('Before')).toBeCloseTo(ARIAL_11, 1);
     expect(y('After') - y('Cell')).toBeCloseTo(ARIAL_11, 1);
+  });
+
+  it('spaces an auto-spaced paragraph by its stated spacing when HTML auto spacing is turned off', async () => {
+    const auto = '<w:spacing w:before="100" w:beforeAutospacing="1" w:after="0"/>';
+    const gap = async (settings: string) => {
+      const ls = lines((await layout(makeDocx({ styles: ARIAL_STYLES, settings, body: p('First') + p('Second', auto) }))).pages[0].body);
+      return ls[1].y - ls[0].y;
+    };
+    expect(await gap('<w:compat/>')).toBeCloseTo(ARIAL_11 + 14, 1);
+    expect(await gap('<w:compat><w:doNotUseHTMLParagraphAutoSpacing/></w:compat>')).toBeCloseTo(ARIAL_11 + 5, 1);
   });
 
   it('applies Normal and its default spacing when no style is marked default and there are no paragraph defaults', async () => {
@@ -602,6 +615,32 @@ describe('tables', () => {
     expect(lines(r.pages[1].body)[0].text).toBe('Tall');
   });
 
+  it('moves a row on whole where its minimum height does not fit, though its content could split there', async () => {
+    const linesPerPage = Math.floor(BODY_HEIGHT / ARIAL_11);
+    const filler = Array.from({ length: linesPerPage - 3 }, (_, i) => p(`Line ${i + 1}`)).join('');
+    // Three lines of room are left: less than the 60pt minimum height, and the row's ten lines overflow anyway.
+    const paras = Array.from({ length: 10 }, (_, i) => p(`Cell ${i + 1}`)).join('');
+    const tbl = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid><w:tr><w:trPr><w:trHeight w:val="1200" w:hRule="atLeast"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr>${paras}</w:tc></w:tr></w:tbl>`;
+    const r = await layout(makeDocx({ styles: ARIAL_STYLES, settings: compat(15), body: filler + tbl }));
+    expect(lines(r.pages[0].body).at(-1)!.text).toBe(`Line ${linesPerPage - 3}`);
+    expect(lines(r.pages[1].body)[0].text).toBe('Cell 1');
+  });
+
+  it('keeps a footnote on the page of the table row that refers to it', async () => {
+    const ref = '<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="1"/></w:r>';
+    const footnotes = `<w:footnote w:id="1">${p('The note')}</w:footnote>`;
+    const row = (i: number, k: number) => `<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>Row ${i}</w:t></w:r>${i === k ? ref : ''}</w:p></w:tc></w:tr>`;
+    const linesPerPage = Math.floor(BODY_HEIGHT / ARIAL_11);
+    // Near the page's end the row fits but its note doesn't: the row moves on with its note.
+    for (let k = linesPerPage - 6; k <= linesPerPage; k++) {
+      const rows = Array.from({ length: 2 * linesPerPage }, (_, i) => row(i + 1, k)).join('');
+      const tbl = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid>${rows}</w:tbl>`;
+      const r = await layout(makeDocx({ styles: ARIAL_STYLES, footnotes, body: tbl + p('') }));
+      const page = r.pages.findIndex((pg) => lines(pg.body).some((l) => /^Row (\d+)/.exec(l.text)?.[1] === String(k)));
+      expect(pageText(r.pages[page]), `row ${k}`).toContain('The note');
+    }
+  });
+
   it('splits a row that continues a vertical merge when the merged content overflows', async () => {
     const linesPerPage = Math.floor(BODY_HEIGHT / ARIAL_11);
     const filler = Array.from({ length: linesPerPage - 6 }, (_, i) => p(`Line ${i + 1}`)).join('');
@@ -920,6 +959,103 @@ describe('floating objects', () => {
     expect(tipX - area.x).toBeCloseTo((100 * (20574 - 3163)) / 21600, 1);
     expect(tipY - area.y).toBeCloseTo((80 * (-7904 - 3163)) / 21600, 1);
   });
+
+  it('fits a text box set to resize to its text to the text, whatever height it was saved at', async () => {
+    const box = (bodyPr: string) =>
+      '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="1397000"/><a:graphic><a:graphicData>' +
+      '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr><a:prstGeom prst="rect"/><a:ln><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></wps:spPr>' +
+      `<wps:txbx><w:txbxContent>${p('Fit')}</w:txbxContent></wps:txbx><wps:bodyPr>${bodyPr}</wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+    const next = async (bodyPr: string) => lines((await layout(makeDocx({ styles: ARIAL_STYLES, body: box(bodyPr) + p('Next') }))).pages[0].body).find((l) => l.text === 'Next')!.y;
+    // Saved 110pt tall, the box shrinks to its line and the 3.6pt insets above and below it.
+    expect((await next('')) - (await next('<a:spAutoFit/>'))).toBeCloseTo(110 - (ARIAL_11 + 7.2), 1);
+  });
+
+  it('fits a text box to its page count once the count is known', async () => {
+    // "Pages 1" (40.4pt in Arial 11) fits the 43pt text width; "Pages 12" (46.5pt) wraps.
+    const text = '<w:p><w:r><w:t xml:space="preserve">Pages </w:t></w:r><w:fldSimple w:instr=" NUMPAGES "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p>';
+    const box = '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="728980" cy="254000"/><a:graphic><a:graphicData>' +
+      '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr><a:prstGeom prst="rect"/><a:ln><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></wps:spPr>' +
+      `<wps:txbx><w:txbxContent>${text}</w:txbxContent></wps:txbx><wps:bodyPr><a:spAutoFit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+    const pages = Array.from({ length: 11 }, (_, i) => `<w:p><w:r><w:br w:type="page"/><w:t>Page ${i + 2}</w:t></w:r></w:p>`).join('');
+    const r = await layout(makeDocx({ styles: ARIAL_STYLES, body: box + pages }));
+    expect(r.pages).toHaveLength(12);
+    const outline = r.pages[0].body.find((o): o is PathOp => o.kind === 'path' && o.stroke === '000000')!;
+    const ys = outline.segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 1));
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(2 * ARIAL_11 + 7.2, 1);
+  });
+
+  it("draws a custom shape's quadratic curve as the same curve, skipping a malformed one", () => {
+    const geom = '<a:custGeom><a:pathLst><a:path w="100" h="100"><a:moveTo><a:pt x="0" y="0"/></a:moveTo>' +
+      '<a:quadBezTo><a:pt x="50" y="100"/><a:pt x="100" y="0"/></a:quadBezTo><a:quadBezTo><a:pt x="10" y="10"/></a:quadBezTo></a:path></a:pathLst></a:custGeom>';
+    const body = '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="1270000"/><a:graphic><a:graphicData>' +
+      `<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr>${geom}</wps:spPr></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+    const para = parseDocx(makeDocx({ body }), nodeCompression.inflateRaw).body[0] as Paragraph;
+    const d = (para.content.find((i) => i.type === 'drawing') as DrawingInline).drawing;
+    // Control points two thirds of the way from each end to the quadratic's (50, 100).
+    expect(d.path![0].segs).toEqual([
+      { op: 'M', pts: [0, 0] },
+      { op: 'C', pts: [expect.closeTo(1 / 3, 6), expect.closeTo(2 / 3, 6), expect.closeTo(2 / 3, 6), expect.closeTo(2 / 3, 6), 1, 0] },
+    ]);
+  });
+
+  it("draws a custom shape's arc on its ellipse, its angles those of rays from the centre", () => {
+    const segs = (path: string) => {
+      const geom = `<a:custGeom><a:pathLst><a:path w="200" h="100"><a:moveTo><a:pt x="200" y="50"/></a:moveTo>${path}</a:path></a:pathLst></a:custGeom>`;
+      const body = '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="2540000" cy="1270000"/><a:graphic><a:graphicData>' +
+        `<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr>${geom}</wps:spPr></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+      const para = parseDocx(makeDocx({ body }), nodeCompression.inflateRaw).body[0] as Paragraph;
+      return (para.content.find((i) => i.type === 'drawing') as DrawingInline).drawing.path![0].segs;
+    };
+    const close = (...v: number[]) => v.map((n) => expect.closeTo(n, 4));
+    // Half way round the ellipse centred on (100, 50) from its right end, a quarter turn per curve, then on from where it ends.
+    const k = (4 / 3) * Math.tan(Math.PI / 8) * 0.5;
+    expect(segs('<a:arcTo wR="100" hR="50" stAng="0" swAng="10800000"/><a:lnTo><a:pt x="100" y="0"/></a:lnTo>')).toEqual([
+      { op: 'M', pts: [1, 0.5] },
+      { op: 'C', pts: close(1, 0.5 + k, 0.5 + k, 1, 0.5, 1) },
+      { op: 'C', pts: close(0.5 - k, 1, 0, 0.5 + k, 0, 0.5) },
+      { op: 'L', pts: [0.5, 0] },
+    ]);
+    // 45° ends where the ray at 45° meets the ellipse, (100 + 20√5, 50 + 20√5), not at its parameter's 45°.
+    const eighth = segs('<a:arcTo wR="100" hR="50" stAng="0" swAng="2700000"/>');
+    expect(eighth).toHaveLength(2);
+    expect(eighth[1].pts.slice(4)).toEqual(close((100 + 20 * Math.sqrt(5)) / 200, (50 + 20 * Math.sqrt(5)) / 100));
+    // Anticlockwise, a negative sweep goes up through the top.
+    expect(segs('<a:arcTo wR="100" hR="50" stAng="0" swAng="-5400000"/>')[1].pts.slice(4)).toEqual(close(0.5, 0));
+  });
+
+  it("reads a VML fill's opacity as a fraction, in 65536ths or as a percentage, zero included", () => {
+    const alpha = (fill: string) => {
+      const body = `<w:p><w:r><w:pict><v:rect style="width:50pt;height:50pt" fillcolor="#FF0000">${fill}</v:rect></w:pict></w:r></w:p>`;
+      const para = parseDocx(makeDocx({ body }), nodeCompression.inflateRaw).body[0] as Paragraph;
+      return (para.content.find((i) => i.type === 'drawing') as DrawingInline).drawing.fill?.alpha;
+    };
+    expect(alpha('<v:fill opacity="0"/>')).toBe(0);
+    expect(alpha('<v:fill opacity="50%"/>')).toBeCloseTo(0.5, 6);
+    expect(alpha('<v:fill opacity="32768f"/>')).toBeCloseTo(0.5, 6);
+    expect(alpha('<v:fill opacity=".25"/>')).toBeCloseTo(0.25, 6);
+    expect(alpha('')).toBe(1);
+    expect(alpha('<v:fill opacity="junk"/>')).toBe(1);
+  });
+});
+
+describe('page borders', () => {
+  it('draws double and dashed page borders in their style', async () => {
+    const borders = '<w:pgBorders w:offsetFrom="page"><w:top w:val="double" w:sz="12" w:space="24"/><w:left w:val="dashed" w:sz="8" w:space="24"/>' +
+      '<w:bottom w:val="double" w:sz="12" w:space="24"/><w:right w:val="single" w:sz="8" w:space="24"/></w:pgBorders>';
+    const page = (await layout(makeDocx({ body: p('Text'), sectPr: A4_SECT.replace('</w:sectPr>', `${borders}</w:sectPr>`) }))).pages[0];
+    const rules = [...page.behind, ...page.front].filter((o): o is Extract<DrawOpLike, { kind: 'line' }> => o.kind === 'line');
+    const horizontal = rules.filter((l) => l.y1 === l.y2);
+    // Top and bottom: two 1.5pt lines each, 1.5pt apart; the outer one runs on to the corner.
+    expect(horizontal).toHaveLength(4);
+    expect(horizontal.every((l) => l.width === 1.5)).toBe(true);
+    const top = horizontal.filter((l) => l.y1 < 100).sort((a, b) => a.y1 - b.y1);
+    expect(top[1].y1 - top[0].y1).toBeCloseTo(3, 6);
+    expect(top[1].x1 - top[0].x1).toBeCloseTo(3, 6);
+    const vertical = rules.filter((l) => l.x1 === l.x2).sort((a, b) => a.x1 - b.x1);
+    expect(vertical).toHaveLength(2);
+    expect(vertical[0].dash).toBeDefined();
+    expect(vertical[1].dash).toBeUndefined();
+  });
 });
 
 describe('equations', () => {
@@ -1229,6 +1365,17 @@ describe('line breaking', () => {
     expect(await end(14, 9200)).toBeCloseTo(72 + 9200 / 20, 1);
   });
 
+  it('aligns text on a right, centre or decimal tab without its trailing spaces', async () => {
+    const end = async (type: string, text: string) => {
+      const body = `<w:p><w:pPr><w:tabs><w:tab w:val="${type}" w:pos="4000"/></w:tabs></w:pPr><w:r><w:t>Left</w:t><w:tab/><w:t xml:space="preserve">${text}</w:t></w:r></w:p>`;
+      const ops = glyphOps((await layout(makeDocx({ styles: ARIAL_STYLES, body }))).pages[0].body);
+      const nines = ops.flatMap((o) => o.texts.map((t, i) => ({ t, x: o.x + o.xs[i] }))).filter((c) => c.t === '9');
+      return nines.at(-1)!.x + (1139 / 2048) * 11;
+    };
+    for (const type of ['right', 'center', 'decimal']) expect(await end(type, '99   ')).toBeCloseTo(await end(type, '99'), 2);
+    expect(await end('right', '99')).toBeCloseTo(72 + 200, 1);
+  });
+
   it('keeps a line of nothing but tabs whole past the margin before Word 2013, but wraps tabs that follow text', async () => {
     const tabs = (text: string) => `<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="9300"/></w:tabs></w:pPr><w:r>${text ? `<w:t>${text}</w:t>` : ''}<w:tab/><w:tab/></w:r></w:p>`;
     const body = p('Before') + tabs('') + p('Middle') + tabs('Text') + p('After');
@@ -1333,6 +1480,17 @@ describe('run formatting', () => {
     expect(rules).toHaveLength(1);
     expect(rules[0].kind === 'line' && rules[0].y1).toBeGreaterThan(under.y);
   });
+
+  it("strokes synthetic bold text solid after a dashed line", async () => {
+    // Noto Sans CJK JP has no bold face, so bold kanji are stroked.
+    const body = p('Dashed', '', '<w:u w:val="dash"/>') + p('文字', '', '<w:rFonts w:eastAsia="MS Mincho"/><w:b/>');
+    const content = pdfStreams((await convertDocx(makeDocx({ styles: ARIAL_STYLES, body }))).pdf).join('\n');
+    const dashed = content.search(/\[[\d.]+ [\d.]+\] 0 d/);
+    const bold = content.indexOf(' 2 Tr');
+    expect(dashed).toBeGreaterThanOrEqual(0);
+    expect(bold).toBeGreaterThan(dashed);
+    expect(content.slice(content.lastIndexOf('BT', bold), bold)).toContain('[] 0 d');
+  });
 });
 
 describe('charts', () => {
@@ -1348,6 +1506,15 @@ describe('charts', () => {
     '<c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:varyColors val="0"/>' +
     `<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>Sales</c:v></c:tx><c:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></c:spPr><c:cat><c:strLit>${pts(['North', 'South', 'East', 'West'])}</c:strLit></c:cat><c:val><c:numLit>${pts(values.map(String), 'General')}</c:numLit></c:val></c:ser>` +
     `<c:gapWidth val="150"/><c:axId val="1"/><c:axId val="2"/></c:barChart>${axes}</c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend><c:plotVisOnly val="1"/></c:chart>`;
+
+  it('falls back to a bounded set of log-axis labels and rejects an unrepresentable linear span', async () => {
+    const axis = (scaling: string) => barChart.replace('<c:valAx><c:axId val="2"/><c:scaling>', '<c:valAx><c:axId val="2"/><c:scaling>' + scaling);
+    const log = await chartPage(axis('<c:logBase val="1.0001"/><c:min val="0"/><c:max val="8"/>'));
+    const labels = glyphOps(log).map((g) => g.texts.join(''));
+    expect(labels).toContain('8');
+    expect(labels.length).toBeLessThan(20);
+    await expect(chartPage(axis('<c:min val="-1e308"/><c:max val="1e308"/>'))).rejects.toThrow(/axis range/);
+  });
 
   it("draws a chart from its cached data, on Excel's automatic value axis", async () => {
     // Word stores no picture of a chart, so without drawing the data the chart would be blank.
@@ -1461,24 +1628,65 @@ describe('shape gradients', () => {
   const shape = (spPr: string) =>
     '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="1270000"/><a:graphic><a:graphicData>' +
     `<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr><a:prstGeom prst="rect"/>${spPr}</wps:spPr></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
-  const grad = '<a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="000000"/></a:gs><a:gs pos="100000"><a:srgbClr val="FFFFFF"/></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill>';
-  const gray = (o: PathOp) => parseInt((o.fill ?? '').slice(0, 2), 16);
+  const stop = (pos: number, rgb: string, alpha?: number) => `<a:gs pos="${pos}"><a:srgbClr val="${rgb}">${alpha === undefined ? '' : `<a:alpha val="${alpha}"/>`}</a:srgbClr></a:gs>`;
+  const grad = (stops: string, kind = '<a:lin ang="5400000" scaled="0"/>') => `<a:gradFill><a:gsLst>${stops}</a:gsLst>${kind}</a:gradFill>`;
+  const blackToWhite = stop(0, '000000') + stop(100000, 'FFFFFF');
+  const focused = (path: string) => `<a:path path="${path}"><a:fillToRect l="50000" t="50000" r="50000" b="50000"/></a:path>`;
+  const drawn = async (spPr: string) => {
+    const ops = (await layout(makeDocx({ body: shape(spPr) }))).pages[0].body;
+    const clip = ops.find((o): o is Extract<DrawOpLike, { kind: 'clip' }> => o.kind === 'clip')!;
+    return { clip, shade: ops.find((o): o is ShadeOp => o.kind === 'shade')!, bands: ops.filter((o) => o.kind === 'path').length };
+  };
 
-  it('draws a linear gradient as bands down the shape, blended straight through sRGB', async () => {
+  it('draws a linear gradient as one shading down the shape, blended straight through sRGB', async () => {
     // A shape's gradient is a straight sRGB blend in Word for Mac's PDFs (charts and SmartArt blend in linear light).
-    const ops = (await layout(makeDocx({ body: shape(grad) }))).pages[0].body;
-    const clip = ops.findIndex((o) => o.kind === 'clip');
-    expect(clip).toBeGreaterThanOrEqual(0);
-    const bands = ops.filter((o): o is PathOp => o.kind === 'path' && !!o.fill && !o.stroke);
-    expect(bands.length).toBeGreaterThan(20);
-    const levels = bands.map(gray);
-    // Black at the top, white at the foot, rising steadily: the middle band is mid grey.
-    expect(levels[0]).toBeLessThan(8);
-    expect(levels.at(-1)).toBeGreaterThan(247);
-    expect(levels.every((v, i) => i === 0 || v >= levels[i - 1])).toBe(true);
-    expect(Math.abs(levels[Math.floor(levels.length / 2)] - 128)).toBeLessThan(8);
-    // Each band runs on to the shape's foot, under the next, so no seam lets the page through between them.
-    const foot = Math.max(...bands[0].segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 1)));
-    for (const b of bands) expect(Math.max(...b.segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 1)))).toBeCloseTo(foot, 1);
+    const { clip, shade, bands } = await drawn(grad(blackToWhite));
+    expect(bands).toBe(0);
+    expect(shade.colors).toEqual(['000000', 'FFFFFF']);
+    const mid = clip.x + clip.w / 2;
+    expect(shade.geometry).toEqual({ type: 'axial', x0: expect.closeTo(mid, 2), y0: expect.closeTo(clip.y, 2), x1: expect.closeTo(mid, 2), y1: expect.closeTo(clip.y + clip.h, 2) });
+  });
+
+  it('shades a path gradient out from its focus, in ellipses or rectangles', async () => {
+    const { clip, shade } = await drawn(grad(blackToWhite, focused('circle')));
+    // The last ring reaches the corners.
+    expect(shade.geometry).toEqual({ type: 'radial', cx: expect.closeTo(clip.x + 50, 2), cy: expect.closeTo(clip.y + 50, 2), rx: expect.closeTo(100 * Math.SQRT1_2, 2), ry: expect.closeTo(100 * Math.SQRT1_2, 2) });
+    const rect = (await drawn(grad(blackToWhite, focused('rect')))).shade.geometry;
+    if (rect.type !== 'rect') throw new Error('not rectangular rings');
+    rect.inner.forEach((v, i) => expect(v).toBeCloseTo([clip.x + 50, clip.y + 50][i % 2], 2));
+    rect.outer.forEach((v, i) => expect(v).toBeCloseTo([clip.x, clip.y, clip.x + 100, clip.y + 100][i], 2));
+  });
+
+  it("takes a gradient's opacity once, or each stop's own where they differ", async () => {
+    const even = (await drawn(grad(stop(0, '000000', 50000) + stop(100000, '000000', 50000)))).shade;
+    expect(even.alpha).toBeCloseTo(0.5, 3);
+    expect(even.alphas).toBeUndefined();
+    const fade = (await drawn(grad(stop(0, '000000', 0) + stop(100000, '000000')))).shade;
+    expect(fade.alpha).toBeUndefined();
+    expect(fade.alphas![0]).toBeCloseTo(0, 3);
+    expect(fade.alphas!.at(-1)).toBeCloseTo(1, 3);
+  });
+
+  it.skipIf(!ghostscript)('paints gradients as a PDF reader shows them, translucent ones evenly', async () => {
+    const levels = async (fill: string, points: Array<[number, number]>) => {
+      const docx = makeDocx({ body: shape(fill) });
+      const { clip } = await drawn(fill);
+      const { at } = ghostscriptPixels((await convertDocx(docx)).pdf, 72);
+      return points.map(([fx, fy]) => at(clip.x + 100 * fx, clip.y + 100 * fy)[0]);
+    };
+    // Black at half opacity over the white page is mid grey from top to foot.
+    for (const v of await levels(grad(stop(0, '000000', 50000) + stop(100000, '000000', 50000)), [[0.5, 0.1], [0.5, 0.5], [0.5, 0.9]])) expect(Math.abs(v - 128)).toBeLessThan(10);
+    // Fading in from clear to solid black.
+    const [top, middle, foot] = await levels(grad(stop(0, '000000', 0) + stop(100000, '000000')), [[0.5, 0.1], [0.5, 0.5], [0.5, 0.9]]);
+    expect(top).toBeGreaterThan(215);
+    expect(Math.abs(middle - 128)).toBeLessThan(15);
+    expect(foot).toBeLessThan(40);
+    // Black at the focus, white at the edge, out in circles and in rectangles.
+    for (const path of ['circle', 'rect']) {
+      const [centre, nearEdge, corner] = await levels(grad(blackToWhite, focused(path)), [[0.5, 0.5], [0.5, 0.05], [0.03, 0.03]]);
+      expect(centre).toBeLessThan(20);
+      expect(nearEdge).toBeGreaterThan(path === 'rect' ? 215 : 160);
+      expect(corner).toBeGreaterThan(215);
+    }
   });
 });

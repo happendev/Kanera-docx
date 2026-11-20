@@ -1,12 +1,12 @@
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { open, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nodeCompression } from './util/node-compression.js';
 import { convertWithCompression, type ConvertOptions, type ConvertResult, type FontProvider } from './core.js';
+import { CJK_FILES, fontVersion, loadCjkFont } from './fonts/node-cjk.js';
 import { FULL_FONTS } from './fonts/bundled.js';
-import { BundledFontData, type FontRegistry, type FontSource } from './fonts/registry.js';
+import { BundledFontData, type FontSource } from './fonts/registry.js';
 import { collectionSize, isFontCollection, MAX_FONT_FACES, SfntFont } from './fonts/sfnt.js';
 import { buildSfnt } from './fonts/subset.js';
 
@@ -22,39 +22,44 @@ export interface NodeConvertOptions extends ConvertOptions {
   fontDir?: string;
 }
 
-// Only the fixed files shipped with this package share parsed tables across conversions.
 const MAX_CACHED_FONTS = 16;
-const packagedFonts = new Map<string, BundledFontData>();
-const loadingFonts = new Map<string, Promise<BundledFontData>>();
+type CachedFont = BundledFontData | Uint8Array;
+const packagedFonts = new Map<string, CachedFont>();
+const loadingFonts = new Map<string, Promise<CachedFont>>();
 
-async function loadPackagedFont(file: string): Promise<BundledFontData> {
-  const cached = packagedFonts.get(file);
+async function loadPackagedFont(path: string, checkVersion: boolean, sparse: boolean): Promise<CachedFont> {
+  const version = checkVersion || sparse ? fontVersion(await stat(path, { bigint: true })) : '';
+  const key = path + '\0' + version + (sparse ? '\0outlines' : '');
+  const cached = packagedFonts.get(key);
   if (cached) {
-    packagedFonts.delete(file);
-    packagedFonts.set(file, cached);
+    packagedFonts.delete(key);
+    packagedFonts.set(key, cached);
     return cached;
   }
-  const loading = loadingFonts.get(file);
+  const loading = loadingFonts.get(key);
   if (loading) return loading;
-  const pending = readFile(join(packageFontDir(), file)).then((data) => {
-    const font = new BundledFontData(data);
-    packagedFonts.set(file, font);
+  const read = sparse ? loadCjkFont(path, version) : readFile(path).then(data =>
+    isFontCollection(data) ? data : new BundledFontData(data));
+  const pending = read.then(font => {
+    packagedFonts.set(key, font);
     if (packagedFonts.size > MAX_CACHED_FONTS) packagedFonts.delete(packagedFonts.keys().next().value!);
     return font;
   });
-  loadingFonts.set(file, pending);
+  loadingFonts.set(key, pending);
   try {
     return await pending;
   } finally {
-    loadingFonts.delete(file);
+    loadingFonts.delete(key);
   }
 }
 
 function bundledProvider(dir?: string): FontProvider {
   return {
-    register(registry: FontRegistry) {
+    register(registry) {
       for (const b of FULL_FONTS) {
-        const load = dir === undefined ? () => loadPackagedFont(b.file) : () => readFile(join(dir, b.file));
+        const path = resolve(dir ?? packageFontDir(), b.file);
+        const sparse = dir === undefined && !registry.needsGlyphBounds && CJK_FILES.has(b.file);
+        const load = () => loadPackagedFont(path, dir !== undefined, sparse);
         registry.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load }, 'bundled');
       }
     },
@@ -84,38 +89,44 @@ async function listFontFiles(dir: string, out: string[], depth = 0): Promise<voi
 }
 
 /** Read just the tables needed to describe a font file, without loading its outlines. */
-function describeFontFile(path: string): FontSource[] {
-  const fd = openSync(path, 'r');
+async function describeFontFile(path: string): Promise<FontSource[]> {
+  const fd = await open(path, 'r');
   try {
-    const size = fstatSync(fd).size;
-    const read = (offset: number, length: number): Uint8Array => {
-      const b = new Uint8Array(Math.max(0, Math.min(length, size - offset)));
-      if (b.length) readSync(fd, b, 0, b.length, offset);
+    const { size } = await fd.stat();
+    const read = async (offset: number, length: number): Promise<Uint8Array> => {
+      if (offset + length > size || length > 64 * 1024 * 1024) throw new Error('Invalid font table size');
+      const b = new Uint8Array(length);
+      let done = 0;
+      while (done < length) {
+        const { bytesRead } = await fd.read(b, done, length - done, offset + done);
+        if (!bytesRead) throw new Error('Truncated font table');
+        done += bytesRead;
+      }
       return b;
     };
-    const head = read(0, 12);
+    const head = await read(0, 12);
     const u32 = (d: Uint8Array, o: number) => ((d[o] << 24) | (d[o + 1] << 16) | (d[o + 2] << 8) | d[o + 3]) >>> 0;
     const u16 = (d: Uint8Array, o: number) => (d[o] << 8) | d[o + 1];
     let dirs = [0];
     if (isFontCollection(head)) {
       const n = collectionSize(head, size);
       if (n > MAX_FONT_FACES) throw new Error('Font collection face limit exceeded');
-      const offs = read(12, n * 4);
+      const offs = await read(12, n * 4);
       dirs = [...Array(n).keys()].map((i) => u32(offs, i * 4));
     }
     const out: FontSource[] = [];
-    dirs.forEach((dir, index) => {
-      const dh = read(dir, 12);
+    for (const [index, dir] of dirs.entries()) {
+      const dh = await read(dir, 12);
       const numTables = u16(dh, 4);
-      const recs = read(dir + 12, numTables * 16);
+      const recs = await read(dir + 12, numTables * 16);
       const tables = new Map<string, Uint8Array>();
       for (let i = 0; i < numTables; i++) {
         const r = i * 16;
         const tag = String.fromCharCode(recs[r], recs[r + 1], recs[r + 2], recs[r + 3]);
         if (!['head', 'hhea', 'name', 'OS/2', 'cmap', 'maxp'].includes(tag)) continue;
-        tables.set(tag, read(u32(recs, r + 8), u32(recs, r + 12)));
+        tables.set(tag, await read(u32(recs, r + 8), u32(recs, r + 12)));
       }
-      if (!tables.has('head') || !tables.has('hhea')) return;
+      if (!tables.has('head') || !tables.has('hhea')) continue;
       const font = new SfntFont(buildSfnt(tables, u32(dh, 0)));
       const families = [...new Set([font.names.family, font.names.typographicFamily, font.names.fullName, ...font.names.all].filter((f): f is string => !!f))];
       out.push({
@@ -124,19 +135,20 @@ function describeFontFile(path: string): FontSource[] {
         italic: font.isItalic,
         weight: font.weightClass,
         collectionIndex: dirs.length > 1 ? index : undefined,
-        covers: (cp) => font.hasGlyph(cp),
+        covers: font.coverageTest(),
         load: () => readFile(path),
       });
-    });
+    }
     return out;
   } finally {
-    closeSync(fd);
+    await fd.close();
   }
 }
 
 const systemCache = new Map<string, Promise<FontSource[]>>();
 
 async function scanSystemFonts(dirs: string[]): Promise<FontSource[]> {
+  dirs = dirs.map((dir) => resolve(dir));
   const key = dirs.join('\u0000');
   let p = systemCache.get(key);
   if (!p) {
@@ -146,15 +158,17 @@ async function scanSystemFonts(dirs: string[]): Promise<FontSource[]> {
       const out: FontSource[] = [];
       for (const f of files) {
         try {
-          out.push(...describeFontFile(f));
+          out.push(...await describeFontFile(f));
         } catch {
           // Unreadable or unsupported font files are skipped.
         }
       }
       return out;
     })();
-    systemCache.set(key, p);
   }
+  systemCache.delete(key);
+  systemCache.set(key, p);
+  if (systemCache.size > 4) systemCache.delete(systemCache.keys().next().value!);
   return p;
 }
 

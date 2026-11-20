@@ -11,9 +11,12 @@ import { deobfuscateFont } from '../src/fonts/odttf.js';
 import { FontRegistry } from '../src/fonts/registry.js';
 import { SfntFont } from '../src/fonts/sfnt.js';
 import { cjkFallbacks } from '../src/fonts/substitutes.js';
+import { formatNumber } from '../src/layout/chart.js';
+import type { DrawOp, GlyphOp, PathOp } from '../src/layout/types.js';
 import { ZipArchive } from '../src/util/zip.js';
 import { makeDocx, p } from './helpers/docx.js';
 import { layout, lines, pageText } from './helpers/layout.js';
+import { inlineImage } from './helpers/sample.js';
 import { ghostscript, pdfPagesText, pdfStreams, pdfText } from './helpers/pdf.js';
 
 const font = (file: string) => readFileSync(new URL('../fonts/' + file, import.meta.url));
@@ -195,6 +198,39 @@ describe('document content and pagination', () => {
         expect(line.y).toBeLessThan(page.height - 72);
       }
     }
+  });
+
+  it('shows cells wrapped in a tracked insertion and hides cells wrapped in a deletion', async () => {
+    const cell = (text: string) => '<w:tc>' + p(text) + '</w:tc>';
+    const cells = cell('Kept') + '<w:ins w:id="1" w:author="Editor">' + cell('Added') + '</w:ins>' +
+      '<w:del w:id="2" w:author="Editor">' + cell('Removed') + '</w:del>';
+    const grid = '<w:tblGrid><w:gridCol w:w="2700"/><w:gridCol w:w="2700"/></w:tblGrid>';
+    const doc = makeDocx({ styles: arial, body: '<w:tbl>' + grid + '<w:tr>' + cells + '</w:tr></w:tbl>' });
+    expect(pageText((await layout(doc)).pages[0])).toBe('KeptAdded');
+  });
+
+  it('takes the number format from any \\* switch, not only the first', async () => {
+    const body = '<w:p>' + field('PAGE \\* MERGEFORMAT \\* ROMAN') + '<w:r><w:t xml:space="preserve"> of </w:t></w:r>' +
+      field('NUMPAGES \\* Upper \\* CHARFORMAT \\* alphabetic') + '</w:p>';
+    expect(pageText((await layout(makeDocx({ styles: arial, body }))).pages[0])).toBe('I of a');
+  });
+
+  it('reads unquoted HYPERLINK field arguments', () => {
+    const link = (instr: string) => {
+      const body = '<w:p><w:fldSimple w:instr="' + instr + '"><w:r><w:t>Go</w:t></w:r></w:fldSimple></w:p>';
+      const para = parseDocx(makeDocx({ body }), nodeCompression.inflateRaw).body[0];
+      return para?.type === 'paragraph' ? para.content.flatMap((c) => (c.type === 'text' ? [c.link] : []))[0] : undefined;
+    };
+    expect(link('HYPERLINK \\l Intro')).toEqual({ anchor: 'Intro' });
+    expect(link('HYPERLINK https://example.org/guide \\l Setup \\o Tip')).toEqual({ url: 'https://example.org/guide', anchor: 'Setup' });
+    expect(link('HYPERLINK &quot;https://example.org/a b&quot; \\l &quot;Part 2&quot;')).toEqual({ url: 'https://example.org/a b', anchor: 'Part 2' });
+    expect(link('HYPERLINK \\L &quot;Intro&quot;')).toEqual({ anchor: 'Intro' });
+  });
+
+  it('skips a symbol whose character code is out of Unicode range', async () => {
+    const syms = ['110000', 'FFFFFFFF', '-1', 'zz'].map((c) => '<w:sym w:font="Symbol" w:char="' + c + '"/>').join('');
+    const doc = makeDocx({ styles: arial, body: '<w:p><w:r>' + syms + '<w:t>After</w:t><w:sym w:font="Arial" w:char="0041"/></w:r></w:p>' });
+    expect(pageText((await layout(doc)).pages[0])).toBe('AfterA');
   });
 });
 
@@ -378,7 +414,53 @@ describe('PDF fonts, links and public inputs', () => {
     expect(cjkFallbacks('PingFang HK', 'zh-CN')[0]).toBe('noto sans cjk hk');
     expect(cjkFallbacks('Songti TC', 'ja-JP')[0]).toBe('noto serif cjk tc');
   });
+
+  it('loads the fonts a metafile picture draws its text with before layout', async () => {
+    const doc = makeDocx({ styles: arial, body: '<w:p>' + inlineImage('pic', 72, 36) + '</w:p>', media: { pic: { name: 'label.wmf', data: wmfText('Courier New', 'Label') } } });
+    const request = parseDocx(doc, nodeCompression.inflateRaw).fontRequests.find((r) => r.family === 'Courier New');
+    expect(request && String.fromCodePoint(...request.codePoints)).toBe('Label');
+    const glyphs = (await layout(doc)).pages[0].body.filter((op) => op.kind === 'glyphs');
+    expect(glyphs.map((op) => op.texts.join('')).join('')).toBe('Label');
+    expect(new Set(glyphs.map((op) => op.face.familyName))).toEqual(new Set(['Liberation Mono']));
+  });
+
+  it('writes document dates and finds the core properties through the package relationship', async () => {
+    const coreProperties = '<dc:title>Annual report</dc:title><dc:creator>Ana</dc:creator>' +
+      '<dcterms:created xsi:type="dcterms:W3CDTF">2024-01-02T05:04:05.250+02:00</dcterms:created>' +
+      '<dcterms:modified xsi:type="dcterms:W3CDTF">yesterday</dcterms:modified>';
+    const doc = makeDocx({ body: p('Text'), coreProperties, corePropertiesPart: 'meta/properties.xml' });
+    const pdf = pdfText((await convertDocx(doc)).pdf);
+    expect(pdf).toContain('/Title (Annual report)');
+    expect(pdf).toContain('/Author (Ana)');
+    expect(pdf).toContain('/CreationDate (D:20240102030405Z)');
+    expect(pdf).not.toContain('/ModDate');
+    const override = pdfText((await convertDocx(doc, { info: { modified: new Date(Date.UTC(2025, 5, 30, 12)) } })).pdf);
+    expect(override).toContain('/CreationDate (D:20240102030405Z)');
+    expect(override).toContain('/ModDate (D:20250630120000Z)');
+    const dateOnly = makeDocx({ body: p('Text'), coreProperties: '<dcterms:modified xsi:type="dcterms:W3CDTF">2023-07</dcterms:modified>' });
+    expect(parseDocx(dateOnly, nodeCompression.inflateRaw).info.modified?.toISOString()).toBe('2023-07-01T00:00:00.000Z');
+  });
 });
+
+/** A placeable WMF that draws `text` in the font `face`. */
+function wmfText(face: string, text: string): Uint8Array {
+  const u16 = (v: number) => [v & 0xff, (v >> 8) & 0xff];
+  const u32 = (v: number) => [...u16(v & 0xffff), ...u16(v >>> 16)];
+  const record = (fn: number, params: number[]) => [...u32((6 + params.length) / 2), ...u16(fn), ...params];
+  const name = Array.from({ length: 32 }, (_, i) => face.charCodeAt(i) || 0);
+  const chars = [...text].map((c) => c.charCodeAt(0));
+  if (chars.length % 2) chars.push(0);
+  const records = [
+    // CREATEFONTINDIRECT (240-unit height, weight 400), SELECTOBJECT, TEXTOUT at (100, 100), EOF.
+    ...record(0x02fb, [...u16(-240), ...u16(0), ...u16(0), ...u16(0), ...u16(400), 0, 0, 0, 0, 0, 0, 0, 0, ...name]),
+    ...record(0x012d, u16(0)),
+    ...record(0x0521, [...u16(text.length), ...chars, ...u16(100), ...u16(100)]),
+    ...record(0x0000, []),
+  ];
+  const header = [...u16(1), ...u16(9), ...u16(0x0300), ...u32(9 + records.length / 2), ...u16(1), ...u32(28), ...u16(0)];
+  const placeable = [...u32(0x9ac6cdd7), ...u16(0), ...u16(0), ...u16(0), ...u16(1440), ...u16(720), ...u16(1440), ...u32(0), ...u16(0)];
+  return new Uint8Array([...placeable, ...header, ...records]);
+}
 
 describe('decoded byte budgets', () => {
   it('enforces limits on ZIP parts and on the total of distinct parts read', async () => {
@@ -395,5 +477,84 @@ describe('decoded byte budgets', () => {
     expect(() => nodeCompression.inflateRaw(compressed.subarray(0, compressed.length - 1), text.length)).toThrow(/truncated/);
     expect(() => nodeCompression.inflateRaw(compressed, text.length - 1)).toThrow(/limit/);
     expect(nodeCompression.inflateRaw(compressed, text.length)).toEqual(text);
+  });
+});
+
+describe('charts', () => {
+  const chartOps = async (plot: string, catPos = 'b', valPos = 'l', reverse = false) => {
+    const axes =
+      `<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${catPos}"/><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="out"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="2"/><c:crosses val="autoZero"/></c:catAx>` +
+      `<c:valAx><c:axId val="2"/><c:scaling><c:orientation val="${reverse ? 'maxMin' : 'minMax'}"/></c:scaling><c:delete val="0"/><c:axPos val="${valPos}"/><c:majorGridlines/><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="out"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="1"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>`;
+    const chart = `<c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/>${plot}${axes}</c:plotArea><c:plotVisOnly val="1"/></c:chart>`;
+    const body = '<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="4572000" cy="2743200"/><wp:docPr id="1" name="Chart 1"/><a:graphic>' +
+      '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rIdChart1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>';
+    return (await layout(makeDocx({ body, charts: { rIdChart1: chart } }))).pages[0].body;
+  };
+  /** A red series over categories A, B, …, where null is a blank cell. */
+  const series = (values: Array<number | null>, extra = '') => {
+    const pt = (i: number, v: string) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`;
+    const cats = values.map((_, i) => pt(i, String.fromCharCode(65 + i))).join('');
+    const vals = values.map((v, i) => (v === null ? '' : pt(i, String(v)))).join('');
+    return `<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>Sales</c:v></c:tx><c:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></c:spPr>${extra}` +
+      `<c:cat><c:strLit><c:ptCount val="${values.length}"/>${cats}</c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="${values.length}"/>${vals}</c:numLit></c:val></c:ser>`;
+  };
+  const bars = (dir: 'col' | 'bar', ser: string) => `<c:barChart><c:barDir val="${dir}"/><c:grouping val="clustered"/><c:varyColors val="0"/>${ser}<c:gapWidth val="150"/><c:axId val="1"/><c:axId val="2"/></c:barChart>`;
+  const plotOf = (type: 'line' | 'area', grouping: string, ser: string) => `<c:${type}Chart><c:grouping val="${grouping}"/><c:varyColors val="0"/>${ser}<c:axId val="1"/><c:axId val="2"/></c:${type}Chart>`;
+  const red = (ops: DrawOp[]) => ops.filter((o): o is PathOp => o.kind === 'path' && (o.fill ?? '').replace('#', '').toUpperCase() === 'FF0000');
+  const texts = (ops: DrawOp[]) => ops.filter((o): o is GlyphOp => o.kind === 'glyphs');
+  // NaN coordinates would be written into the PDF's content stream.
+  const finite = (ops: DrawOp[]) => ops.every((o) => (o.kind === 'path' ? o.segs.every((s) => s.pts.every(Number.isFinite)) : o.kind !== 'glyphs' || (Number.isFinite(o.x) && Number.isFinite(o.y))));
+
+  it('draws a chart whose series have no values, on an empty value axis', async () => {
+    // Blank cells in a clustered or standard plot leave the value axis without any data range.
+    for (const plot of [bars('col', series([null, null, null])), plotOf('line', 'standard', series([null, null])), bars('col', series([]))]) {
+      const ops = await chartOps(plot);
+      expect(red(ops)).toEqual([]);
+      expect(finite(ops)).toBe(true);
+      expect(texts(ops).map((g) => g.texts.join(''))).toEqual(expect.arrayContaining(['0', '1']));
+    }
+  });
+
+  it('draws an area chart with no points', async () => {
+    for (const grouping of ['percentStacked', 'standard']) {
+      const ops = await chartOps(plotOf('area', grouping, series([])));
+      expect(red(ops)).toEqual([]);
+      expect(finite(ops)).toBe(true);
+    }
+  });
+
+  it('shows date serials outside Excel’s calendar as hashes', () => {
+    for (const code of ['mmm-yy', 'mmmmm', 'dddd d mmmm yyyy', 'h:mm']) {
+      expect(formatNumber(1e12, code)).toBe('#####');
+      expect(formatNumber(-1, code)).toBe('#####');
+    }
+    expect(formatNumber(2958465, 'd mmm yyyy')).toBe('31 Dec 9999');
+  });
+
+  it('puts outside-end bar labels past the bar’s end, whichever way the bar grows', async () => {
+    const labels = '<c:dLbls><c:dLblPos val="outEnd"/><c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="0"/></c:dLbls>';
+    const chart = async (dir: 'col' | 'bar', value: number, reverse: boolean) => {
+      const ops = await chartOps(bars(dir, series([value], labels)), dir === 'col' ? 'b' : 'l', dir === 'col' ? 'l' : 'b', reverse);
+      const [bar] = red(ops).map((o) => {
+        const xs = o.segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 0));
+        const ys = o.segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 1));
+        return { left: Math.min(...xs), right: Math.max(...xs), top: Math.min(...ys), bottom: Math.max(...ys) };
+      });
+      const label = texts(ops).find((g) => g.texts.join('') === String(value))!;
+      const end = label.x + label.xs.at(-1)! + (label.face.font.advance(label.gids.at(-1)!) / label.face.font.unitsPerEm) * label.size;
+      return { bar, label: { start: label.x, end, baseline: label.y } };
+    };
+    // Columns: above the top, or below the bottom when the value axis runs down from the top.
+    let { bar, label } = await chart('col', 37, false);
+    expect(label.baseline).toBeLessThan(bar.top);
+    ({ bar, label } = await chart('col', 37, true));
+    expect(label.baseline).toBeGreaterThan(bar.bottom);
+    // Bars: right of a positive bar, left of a negative one or of any bar on a reversed axis.
+    ({ bar, label } = await chart('bar', 37, false));
+    expect(label.start).toBeGreaterThan(bar.right);
+    ({ bar, label } = await chart('bar', -37, false));
+    expect(label.end).toBeLessThan(bar.left);
+    ({ bar, label } = await chart('bar', 37, true));
+    expect(label.end).toBeLessThan(bar.left);
   });
 });

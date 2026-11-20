@@ -181,8 +181,11 @@ const ROMAN: Array<[number, string]> = [
   [1, 'i'],
 ];
 
+// Fall back to decimal when a repeated-symbol label would exceed a practical length.
+const MAX_LABEL_REPEATS = 256;
+
 function roman(n: number): string {
-  if (n <= 0) return String(n);
+  if (!(n > 0 && n < 1000 * (MAX_LABEL_REPEATS + 1))) return String(n);
   let s = '';
   for (const [v, r] of ROMAN) {
     while (n >= v) {
@@ -194,7 +197,7 @@ function roman(n: number): string {
 }
 
 function letters(n: number): string {
-  if (n <= 0) return String(n);
+  if (!(n > 0 && n <= 26 * MAX_LABEL_REPEATS)) return String(n);
   // Word repeats the letter: a..z, aa..zz, aaa..
   const ch = String.fromCharCode(97 + ((n - 1) % 26));
   return ch.repeat(Math.floor((n - 1) / 26) + 1);
@@ -288,6 +291,7 @@ export function formatNumber(n: number, fmt: string): string {
     case 'decimalEnclosedFullstop':
       return `${n}.`;
     case 'chicago':
+      if (!Number.isInteger(n) || n < 1 || n > 4 * MAX_LABEL_REPEATS) return String(n);
       return ['*', '†', '‡', '§'][(n - 1) % 4].repeat(Math.floor((n - 1) / 4) + 1);
     case 'decimalFullWidth':
     case 'decimalFullWidth2':

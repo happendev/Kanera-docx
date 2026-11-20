@@ -36,13 +36,13 @@ export function sniffImage(d: Uint8Array): ImageFormat {
 /** Pixel size of an image without fully decoding it (null if unknown). */
 export function imageSize(d: Uint8Array): { width: number; height: number } | null {
   const fmt = sniffImage(d);
-  if (fmt === 'png') return { width: be32(d, 16), height: be32(d, 20) };
+  if (fmt === 'png') return d.length < 24 ? null : { width: be32(d, 16), height: be32(d, 20) };
   if (fmt === 'jpeg') {
     const info = jpegInfo(d);
     return info ? { width: info.width, height: info.height } : null;
   }
-  if (fmt === 'gif') return { width: d[6] | (d[7] << 8), height: d[8] | (d[9] << 8) };
-  if (fmt === 'bmp') return { width: le32s(d, 18), height: Math.abs(le32s(d, 22)) };
+  if (fmt === 'gif') return d.length < 10 ? null : { width: d[6] | (d[7] << 8), height: d[8] | (d[9] << 8) };
+  if (fmt === 'bmp') return d.length < 26 ? null : { width: le32s(d, 18), height: Math.abs(le32s(d, 22)) };
   return null;
 }
 
@@ -79,8 +79,9 @@ export async function toPdfImage(
       return rgba ? rgbaToPdf(rgba.width, rgba.height, rgba.data, compression) : null;
     }
     case 'bmp': {
-      const rgba = decodeBmp(d, budget);
-      return rgba ? rgbaToPdf(rgba.width, rgba.height, rgba.data, compression) : null;
+      const offset = le32s(d, 10);
+      if (offset < 14 || offset > d.length) throw new Error('BMP: invalid pixel offset');
+      return dibToPdf(d.subarray(14, offset), d.subarray(offset), compression, budget);
     }
     case 'tiff': {
       const rgba = decodeTiff(d, compression.inflateZlib, budget);
@@ -476,6 +477,8 @@ function writePixel(
 // ---------------------------------------------------------------------------------------------
 // JPEG
 
+const MAX_AUTO_JPEG_PIXELS = 4_000_000;
+
 interface JpegInfo {
   width: number;
   height: number;
@@ -553,15 +556,16 @@ function jpegInfo(d: Uint8Array, checkQuantization = false): JpegInfo | null {
 
 async function jpegToPdf(d: Uint8Array, budget: ImageBudget, quality?: number | false): Promise<PdfImage | null> {
   const info = jpegInfo(d, quality === undefined);
-  if (!info) return null;
+  // A PDF image needs a size; a frame header without one is malformed (or leaves the height to a DNL marker).
+  if (!info || !info.width || !info.height) return null;
   const colorSpace = info.components === 1 ? '/DeviceGray' : info.components === 4 ? '/DeviceCMYK' : '/DeviceRGB';
   let data = d;
   // The original stream passes through without decoding, so only the optional recompression
   // spends the pixel budget. An image too large to decode within it is embedded unchanged.
-  if (quality !== false && info.canReencode && (quality !== undefined || info.autoReencode)
-    && budget.tryReserve(info.width, info.height)) {
+  const selectedQuality = quality ?? (info.autoReencode && info.width * info.height <= MAX_AUTO_JPEG_PIXELS ? 80 : false);
+  if (selectedQuality !== false && info.canReencode && budget.tryReserve(info.width, info.height)) {
     try {
-      data = await reencodeJpeg(d, info.width, info.height, quality ?? 80);
+      data = await reencodeJpeg(d, info.width, info.height, selectedQuality);
     } catch {
       // The PDF reader can still handle JPEGs the optional recompressor cannot decode.
     }
@@ -748,43 +752,60 @@ function lzwDecode(data: Uint8Array, minCode: number, pixels: number): Uint8Arra
 // ---------------------------------------------------------------------------------------------
 // BMP
 
-function decodeBmp(d: Uint8Array, budget: ImageBudget): { width: number; height: number; data: Uint8Array } | null {
-  const offset = le32s(d, 10);
-  const headerSize = le32s(d, 14);
-  const width = le32s(d, 18);
-  const rawH = le32s(d, 22);
+export function dibToPdf(header: Uint8Array, pixels: Uint8Array, compression: Compression, budget: ImageBudget): PdfImage | null {
+  const headerSize = le32s(header, 0);
+  const width = le32s(header, 4);
+  const rawH = le32s(header, 8);
   const height = Math.abs(rawH);
-  const bpp = le16(d, 28);
-  const compression = le32s(d, 30);
-  if (d.length < 54 || headerSize < 40 || ![1, 4, 8, 24, 32].includes(bpp) || (compression !== 0 && compression !== 3)) return null;
+  const bpp = le16(header, 14);
+  const mode = le32s(header, 16);
+  if (header.length < 40 || headerSize < 40 || ![1, 4, 8, 16, 24, 32].includes(bpp) || (mode !== 0 && mode !== 3 && mode !== 6)) return null;
   budget.reserve(width, height);
   const topDown = rawH < 0;
   const stride = Math.ceil((width * bpp) / 32) * 4;
-  const palOff = 14 + headerSize;
-  if (offset < palOff || offset + height * stride > d.length) throw new Error('BMP: truncated pixel data');
-  const out = new Uint8Array(width * height * 4);
+  if (headerSize > header.length || height * stride > pixels.length) throw new Error('BMP: truncated pixel data');
+  // 16- and 32-bit pixels keep each channel under a mask. BI_BITFIELDS (3) and BI_ALPHABITFIELDS (6) give the
+  // masks after a 40-byte header or inside a larger one (alpha from the 56-byte version on); without them
+  // pixels are 5-5-5 or 8-8-8, the spare bits unused.
+  const masks = mode !== 0 && header.length >= 52
+    ? [0, 1, 2, 3].map((k) => (k < 3 || mode === 6 || headerSize >= 56 ? le32s(header, 40 + k * 4) : 0))
+    : bpp === 16 ? [0x7c00, 0x3e0, 0x1f, 0] : [0xff0000, 0xff00, 0xff, 0];
+  const shifts = masks.map((m) => (m ? 31 - Math.clz32(m & -m) : 0));
+  const level = (v: number, k: number) => {
+    const max = masks[k] >>> shifts[k];
+    return max ? Math.round((((v & masks[k]) >>> shifts[k]) * 255) / max) : 0;
+  };
+  const out = new Uint8Array(width * height * 3);
+  const alpha = (bpp === 16 || bpp === 32) && masks[3] ? new Uint8Array(width * height) : undefined;
   for (let y = 0; y < height; y++) {
-    const row = offset + (topDown ? y : height - 1 - y) * stride;
+    const row = (topDown ? y : height - 1 - y) * stride;
     for (let x = 0; x < width; x++) {
-      const o = (y * width + x) * 4;
-      if (bpp === 24 || bpp === 32) {
+      const o = (y * width + x) * 3;
+      if (bpp === 24) {
+        const p = row + x * 3;
+        out[o] = pixels[p + 2];
+        out[o + 1] = pixels[p + 1];
+        out[o + 2] = pixels[p];
+      } else if (bpp === 16 || bpp === 32) {
         const p = row + x * (bpp / 8);
-        out[o] = d[p + 2];
-        out[o + 1] = d[p + 1];
-        out[o + 2] = d[p];
-        out[o + 3] = 255;
+        const v = bpp === 16 ? le16(pixels, p) : le32s(pixels, p);
+        out[o] = level(v, 0);
+        out[o + 1] = level(v, 1);
+        out[o + 2] = level(v, 2);
+        if (alpha) alpha[o / 3] = level(v, 3);
       } else {
         const perByte = 8 / bpp;
-        const byte = d[row + Math.floor(x / perByte)];
+        const byte = pixels[row + Math.floor(x / perByte)];
         const idx = (byte >> (8 - bpp * ((x % perByte) + 1))) & ((1 << bpp) - 1);
-        const pp = palOff + idx * 4;
-        if (pp + 4 > offset) throw new Error('BMP: truncated palette');
-        out[o] = d[pp + 2];
-        out[o + 1] = d[pp + 1];
-        out[o + 2] = d[pp];
-        out[o + 3] = 255;
+        const pp = headerSize + idx * 4;
+        if (pp + 4 > header.length) throw new Error('BMP: truncated palette');
+        out[o] = header[pp + 2];
+        out[o + 1] = header[pp + 1];
+        out[o + 2] = header[pp];
       }
     }
   }
-  return { width, height, data: out };
+  // Writers often leave the alpha of opaque pixels at zero, so, as browsers do, an image with no visible pixel is opaque.
+  const translucent = alpha && alpha.some((a) => a !== 0) && alpha.some((a) => a !== 255);
+  return rgbToPdf(width, height, out, translucent ? alpha : undefined, compression);
 }

@@ -1,6 +1,6 @@
 import type { InflateBytes } from '../util/compression.js';
 import { ZipArchive, type ArchiveLimits } from '../util/zip.js';
-import { children, parseXml, type XmlElement } from '../util/xml.js';
+import { children, parseXml, XmlDepthError, type XmlElement } from '../util/xml.js';
 
 export interface Relationship {
   id: string;
@@ -14,6 +14,8 @@ export class OpcPackage {
   readonly zip: ZipArchive;
   private xmlCache = new Map<string, XmlElement | null>();
   private relsCache = new Map<string, Map<string, Relationship>>();
+
+  private contentTypes?: { overrides: Map<string, string | undefined>; defaults: Map<string, string | undefined> };
 
   constructor(data: Uint8Array, inflateRaw: InflateBytes, limits?: ArchiveLimits) {
     this.zip = new ZipArchive(data, inflateRaw, limits);
@@ -31,7 +33,8 @@ export class OpcPackage {
     if (text) {
       try {
         el = parseXml(text);
-      } catch {
+      } catch (err) {
+        if (err instanceof XmlDepthError) throw err;
         el = null;
       }
     }
@@ -40,15 +43,25 @@ export class OpcPackage {
   }
 
   contentType(part: string): string | undefined {
-    const root = this.xml('[Content_Types].xml');
+    if (!this.contentTypes) {
+      const overrides = new Map<string, string | undefined>();
+      const defaults = new Map<string, string | undefined>();
+      for (const el of children(this.xml('[Content_Types].xml'))) {
+        const local = el.name.split(':').pop();
+        const type = el.attrs.ContentType?.split(';')[0].trim().toLowerCase();
+        if (local === 'Override' && el.attrs.PartName?.startsWith('/')) {
+          const key = this.partName(el.attrs.PartName.slice(1));
+          if (!overrides.has(key)) overrides.set(key, type);
+        } else if (local === 'Default' && el.attrs.Extension !== undefined) {
+          const ext = el.attrs.Extension.toLowerCase();
+          if (!defaults.has(ext)) defaults.set(ext, type);
+        }
+      }
+      this.contentTypes = { overrides, defaults };
+    }
+    const { overrides, defaults } = this.contentTypes;
     part = this.partName(part);
-    const ext = part.split('.').pop()?.toLowerCase();
-    // The XML reader preserves unprefixed names in the OPC content-types namespace.
-    const declarations = children(root);
-    const local = (name: string) => name.split(':').pop();
-    const override = declarations.find((e) => local(e.name) === 'Override' && e.attrs.PartName?.startsWith('/') && this.partName(e.attrs.PartName.slice(1)) === part);
-    const fallback = declarations.find((e) => local(e.name) === 'Default' && e.attrs.Extension?.toLowerCase() === ext);
-    return (override ?? fallback)?.attrs.ContentType?.split(';')[0].trim().toLowerCase();
+    return overrides.has(part) ? overrides.get(part) : defaults.get(part.split('.').pop()!.toLowerCase());
   }
 
   bytes(part: string): Uint8Array | null {

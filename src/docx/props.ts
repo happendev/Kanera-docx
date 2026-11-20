@@ -177,7 +177,7 @@ export function parseRunDelta(rPr: XmlElement | undefined, ctx: PropContext): Ru
       }
       case 'w:highlight': {
         const v = el.attrs['w:val'];
-        d.highlight = v && v !== 'none' ? (HIGHLIGHT_COLORS[v] ?? hexColor(v) ?? null) : null;
+        d.highlight = v && v !== 'none' ? (Object.hasOwn(HIGHLIGHT_COLORS, v) ? HIGHLIGHT_COLORS[v] : hexColor(v) ?? null) : null;
         break;
       }
       case 'w:u': {
@@ -471,7 +471,6 @@ export function finalizeRun(d: RunDelta): RunProps {
   const r = copyDefined({ ...DEFAULT_RUN }, d);
   // A font set only for ASCII applies to hAnsi too when hAnsi is unset (Word fills them together).
   if (d.fontAscii && !d.fontHAnsi) r.fontHAnsi = d.fontAscii;
-  if (d.size !== undefined && d.sizeCs === undefined) r.sizeCs = d.sizeCs ?? r.sizeCs;
   return r;
 }
 
@@ -607,7 +606,7 @@ export function parseWidth(el: XmlElement | undefined): TableWidth | undefined {
   const raw = el.attrs['w:w'] ?? '0';
   if (type === 'pct') {
     // Either fiftieths of a percent ("5000") or an explicit percentage ("100%").
-    const v = raw.endsWith('%') ? parseFloat(raw) / 100 : (num(raw) ?? 0) / 5000;
+    const v = raw.endsWith('%') ? (num(raw.slice(0, -1)) ?? 0) / 100 : (num(raw) ?? 0) / 5000;
     return { type, value: v };
   }
   if (type === 'auto' || type === 'nil') return { type, value: 0 };

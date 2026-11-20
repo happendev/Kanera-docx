@@ -145,7 +145,11 @@ export function visualOrder(levels: number[]): number[] {
       }
       let j = i;
       while (j < order.length && levels[order[j]] >= level) j++;
-      order.splice(i, j - i, ...order.slice(i, j).reverse());
+      for (let left = i, right = j - 1; left < right; left++, right--) {
+        const first = order[left];
+        order[left] = order[right];
+        order[right] = first;
+      }
       i = j;
     }
   }

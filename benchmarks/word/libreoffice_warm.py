@@ -20,6 +20,7 @@ def libreoffice_command(workspace, output, sources):
 
 
 def batch_times(jobs, workspace, command=libreoffice_command, label='LibreOffice'):
+    """Time each job; a batch that stops early returns times for the jobs it completed."""
     output = workspace / 'pdfs'
     output.mkdir()
     sources = []
@@ -63,13 +64,18 @@ def batch_times(jobs, workspace, command=libreoffice_command, label='LibreOffice
                 except BaseException:
                     process.kill()
                     raise
-            if status or list(completed) != list(targets):
+            # A batch that stops early returns the documents it completed, so the caller can
+            # resume after the document it stopped on. Out-of-order completions are an error.
+            if list(completed) != list(targets)[:len(completed)]:
                 log.seek(0)
                 raise RuntimeError(f'{label} warm batch did not complete in input order: {log.read()}')
+            if len(completed) < len(targets):
+                print(f'{label} warm batch stopped after {len(completed)} of {len(targets)} documents (status {status})',
+                      flush=True)
     finally:
         os.close(watcher)
 
-    for name, target in targets.items():
-        (output / name).replace(target)
+    for name in completed:
+        (output / name).replace(targets[name])
     timestamps = [start, *completed.values()]
     return [(end - begin) * 1000 for begin, end in zip(timestamps, timestamps[1:])]

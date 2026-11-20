@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 from urllib.request import urlopen
@@ -17,6 +18,19 @@ BENCHMARK_FIXTURES = [
     dict(fixture, corpus='upstream', case='upstream-' + fixture['id'].replace(' ', '-'))
     for fixture in UPSTREAM['fixtures']
 ]
+
+
+@contextmanager
+def benchmark_lock(output):
+    from fcntl import LOCK_EX, LOCK_NB, flock
+
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / '.benchmark.lock').open('a') as lock:
+        try:
+            flock(lock, LOCK_EX | LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit(f'Conversion or scoring is already running in {output}') from None
+        yield
 
 
 def verify(path, digest):

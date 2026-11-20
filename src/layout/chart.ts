@@ -229,6 +229,8 @@ function literal(s: string): string {
 }
 
 function formatDate(serial: number, code: string): string {
+  // Excel's dates run from serial 0 to the end of 9999; it shows hashes for values outside them.
+  if (!(serial >= 0 && serial < 2958466)) return '#####';
   // Shown to the whole second, rounded (Excel's 0.0014 days is 12:02:01 AM).
   const ms = Math.round((serial - 25569) * 86400) * 1000;
   const d = new Date(ms);
@@ -368,7 +370,7 @@ interface Scale {
   log?: number;
 }
 
-const NICE = [1, 2, 5];
+const NICE = [1, 2, 5, 10];
 
 /**
  * Excel's automatic value axis: 5% headroom beyond the data, zero kept in unless the data sits far
@@ -378,9 +380,11 @@ const NICE = [1, 2, 5];
 function autoScale(dmin: number, dmax: number, axis: ChartAxis, length: number, spacing: number): Scale {
   if (axis.logBase) {
     const b = axis.logBase;
-    const lo = axis.min ?? b ** Math.floor(Math.log(Math.max(dmin, 1e-300)) / Math.log(b) + 1e-9);
+    const lo = axis.min !== undefined && axis.min > 0 ? axis.min : b ** Math.floor(Math.log(Math.max(dmin, 1e-300)) / Math.log(b) + 1e-9);
     const hi = axis.max ?? b ** Math.ceil(Math.log(Math.max(dmax, lo * b)) / Math.log(b) - 1e-9);
-    return { min: lo, max: Math.max(hi, lo * b), unit: axis.majorUnit ?? b, log: b };
+    const max = Math.max(hi, lo * b);
+    if (!(lo > 0 && max > lo && Number.isFinite(max))) throw new Error('Invalid logarithmic chart range');
+    return { min: lo, max, unit: axis.majorUnit ?? b, log: b };
   }
   if (!Number.isFinite(dmin) || !Number.isFinite(dmax)) {
     dmin = 0;
@@ -406,30 +410,29 @@ function autoScale(dmin: number, dmax: number, axis: ChartAxis, length: number, 
   if (axis.min !== undefined) lo = axis.min;
   if (axis.max !== undefined) hi = axis.max;
   if (hi <= lo) hi = lo + 1;
+  const range = hi - lo;
+  if (!(range > 0 && Number.isFinite(range))) throw new Error('Chart axis range exceeds numeric limits');
   let unit = axis.majorUnit;
   if (!unit) {
     const most = Math.max(1, Math.min(10, length / spacing));
-    const range = hi - lo;
-    let e = Math.floor(Math.log10(range / most)) - 1;
-    for (;;) {
-      const u = NICE.map((m) => m * 10 ** e).find((c) => range / c <= most + 1e-9);
-      if (u) {
-        unit = u;
-        break;
-      }
-      e++;
-    }
+    const power = 10 ** Math.max(-323, Math.floor(Math.log10(range) - Math.log10(most)));
+    unit = NICE.map((m) => m * power).find((c) => Number.isFinite(c) && range / c <= most + 1e-9) ?? range;
   }
   const snap = (n: number) => Math.round(n / unit! / 1e-9) * 1e-9 * unit!;
   const min = axis.min ?? snap(Math.floor(lo / unit + 1e-9) * unit);
   const max = axis.max ?? snap(Math.ceil(hi / unit - 1e-9) * unit);
-  return { min, max: max > min ? max : min + unit, unit };
+  const upper = max > min ? max : min + unit;
+  if (!(upper > min && Number.isFinite(upper - min))) throw new Error('Chart axis range exceeds numeric limits');
+  return { min, max: upper, unit };
 }
 
 function ticks(s: Scale): number[] {
   const out: number[] = [];
   if (s.log) {
-    for (let v = s.min; v <= s.max * (1 + 1e-9); v *= s.log) out.push(v);
+    for (let v = s.min; Number.isFinite(v) && v / s.max <= 1 + 1e-9; v *= s.log) {
+      if (out.length >= 1000 || v * s.log <= v) return [s.min, s.max];
+      out.push(v);
+    }
     return out;
   }
   const n = Math.round((s.max - s.min) / s.unit);
@@ -463,7 +466,7 @@ function fraction(a: AxisState, v: number): number {
   let f: number;
   if (a.scale) {
     const s = a.scale;
-    f = s.log ? Math.log(v / s.min) / Math.log(s.max / s.min) : (v - s.min) / (s.max - s.min);
+    f = s.log ? (Math.log(Math.max(s.min, v)) - Math.log(s.min)) / (Math.log(s.max) - Math.log(s.min)) : (v - s.min) / (s.max - s.min);
   } else f = a.axis.between ? (v + 0.5) / a.count : a.count > 1 ? v / (a.count - 1) : 0.5;
   return a.axis.reverse ? 1 - f : f;
 }
@@ -800,7 +803,7 @@ function labelText(l: ChartLabels, s: ChartSeries, i: number, value: number, per
 }
 
 function pointShape(s: ChartSeries, i: number): ChartShape {
-  return s.points.find((p) => p.idx === i)?.shape ?? s.shape;
+  return s.points.get(i) ?? s.shape;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -819,8 +822,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
   // Title.
   const titleOps: DrawOp[] = [];
   if (chart.title) {
-    const [, th] = titleExtent(chart.title, env);
-    const [tw] = titleExtent(chart.title, env);
+    const [tw, th] = titleExtent(chart.title, env);
     const tx = chart.title.x !== undefined ? X + chart.title.x * W + MANUAL_INSET[0] + tw / 2 : X + W / 2;
     const ty = chart.title.y !== undefined ? Y + chart.title.y * H + MANUAL_INSET[1] + th / 2 : top + th / 2;
     titleOps.push(...drawTitle(chart.title, tx, ty, env));
@@ -862,7 +864,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     for (const p of chart.plots)
       for (const s of isCartesian(p) && p.grouping !== 'stacked' && p.grouping !== 'percentStacked' ? p.series : [])
         for (const t of s.trendlines ?? []) {
-          const name = t.name ?? `${t.type === 'movingAvg' ? `${Math.round(t.order)} per. Mov. Avg.` : (TREND_NAMES[t.type] ?? 'Linear')} (${s.name})`;
+          const name = t.name ?? `${t.type === 'movingAvg' ? `${Math.round(t.order)} per. Mov. Avg.` : (Object.hasOwn(TREND_NAMES, t.type) ? TREND_NAMES[t.type] : 'Linear')} (${s.name})`;
           entries.push({ text: measure(legend.hidden.includes(entries.length) ? '' : name, legend.style, env), shape: { fill: null, line: t.line }, line: true });
         }
   }
@@ -1031,6 +1033,9 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     if (p.type === 'scatter' && cat.axis.sourceLinked && cat.format === 'General') cat.format = p.series[0]?.categoryFormat ?? 'General';
   }
 
+  // Series with no values leave their axis no data range. It still gets a scale, the one a lone 1 would
+  // give (from 0, or from 1 when logarithmic), so the chart draws, empty.
+  for (const { val: v } of pairs) if (!ranges.has(v)) ranges.set(v, [1, 1]);
   const valueAxes = [...axes.values()].filter((a) => ranges.has(a));
   const scaleAll = (plot: Rect) => {
     for (const a of valueAxes) {
@@ -1118,7 +1123,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
   for (const a of axes.values()) {
     const grid = a.axis.gridlines;
     if (!grid) continue;
-    const positions = a.scale ? ticks(a.scale).map((t) => coord(a, plot, t)) : Array.from({ length: a.count + (a.axis.between ? 1 : 0) }, (_, i) => (a.axis.between ? (a.horizontal ? plot.x + (i / a.count) * plot.w : plot.y + plot.h - (i / a.count) * plot.h) : coord(a, plot, i)));
+    const positions = a.scale ? ticks(a.scale).map((t) => coord(a, plot, t)) : Array.from({ length: a.count + (a.axis.between ? 1 : 0) }, (_, i) => (a.axis.between ? (a.horizontal ? plot.x + (i / Math.max(1, a.count)) * plot.w : plot.y + plot.h - (i / Math.max(1, a.count)) * plot.h) : coord(a, plot, i)));
     for (const p of positions) ops.push(...stroke(a.horizontal ? seg(p, plot.y, p, plot.y + plot.h) : seg(plot.x, p, plot.x + plot.w, p), grid));
   }
 
@@ -1131,6 +1136,8 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     const n = cat.count;
     const pos = (a: AxisState, x: number) => coord(a, plot, x);
     const base = Math.min(Math.max(0, v.scale!.min), v.scale!.max);
+    const totals = p.grouping === 'percentStacked' ? new Float64Array(n) : undefined;
+    if (totals) for (const series of p.series) series.values.forEach((value, i) => { totals[i] += Math.abs(value ?? 0); });
     if (p.type === 'bar') {
       const band = (cat.horizontal ? plot.w : plot.h) / Math.max(1, n);
       const stacked = p.grouping !== 'clustered';
@@ -1141,14 +1148,14 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
       const posStack = new Array(n).fill(0);
       const negStack = new Array(n).fill(0);
       p.series.forEach((s, si) => {
+        const errors = (totals ? [] : s.errorBars ?? []).map((eb) => ({ eb, ends: errorEnds(eb, s.values) }));
         for (let i = 0; i < n; i++) {
           const given = s.values[i];
           if (given === null || given === undefined) continue;
           let value: number = given;
           let from = base;
           if (stacked) {
-            let total = 1;
-            if (p.grouping === 'percentStacked') total = p.series.reduce((t, x) => t + Math.abs(x.values[i] ?? 0), 0) || 1;
+            const total = totals?.[i] || 1;
             value /= total;
             if (value >= 0) {
               from = posStack[i];
@@ -1168,14 +1175,13 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
           const r: Rect = cat.horizontal ? { x: Math.min(start, start + dir * w), y: Math.min(a0, a1), w, h: Math.abs(a1 - a0) } : { x: Math.min(a0, a1), y: Math.min(start, start + dir * w), w: Math.abs(a1 - a0), h: w };
           seriesOps.push(...paint(rectPath(r.x, r.y, r.w, r.h), pointShape(s, i)));
           // Error bars stand on the bar's end (a stack's top); a percentage stack has no scale for them.
-          if (p.grouping !== 'percentStacked')
-            for (const eb of s.errorBars ?? []) {
-              const e = errorEnds(eb, s.values)[i];
-              if (!e) continue;
-              const c = start + (dir * w) / 2;
-              const at = (x: number): [number, number] => (cat.horizontal ? [c, pos(v, x + value - given)] : [pos(v, x + value - given), c]);
-              errorOps.push(...errorBarOps(eb, at(e[0]), at(e[1]), cat.horizontal));
-            }
+          for (const { eb, ends } of errors) {
+            const e = ends[i];
+            if (!e) continue;
+            const c = start + (dir * w) / 2;
+            const at = (x: number): [number, number] => (cat.horizontal ? [c, pos(v, x + value - given)] : [pos(v, x + value - given), c]);
+            errorOps.push(...errorBarOps(eb, at(e[0]), at(e[1]), cat.horizontal));
+          }
           const l = s.labels;
           if (l && !l.hidden?.includes(i)) {
             const raw = s.values[i]!;
@@ -1183,17 +1189,18 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
             const where = l.position ?? (stacked ? 'ctr' : 'outEnd');
             const g = l.style.size * 0.4;
             const end = a1;
-            const sgn = (cat.horizontal ? -1 : 1) * (a1 >= a0 ? 1 : -1) * (v.axis.reverse ? 1 : 1);
+            // Which way the bar grows on the page (+1 down or right): a negative value or a reversed axis turns it.
+            const out = (raw >= 0 ? 1 : -1) * (v.axis.reverse ? -1 : 1) * (cat.horizontal ? -1 : 1);
             const mid = cat.horizontal ? r.x + r.w / 2 : r.y + r.h / 2;
             const along = where === 'ctr' ? (a0 + a1) / 2 : where === 'inBase' ? a0 : end;
             const off = where === 'outEnd' ? g : where === 'inEnd' ? -g : where === 'inBase' ? g : 0;
             if (cat.horizontal) {
-              const y = along - (raw >= 0 ? 1 : -1) * off;
-              const ay = where === 'ctr' ? 0.5 : (raw >= 0) === (where === 'outEnd') ? 1 : 0;
+              const y = along + out * off;
+              const ay = where === 'ctr' ? 0.5 : (out < 0) === (where === 'outEnd') ? 1 : 0;
               labelOps.push(...place(t, l.style.color, mid, y, 0.5, where === 'inBase' ? 1 - ay : ay));
             } else {
-              const x = along + (raw >= 0 ? 1 : -1) * off * Math.sign(sgn || 1);
-              const ax = where === 'ctr' ? 0.5 : (raw >= 0) === (where === 'outEnd') ? 0 : 1;
+              const x = along + out * off;
+              const ax = where === 'ctr' ? 0.5 : (out > 0) === (where === 'outEnd') ? 0 : 1;
               labelOps.push(...place(t, l.style.color, x, mid, where === 'inBase' ? 1 - ax : ax, 0.5));
             }
           }
@@ -1216,8 +1223,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
           }
           let value: number = given;
           if (stacked) {
-            let total = 1;
-            if (p.grouping === 'percentStacked') total = p.series.reduce((t, x) => t + Math.abs(x.values[i] ?? 0), 0) || 1;
+            const total = totals?.[i] || 1;
             acc[i] += value / total;
             value = acc[i];
           }
@@ -1253,11 +1259,11 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
         }
         if (p.type === 'area') {
           const top = pts.map((pt, i) => pt ?? [pos(cat, i), pos(v, base)]) as Array<[number, number]>;
-          const bottomLine = stacked && si > 0 ? [...prevLine].reverse() : [
-            [top[top.length - 1][0], pos(v, base)] as [number, number],
-            [top[0][0], pos(v, base)] as [number, number],
-          ];
           if (top.length) {
+            const bottomLine = stacked && si > 0 ? [...prevLine].reverse() : [
+              [top[top.length - 1][0], pos(v, base)] as [number, number],
+              [top[0][0], pos(v, base)] as [number, number],
+            ];
             const segs: PathSeg[] = [{ op: 'M', pts: top[0] }, ...top.slice(1).map((q): PathSeg => ({ op: 'L', pts: q })), ...bottomLine.map((q): PathSeg => ({ op: 'L', pts: q })), { op: 'Z', pts: [] }];
             seriesOps.push(...paint(segs, s.shape));
           }
@@ -1272,8 +1278,8 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
         }
         pts.forEach((pt, i) => {
           if (!pt) return;
-          const own = s.points.find((q) => q.idx === i);
-          if (s.marker) markerOps.push(...drawMarker(own ? { ...s.marker, shape: { fill: own.shape.fill ?? s.marker.shape.fill, line: own.shape.line ?? s.marker.shape.line } } : s.marker, pt[0], pt[1]));
+          const own = s.points.get(i);
+          if (s.marker) markerOps.push(...drawMarker(own ? { ...s.marker, shape: { fill: own.fill ?? s.marker.shape.fill, line: own.line ?? s.marker.shape.line } } : s.marker, pt[0], pt[1]));
           const l = s.labels;
           if (l && !l.hidden?.includes(i) && s.values[i] !== null) {
             const t = measure(labelText(l, s, i, s.values[i]!, undefined, cat.labels[i] ?? ''), l.style, env);
@@ -1298,8 +1304,12 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     });
     seriesOps.push(...stroke([{ op: 'M', pts: xy[0] }, ...xy.slice(1).map((q): PathSeg => ({ op: 'L', pts: q }))], t.line));
   }
-  seriesOps.push(...errorOps);
-  if (seriesOps.length) ops.push({ kind: 'clip', x: plot.x, y: plot.y, w: plot.w, h: plot.h }, ...seriesOps, { kind: 'restore' });
+  if (seriesOps.length || errorOps.length) {
+    ops.push({ kind: 'clip', x: plot.x, y: plot.y, w: plot.w, h: plot.h });
+    for (const op of seriesOps) ops.push(op);
+    for (const op of errorOps) ops.push(op);
+    ops.push({ kind: 'restore' });
+  }
 
   // Pie and doughnut plots fill the plot area's largest centred circle.
   for (const p of chart.plots) {
@@ -1355,8 +1365,15 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     const lh = Math.max(0, ...catText.map((t) => t.height));
     const r = Math.max(1, Math.min(plot.w / 2 - (lw && lw + gap), plot.h / 2 - (lh && lh + gap)));
     const [cx, cy] = [plot.x + plot.w / 2, plot.y + plot.h / 2];
-    const vals = p.series.flatMap((s) => s.values).filter((x): x is number => x !== null);
-    const scale = autoScale(Math.min(...vals), Math.max(...vals), valAx, r, 1.5 * valAx.style.size);
+    let low = Infinity;
+    let high = -Infinity;
+    for (const s of p.series) for (const value of s.values) {
+      if (value !== null) {
+        low = Math.min(low, value);
+        high = Math.max(high, value);
+      }
+    }
+    const scale = autoScale(low, high, valAx, r, 1.5 * valAx.style.size);
     const angle = (i: number) => ((-90 + (360 * i) / n) * Math.PI) / 180;
     const at = (i: number, v: number): [number, number] => {
       const d = r * Math.max(0, (v - scale.min) / (scale.max - scale.min));
@@ -1375,8 +1392,8 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
       else if (s.shape.line && shown.length > 1) ops.push(...stroke(pts.every((q) => q) ? ring(shown) : shown.map((q, k): PathSeg => ({ op: k ? 'L' : 'M', pts: q })), s.shape.line));
       pts.forEach((q, i) => {
         if (!q) return;
-        const own = s.points.find((x) => x.idx === i);
-        if (s.marker) markerOps.push(...drawMarker(own ? { ...s.marker, shape: { fill: own.shape.fill ?? s.marker.shape.fill, line: own.shape.line ?? s.marker.shape.line } } : s.marker, q[0], q[1]));
+        const own = s.points.get(i);
+        if (s.marker) markerOps.push(...drawMarker(own ? { ...s.marker, shape: { fill: own.fill ?? s.marker.shape.fill, line: own.line ?? s.marker.shape.line } } : s.marker, q[0], q[1]));
         const l = s.labels;
         if (l && !l.hidden?.includes(i)) labelOps.push(...place(measure(labelText(l, s, i, s.values[i]!, undefined, names[i]), l.style, env), l.style.color, q[0] + (s.marker ? s.marker.size / 2 : 0) + 2, q[1], 0, 0.5));
       });
@@ -1404,7 +1421,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     if (a.axis.line) ops.push(...stroke(a.horizontal ? seg(along[0], a.at, along[1], a.at) : seg(a.at, along[0], a.at, along[1]), a.axis.line));
     // Labels and outside ticks face away from the plot: down and left for bottom and left axes.
     const outward = a.axis.position === 'b' || a.axis.position === 'r' ? 1 : -1;
-    const tickPos = a.scale ? ticks(a.scale).map((t) => coord(a, plot, t)) : Array.from({ length: a.count + (a.axis.between ? 1 : 0) }, (_, i) => (a.axis.between ? (a.horizontal ? plot.x + (i / a.count) * plot.w : plot.y + plot.h - (i / a.count) * plot.h) : coord(a, plot, i)));
+    const tickPos = a.scale ? ticks(a.scale).map((t) => coord(a, plot, t)) : Array.from({ length: a.count + (a.axis.between ? 1 : 0) }, (_, i) => (a.axis.between ? (a.horizontal ? plot.x + (i / Math.max(1, a.count)) * plot.w : plot.y + plot.h - (i / Math.max(1, a.count)) * plot.h) : coord(a, plot, i)));
     const t0 = a.axis.majorTick === 'in' ? -TICK : a.axis.majorTick === 'cross' ? -TICK : 0;
     const t1 = a.axis.majorTick === 'out' || a.axis.majorTick === 'cross' ? TICK : 0;
     if (a.axis.line && a.axis.majorTick !== 'none')
@@ -1450,7 +1467,8 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
       else ops.push(...drawTitle(t, line + out * (ext + w / 2), plot.y + plot.h / 2, env));
     }
   }
-  ops.push(...markerOps, ...labelOps, ...titleOps, ...legendOps, { kind: 'restore' });
+  for (const layer of [markerOps, labelOps, titleOps, legendOps]) for (const op of layer) ops.push(op);
+  ops.push({ kind: 'restore' });
   return ops;
 }
 

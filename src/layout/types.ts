@@ -81,6 +81,28 @@ export interface PathOp {
   nonzero?: boolean;
 }
 
+/** Where a shading's colour runs from position 0 to 1. */
+export type ShadeGeometry =
+  /** Along the axis from (x0, y0) to (x1, y1), and on beyond both ends. */
+  | { type: 'axial'; x0: number; y0: number; x1: number; y1: number }
+  /** Out from the centre to the ellipse with radii (rx, ry), and on beyond it. */
+  | { type: 'radial'; cx: number; cy: number; rx: number; ry: number }
+  /** Out from the inner rectangle to the outer one, in rectangular rings ([left, top, right, bottom]). */
+  | { type: 'rect'; inner: [number, number, number, number]; outer: [number, number, number, number] };
+
+/** A smooth gradient painted over the current clip, within `bbox` ([left, top, right, bottom]). */
+export interface ShadeOp {
+  kind: 'shade';
+  geometry: ShadeGeometry;
+  bbox: [number, number, number, number];
+  /** Colours (RRGGBB) at evenly spaced positions from 0 to 1. */
+  colors: string[];
+  /** Opacity at the same positions, where it varies. */
+  alphas?: number[];
+  /** Opacity throughout, where it doesn't. */
+  alpha?: number;
+}
+
 /** Save state and apply a transform (rotation/flip about a centre); paired with 'restore'. */
 export interface TransformOp {
   kind: 'transform';
@@ -132,7 +154,11 @@ export interface FloatOp {
   cell?: { x: number; y: number; w: number; h: number };
 }
 
-export type DrawOp = GlyphOp | RectOp | LineOp | ImageOp | PathOp | TransformOp | ClipOp | RestoreOp | LinkOp | AnchorOp | FloatOp;
+export type DrawOp = GlyphOp | RectOp | LineOp | ImageOp | PathOp | ShadeOp | TransformOp | ClipOp | RestoreOp | LinkOp | AnchorOp | FloatOp;
+
+export function appendOps(target: DrawOp[], ops: readonly DrawOp[]): void {
+  for (const op of ops) target.push(op);
+}
 
 export interface Page {
   width: number;
@@ -168,6 +194,15 @@ export function translateOp(op: DrawOp, dx: number, dy: number): DrawOp {
       return { ...op, x: op.x + dx, y: op.y + dy, cell: op.cell && { ...op.cell, x: op.cell.x + dx, y: op.cell.y + dy } };
     case 'line':
       return { ...op, x1: op.x1 + dx, y1: op.y1 + dy, x2: op.x2 + dx, y2: op.y2 + dy };
+    case 'shade': {
+      const g = op.geometry;
+      const rect = ([l, t, r, b]: [number, number, number, number]): [number, number, number, number] => [l + dx, t + dy, r + dx, b + dy];
+      const geometry: ShadeGeometry =
+        g.type === 'axial' ? { ...g, x0: g.x0 + dx, y0: g.y0 + dy, x1: g.x1 + dx, y1: g.y1 + dy }
+        : g.type === 'radial' ? { ...g, cx: g.cx + dx, cy: g.cy + dy }
+        : { type: 'rect', inner: rect(g.inner), outer: rect(g.outer) };
+      return { ...op, geometry, bbox: rect(op.bbox) };
+    }
     case 'path':
       return {
         ...op,

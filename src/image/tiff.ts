@@ -80,7 +80,8 @@ export function decodeTiff(d: Uint8Array, inflateZlib: InflateBytes, budget = ne
     const rows = tiled ? tileH : Math.min(tileH, height - y0);
     let buf: Uint8Array | null;
     try {
-      buf = compression === 1 ? raw : compression === 5 ? lzw(raw, rowBytes * rows) : compression === 32773 ? packBits(raw, rowBytes * rows) : inflateZlib(raw, rowBytes * rows);
+      // Prediction is undone in place: uncompressed rows are copied, not written into the caller's bytes.
+      buf = compression === 1 ? (predictor === 2 ? raw.slice() : raw) : compression === 5 ? lzw(raw, rowBytes * rows) : compression === 32773 ? packBits(raw, rowBytes * rows) : inflateZlib(raw, rowBytes * rows);
     } catch {
       buf = null;
     }
@@ -118,27 +119,40 @@ export function decodeTiff(d: Uint8Array, inflateZlib: InflateBytes, budget = ne
   const out = new Uint8Array(width * height * 4);
   const premultiplied = extra === 1;
   for (let i = 0; i < width * height; i++) {
-    const p = samples.subarray(i * spp, i * spp + spp);
+    const p = i * spp;
+    const first = samples[p];
     let r: number, g: number, b: number;
     let a = 255;
     if (photometric === 2) {
-      [r, g, b] = [p[0], p[1] ?? p[0], p[2] ?? p[0]];
-      if (spp > 3) a = p[3];
+      r = first;
+      g = spp > 1 ? samples[p + 1] : first;
+      b = spp > 2 ? samples[p + 2] : first;
+      if (spp > 3) a = samples[p + 3];
     } else if (photometric === 3 && map) {
       const n = map.length / 3;
-      r = map[p[0]] >> 8;
-      g = map[n + p[0]] >> 8;
-      b = map[2 * n + p[0]] >> 8;
+      r = map[first] >> 8;
+      g = map[n + first] >> 8;
+      b = map[2 * n + first] >> 8;
     } else if (photometric === 5) {
-      const k = 255 - p[3];
-      [r, g, b] = [((255 - p[0]) * k) / 255, ((255 - p[1]) * k) / 255, ((255 - p[2]) * k) / 255];
-      if (spp > 4) a = p[4];
+      if (spp < 4) return null;
+      const k = 255 - samples[p + 3];
+      r = ((255 - first) * k) / 255;
+      g = ((255 - samples[p + 1]) * k) / 255;
+      b = ((255 - samples[p + 2]) * k) / 255;
+      if (spp > 4) a = samples[p + 4];
     } else {
-      r = g = b = photometric === 0 ? 255 - p[0] : p[0];
-      if (spp > 1) a = p[1];
+      r = g = b = photometric === 0 ? 255 - first : first;
+      if (spp > 1) a = samples[p + 1];
     }
-    if (premultiplied && a > 0 && a < 255) [r, g, b] = [(r * 255) / a, (g * 255) / a, (b * 255) / a];
-    out.set([Math.min(255, r), Math.min(255, g), Math.min(255, b), a], i * 4);
+    if (premultiplied && a > 0 && a < 255) {
+      r = (r * 255) / a;
+      g = (g * 255) / a;
+      b = (b * 255) / a;
+    }
+    out[i * 4] = Math.min(255, r);
+    out[i * 4 + 1] = Math.min(255, g);
+    out[i * 4 + 2] = Math.min(255, b);
+    out[i * 4 + 3] = a;
   }
   return { width, height, data: out };
 }

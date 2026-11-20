@@ -2,32 +2,41 @@
 
 from argparse import ArgumentParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 import csv
+from datetime import datetime, timezone
 from functools import partial
-from hashlib import file_digest
+from hashlib import file_digest, sha256
 import json
-from os import cpu_count, getuid
+from os import cpu_count, environ, getuid
 from pathlib import Path
-from shutil import copyfile, copyfileobj, copytree
+from queue import SimpleQueue
+from shutil import copyfile, copyfileobj, copytree, which
+from socket import socketpair
 from statistics import mean
 import subprocess
 import sys
-from tempfile import NamedTemporaryFile, TemporaryDirectory, gettempdir
+from tempfile import NamedTemporaryFile, TemporaryDirectory, TemporaryFile, gettempdir
 from time import sleep
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import urlopen
+from zipfile import BadZipFile, ZipFile
 
 import numpy
 import PIL
+from PIL import Image
 
 from fetch import CORPUS, HERE, MANIFEST, UPSTREAM, UPSTREAM_DIR, load_upstream
 from ink import DPI, INK_THRESHOLD, INK_TOLERANCE_PX, page_scores, render, render_reference
+from readme import update_accuracy_readme
 
 ROOT = HERE.parents[1]
 REVISION = MANIFEST['revision']
 MANIFEST_SHA256 = '1682abfccf34d12f9da8dfff9f18087580e90065f0c3397d83321657a6458848'
 CACHE = Path(gettempdir()) / f'kanera-docx-word-{getuid()}' / REVISION
+REFERENCE_CACHE = ROOT / 'out' / 'word-reference-rasters'
+CONVERSION_TIMEOUT = 180
 EXPECTED_DOCUMENTS = 2925
 # Word exported the corpus's tracked changes and comments in markup view (struck-through deletions,
 # comment balloons on a shrunken page). docx2pdf renders the final text without comments, so only
@@ -107,6 +116,7 @@ def load_corpus(cache):
         if digests[row['docx']] != row['sha256'] or row['pdf'] not in digests:
             raise ValueError(f"Inconsistent source manifest for {row['stem']}")
         row['reference_application'] = 'Microsoft Word for Mac'
+        row['pdf_sha256'] = digests[row['pdf']]
     rows = [row for row in rows if row['state'] == 'clean' and row['id'] not in UNBUNDLED_SCRIPTS]
     if len(rows) != SCORED_DOCUMENTS:
         raise ValueError('Unexpected number of clean documents in the index')
@@ -133,17 +143,126 @@ def build_renderer(workspace):
         copyfile(ROOT / name, workspace / name)
     for name in ('src', 'fonts'):
         copytree(ROOT / name, workspace / name)
+    copyfile(HERE / 'accuracy-worker.mjs', workspace / 'accuracy-worker.mjs')
     (workspace / 'node_modules').symlink_to(ROOT / 'node_modules', target_is_directory=True)
     subprocess.run(['pnpm', '--config.verify-deps-before-run=false', 'run', 'build'],
                    cwd=workspace, stdout=sys.stderr, check=True)
 
 
-def score_document(row, corpus, directory, workspace):
+def stop_worker(process):
+    process.kill()
+    process.wait()
+
+
+class RendererWorker:
+    def __init__(self, workspace):
+        self.command = ['node', workspace / 'accuracy-worker.mjs']
+        self.resources = None
+
+    def start(self):
+        with ExitStack() as resources:
+            self.channel, child = socketpair()
+            resources.enter_context(self.channel)
+            self.diagnostics = resources.enter_context(TemporaryFile())
+            with child:
+                process = subprocess.Popen(self.command, stdin=child, stdout=child, stderr=self.diagnostics)
+            resources.callback(stop_worker, process)
+            self.channel.settimeout(CONVERSION_TIMEOUT)
+            self.responses = resources.enter_context(self.channel.makefile('rb'))
+            self.resources = resources.pop_all()
+
+    def close(self):
+        if self.resources is not None:
+            self.resources.close()
+            self.resources = None
+
+    def convert(self, source, candidate):
+        try:
+            if self.resources is None:
+                self.start()
+            self.channel.sendall(json.dumps([str(source), str(candidate)]).encode() + b'\n')
+            reply = self.responses.readline()
+            if not reply:
+                self.diagnostics.seek(0)
+                message = self.diagnostics.read().decode(errors='replace').strip()
+                raise RuntimeError(message or 'Node conversion worker exited without a response')
+            response = json.loads(reply)
+            if not isinstance(response, dict):
+                raise RuntimeError('Invalid Node conversion worker response')
+            if 'error' in response:
+                raise RuntimeError(response['error'])
+        except TimeoutError as error:
+            self.close()
+            raise subprocess.TimeoutExpired(self.command, CONVERSION_TIMEOUT) from error
+        except (OSError, RuntimeError, ValueError) as error:
+            self.close()
+            raise RuntimeError(str(error)) from error
+
+
+def reference_settings(environment):
+    # Poppler can substitute local fonts for fonts missing from a PDF.
+    renderer = Path(which('pdftoppm')).resolve()
+    paths = {renderer}
+    if which('fc-list'):
+        paths.update(Path(name) for name in run(['fc-list', '-f', '%{file}\n']).stdout.splitlines() if name)
+    if which('fc-conflist'):
+        for line in run(['fc-conflist']).stdout.splitlines():
+            if line.startswith('+ '):
+                paths.add(Path(line[2:].split(':', 1)[0]))
+    stats = []
+    for path in sorted(paths):
+        if path.is_file():
+            stat = path.stat()
+            stats.append((str(path), stat.st_size, stat.st_mtime_ns))
+    font_env = [environ.get(key) for key in ('FONTCONFIG_FILE', 'FONTCONFIG_PATH', 'XDG_CONFIG_HOME')]
+    # Version the on-disk cache alongside the rendering settings.
+    settings = (1, DPI, environment['poppler'], environment['pillow'], stats, font_env)
+    return sha256(json.dumps(settings).encode()).hexdigest()
+
+
+def cached_reference(cache, settings, directory, row, work):
+    source = (row['pdf_sha256'] if 'pdf' in row else
+              [row['reference_dpi'], [page['sha256'] for page in row['reference_images']]])
+    key = sha256(json.dumps([settings, source]).encode()).hexdigest()
+    entry = cache / f'{key}.zip'
+    try:
+        with ZipFile(entry) as archive:
+            pages = [work / f'reference-{number}.png' for number in range(1, len(archive.infolist()) + 1)]
+            if pages and archive.namelist() == [page.name for page in pages]:
+                for page in pages:
+                    with archive.open(page.name) as packed, page.open('wb') as target:
+                        copyfileobj(packed, target)
+                return pages
+    except (FileNotFoundError, BadZipFile):
+        pass
+
+    with TemporaryDirectory(dir=work) as raw_dir:
+        raw = render_reference(directory, row, Path(raw_dir), raster_format='ppm')
+        if not raw:
+            raise RuntimeError(f"No reference pages for {row['id']}")
+        pages = []
+        with NamedTemporaryFile(dir=cache, delete=False) as temporary:
+            staged = Path(temporary.name)
+            try:
+                with ZipFile(temporary, 'w') as archive:
+                    for number, image in enumerate(raw, 1):
+                        page = work / f'reference-{number}.png'
+                        with Image.open(image) as source:
+                            source.convert('L').save(page, compress_level=1)
+                        archive.write(page, page.name)
+                        pages.append(page)
+                # Publish all pages together, even if two runs render the same reference.
+                temporary.close()
+                staged.replace(entry)
+            finally:
+                staged.unlink(missing_ok=True)
+    return pages
+
+
+def score_document(row, corpus, directory, workspace, raster_cache, settings, workers):
     with TemporaryDirectory(dir=workspace) as temporary:
         work = Path(temporary)
-        reference = render_reference(directory, row, work / 'reference')
-        if not reference:
-            raise RuntimeError(f"No reference pages for {row['id']}")
+        reference = cached_reference(raster_cache, settings, directory, row, work)
         candidate = work / 'candidate.pdf'
         result = {
             'corpus': corpus, 'suite': row.get('suite', 'full'), 'id': row['id'],
@@ -155,9 +274,12 @@ def score_document(row, corpus, directory, workspace):
             'pages': 0, 'ink_overlap_pct': 0.0, 'error': None,
         }
         try:
-            run(['node', workspace / 'dist/cli.js', directory / row['docx'], candidate, '--quiet'],
-                timeout=180)
-            pages = render(candidate, work / 'candidate')
+            worker = workers.get()
+            try:
+                worker.convert(directory / row['docx'], candidate)
+            finally:
+                workers.put(worker)
+            pages = render(candidate, work / 'candidate', raster_format='ppm')
         except (RuntimeError, subprocess.SubprocessError) as error:
             result['error'] = str(error)
             return result
@@ -198,6 +320,8 @@ def main():
                         help='Reference corpus to run (default: %(default)s)')
     parser.add_argument('--cache-dir', type=Path, default=CACHE,
                         help='Directory containing the Hugging Face word/ files (default: %(default)s)')
+    parser.add_argument('--reference-cache-dir', type=Path, default=REFERENCE_CACHE,
+                        help='Directory for rendered reference pages (default: %(default)s)')
     parser.add_argument('--out', type=Path, default=ROOT / 'out/word-accuracy.json',
                         help='JSON report path (default: %(default)s)')
     parser.add_argument('--baseline', type=Path,
@@ -227,6 +351,9 @@ def main():
         'numpy': numpy.__version__,
         'pillow': PIL.__version__,
     }
+    raster_cache = args.reference_cache_dir.resolve()
+    raster_cache.mkdir(parents=True, mode=0o700, exist_ok=True)
+    settings = reference_settings(environment)
     corpora = {}
     if 'upstream' in sources:
         print('Verifying the vendored corpus', file=sys.stderr, flush=True)
@@ -241,19 +368,27 @@ def main():
             pass
         corpora['huggingface'] = (cache, documents)
 
-    with TemporaryDirectory(prefix='kanera-docx-accuracy-') as temporary:
+    with TemporaryDirectory(prefix='kanera-docx-accuracy-') as temporary, ExitStack() as resources:
         workspace = Path(temporary)
         print('Building the current renderer', file=sys.stderr, flush=True)
         build_renderer(workspace)
+        workers = SimpleQueue()
+        for _ in range(args.jobs):
+            worker = RendererWorker(workspace)
+            resources.callback(worker.close)
+            workers.put(worker)
         results = []
         by_corpus = {}
         for corpus, (directory, documents) in corpora.items():
-            score = partial(score_document, corpus=corpus, directory=directory, workspace=workspace)
+            score = partial(score_document, corpus=corpus, directory=directory, workspace=workspace,
+                            raster_cache=raster_cache, settings=settings, workers=workers)
             scored = sorted(process_all(score, documents, args.jobs, f'Scored {corpus}'),
                             key=lambda row: row['id'])
             results.extend(scored)
             by_corpus[corpus] = summarize(scored)
+    completed_at = datetime.now(timezone.utc)
     report = {
+        'completed_at': completed_at.isoformat(),
         'sources': sources,
         'metric': METRIC,
         'environment': environment,
@@ -265,6 +400,8 @@ def main():
         report['change_pp'] = report['accuracy_pct'] - baseline['accuracy_pct']
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+    if args.corpus == 'all':
+        update_accuracy_readme(HERE.parents[1], report, completed_at.date().isoformat())
     print(f"Accuracy {report['accuracy_pct']:.2f}% across {report['documents']} documents "
           f"and {report['reference_pages']} reference pages ({report['conversion_failures']} conversion failures).")
     if baseline is not None:

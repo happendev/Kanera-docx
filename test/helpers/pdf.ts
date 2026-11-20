@@ -86,3 +86,26 @@ export function pdfStreams(pdf: Uint8Array): string[] {
   }
   return out;
 }
+
+/** Page 1 rendered by Ghostscript at `dpi`, as RGB bytes. */
+export function ghostscriptPixels(pdf: Uint8Array, dpi = 72): { width: number; height: number; rgb: Uint8Array; at: (x: number, y: number) => [number, number, number] } {
+  const dir = mkdtempSync(join(tmpdir(), 'docx2pdf-test-'));
+  try {
+    const file = join(dir, 'in.pdf');
+    writeFileSync(file, pdf);
+    execFileSync('gs', ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=ppmraw', `-r${dpi}`, '-dFirstPage=1', '-dLastPage=1', `-sOutputFile=${join(dir, 'p.ppm')}`, file], { stdio: 'ignore' });
+    const ppm = readFileSync(join(dir, 'p.ppm'));
+    // The header may carry comment lines (Ghostscript names itself in one).
+    const head = /^P6\s+(?:#[^\n]*\n\s*)*(\d+)\s+(\d+)\s+255\s/.exec(ppm.subarray(0, 256).toString('latin1'))!;
+    const [width, height] = [Number(head[1]), Number(head[2])];
+    const rgb = new Uint8Array(ppm.subarray(head[0].length));
+    // (x, y) in points from the page's top left.
+    const at = (x: number, y: number): [number, number, number] => {
+      const i = (Math.floor((y * dpi) / 72) * width + Math.floor((x * dpi) / 72)) * 3;
+      return [rgb[i], rgb[i + 1], rgb[i + 2]];
+    };
+    return { width, height, rgb, at };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}

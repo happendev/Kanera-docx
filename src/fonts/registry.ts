@@ -4,6 +4,7 @@ import {
   ARABIC_SAMPLE,
   GENERIC_FALLBACKS,
   arabicWidth,
+  boldByName,
   cjkFallbackLine,
   cjkFallbacks,
   cjkLineMetrics,
@@ -13,12 +14,13 @@ import {
   halfWidthLatin,
   normalizeFamily,
   ownArabicHebrew,
+  proportionalKana,
   substituteFamilies,
   unstyledFamily,
   type FontTableHints,
   type GenericFamily,
 } from './substitutes.js';
-import { singleSubstitutions } from './gsub.js';
+import { singleAdjustments, singleSubstitutions, type FeatureBudget } from './gsub.js';
 import { mapSymbolChar, mathLetter, symbolFontKind, symbolLookalike, type SymbolFontKind } from './symbol-map.js';
 
 export type FontOrigin = 'embedded' | 'user' | 'system' | 'bundled';
@@ -57,7 +59,14 @@ export class BundledFontData {
 
 type LoadedFont = FontBytes | BundledFontData;
 
-let nextFaceId = 1;
+interface CachedFeature<T> {
+  values: Map<number, T>;
+  work: number;
+}
+type Adjustment = { x: number; advance: number };
+const substitutions = new WeakMap<SfntFont, Map<string, CachedFeature<number>>>();
+const adjustments = new WeakMap<SfntFont, Map<string, CachedFeature<Adjustment>>>();
+const sampleWidths = new WeakMap<SfntFont, number>();
 
 /** Spaces and hyphens the shaper draws with the face's own space or hyphen when it lacks them, so the
  * text keeps its font (and line metrics) rather than falling back to another. */
@@ -68,7 +77,8 @@ function synthesized(font: SfntFont, cp: number): boolean {
 }
 
 export class FontFace {
-  readonly id: string;
+  private readonly chargedFeatures = new Set<string>();
+  private readonly budget: FontBudget;
   readonly families: string[];
   readonly bold: boolean;
   readonly italic: boolean;
@@ -84,7 +94,7 @@ export class FontFace {
     extraFamilies: string[] = [],
     private sharedKerning?: { cost: FontBudget; target: FontBudget },
   ) {
-    this.id = `F${nextFaceId++}`;
+    this.budget = sharedKerning?.target ?? font.budget;
     const names = new Set<string>();
     for (const n of [font.names.family, font.names.typographicFamily, font.names.fullName, font.names.postscriptName, ...font.names.all, ...extraFamilies])
       if (n) names.add(normalizeFamily(n));
@@ -104,6 +114,41 @@ export class FontFace {
       const hheaHeight = font.hheaAscender - font.hheaDescender;
       this.externalLeading = Math.max(0, font.hheaLineGap - (font.winAscent + font.winDescent - hheaHeight)) / upm;
     }
+  }
+
+  private feature<T>(
+    tag: string, name: string, cache: WeakMap<SfntFont, Map<string, CachedFeature<T>>>,
+    parse: (data: Uint8Array, name: string, budget: FeatureBudget, numGlyphs: number) => Map<number, T>,
+  ): Map<number, T> {
+    let features = cache.get(this.font);
+    if (!features) cache.set(this.font, (features = new Map()));
+    const key = tag + name;
+    const cached = features.get(name);
+    if (cached) {
+      if (!this.chargedFeatures.has(key)) {
+        this.budget.reserveFeatureWork(cached.work);
+        this.chargedFeatures.add(key);
+      }
+      return cached.values;
+    }
+    let work = 0;
+    const meter = { reserveFeatureWork: (n: number) => {
+      this.budget.reserveFeatureWork(n);
+      work += n;
+    } };
+    const data = this.font.tableBytes(tag);
+    const values = data ? parse(data, name, meter, this.font.numGlyphs) : new Map<number, T>();
+    features.set(name, { values, work });
+    this.chargedFeatures.add(key);
+    return values;
+  }
+
+  substitutions(name: string): Map<number, number> {
+    return this.feature('GSUB', name, substitutions, singleSubstitutions);
+  }
+
+  adjustments(name: string): Map<number, Adjustment> {
+    return this.feature('GPOS', name, adjustments, singleAdjustments);
   }
 
   kerning(left: number, right: number): number {
@@ -165,6 +210,11 @@ export interface ResolvedFace {
   fullWidth?: Map<number, number>;
   /** Glyph size relative to the text's, for a fallback drawn to the width of the font it stands in for. */
   glyphScale?: number;
+  /**
+   * Set when a stand-in draws a Japanese font with proportional kana and punctuation: by character,
+   * how far (em) to move each glyph and change its advance (OpenType palt).
+   */
+  proportional?: Map<number, { x: number; advance: number }>;
 }
 
 const ORIGIN_RANK: Record<FontOrigin, number> = { embedded: 1, user: 0, system: 2, bundled: 3 };
@@ -189,11 +239,16 @@ export class FontRegistry {
   private resolveCache = new Map<string, ResolvedFace>();
   private glyphCache = new Map<string, ResolvedFace>();
   private fallbackLines = new WeakMap<ResolvedFace, ResolvedFace>();
-  private sampleWidths = new WeakMap<FontFace, number>();
+  private proportionalFaces = new WeakMap<ResolvedFace, ResolvedFace>();
+  private proportionalCache?: Map<number, { x: number; advance: number }>;
+  private paltCache = new WeakMap<FontFace, Map<number, { x: number; advance: number }>>();
   private widthFormCache = new WeakMap<FontFace, { half: Map<number, number>; full: Map<number, number> }>();
   private symbolCache = new Map<string, number>();
   readonly hints = new Map<string, FontTableHints>();
   readonly warnings = new Set<string>();
+
+  /** Equations measure outline bounds during layout, before the PDF glyph set is known. */
+  constructor(readonly needsGlyphBounds = false) {}
 
   add(source: FontSourceOptions<LoadedFont>, origin: FontOrigin): void {
     const extra = source.family ? (Array.isArray(source.family) ? source.family : [source.family]) : [];
@@ -330,7 +385,7 @@ export class FontRegistry {
    * `missing`, a loaded face that lacks those characters doesn't end the search among faces of the
    * same style: two sources of one family can cover different characters.
    */
-  private async prepareFamily(family: string, bold: boolean, italic: boolean, missing?: number[]): Promise<boolean> {
+  private *familySources(family: string, bold: boolean, italic: boolean, missing?: number[]): Generator<PendingFont> {
     let candidates = this.pending.filter((p) => !p.loaded && p.families.includes(family) && (!missing || !p.covers || missing.some(p.covers)));
     // As in resolve(), a font passed in `fonts` under this name shuts out the other sources.
     const callerOnly = !missing && this.callerWins([...(this.byFamily.get(family) ?? []), ...candidates], bold, italic);
@@ -349,8 +404,12 @@ export class FontRegistry {
         const distance = this.styleDistance(p, bold, italic);
         if (best < distance || (found && best <= distance)) break;
       } else if (styled.some((face) => this.styleScore(face, bold, italic) <= this.styleScore(p, bold, italic))) break;
-      await this.loadPending(p);
+      yield p;
     }
+  }
+
+  private async prepareFamily(family: string, bold: boolean, italic: boolean, missing?: number[]): Promise<boolean> {
+    for (const p of this.familySources(family, bold, italic, missing)) await this.loadPending(p);
     return this.byFamily.has(family);
   }
 
@@ -363,14 +422,32 @@ export class FontRegistry {
     return faces.some((f) => f.origin === 'user' && (!f.italic || italic) && (!f.bold || bold));
   }
 
+  private *primarySources({ family, bold, italic, lang }: FontRequest): Generator<PendingFont> {
+    const b = bold || boldByName(family);
+    const i = italic || /\b(italic|oblique)\b/i.test(family);
+    for (const candidate of this.candidateFamilies(family, lang)) {
+      yield* this.familySources(candidate, b, i);
+      if (this.byFamily.has(candidate) && !this.lacksStyle(family, candidate, b, i)) break;
+    }
+  }
+
   async prepare(requests: FontRequest[]): Promise<void> {
-    for (const { family, bold, italic, lang } of requests) {
-      const b = bold || /\bbold\b/i.test(family);
-      const i = italic || /\b(italic|oblique)\b/i.test(family);
-      for (const candidate of this.candidateFamilies(family, lang)) {
-        if (!(await this.prepareFamily(candidate, b, i))) continue;
-        if (this.lacksStyle(family, candidate, b, i)) continue;
-        break;
+    // Overlap bundled reads, then register in request order. A loaded face can introduce aliases
+    // that change the next request's choice, and fallbacks depend on which glyphs actually loaded.
+    for (let start = 0; start < requests.length; start += 4) {
+      const batch = requests.slice(start, start + 4);
+      const reads = new Map<PendingFont, Promise<LoadedFont>>();
+      if (batch.length > 1) {
+        for (const request of batch) {
+          const p = this.primarySources(request).next().value;
+          if (!p || p.origin !== 'bundled' || reads.has(p)) continue;
+          const read = Promise.resolve().then(() => p.load());
+          read.catch(() => {}); // A later alias can make this read unnecessary.
+          reads.set(p, read);
+        }
+      }
+      for (const request of batch) {
+        for (const p of this.primarySources(request)) await this.loadPending(p, reads.get(p));
       }
     }
 
@@ -386,6 +463,15 @@ export class FontRegistry {
       // So can a mathematical letter, as its plain letter in the style it stands for.
       const letters = kind ? [] : unfound.map(mathLetter).filter((m) => m !== undefined);
       for (const m of letters) await this.prepare([{ family, bold: bold || m.bold, italic: italic || m.italic, codePoints: new Set([m.cp]), lang }]);
+    }
+
+    // Proportional kana take their widths from a face with them (palt), which the stand-in for the
+    // requested font may lack (Noto Serif CJK has none).
+    if (requests.some((r) => proportionalKana(r.family) && [...r.codePoints].some((cp) => cp >= 0x3000 && cp <= 0x30ff))) {
+      for (const p of this.pending) {
+        if (this.faces.some((face) => this.paltOf(face).size)) break;
+        if (!p.loaded && p.covers?.(0x3042)) await this.loadPending(p);
+      }
     }
   }
 
@@ -408,11 +494,11 @@ export class FontRegistry {
     return missing;
   }
 
-  private loadPending(p: PendingFont): Promise<void> {
+  private loadPending(p: PendingFont, read?: Promise<LoadedFont>): Promise<void> {
     if (!p.promise) {
       p.promise = (async () => {
         try {
-          const data = await p.load();
+          const data = await (read ?? p.load());
           if (data instanceof BundledFontData) {
             this.budget.reserveFaces(1);
             data.cost.chargeMappingsTo(this.budget);
@@ -462,7 +548,7 @@ export class FontRegistry {
     const norm = normalizeFamily(family);
     let result: ResolvedFace | undefined;
     // A family name that carries the style ("Arial Bold") selects that style.
-    const styleBold = bold || /\bbold\b/.test(norm);
+    const styleBold = bold || boldByName(norm);
     const styleItalic = italic || /\b(italic|oblique)\b/.test(norm);
     const symKind = symbolFontKind(norm);
     for (const cand of this.candidateFamilies(family, lang)) {
@@ -478,6 +564,8 @@ export class FontRegistry {
       // A real symbol font keeps its encoding; any other face needs characters remapped.
       const isRealSymbol = symKind !== null && face.font.symbolCmap;
       result = this.styled(face, styleBold, styleItalic, symKind && !isRealSymbol ? symKind : undefined, this.substituteMetrics(norm, cand));
+      const widthScale = cand !== norm ? substituteFamilies(norm)?.widths?.[cand] : undefined;
+      if (widthScale) result.glyphScale = widthScale;
       if (cand !== norm && halfWidthLatin(norm)) {
         const { half, full } = this.widthForms(face);
         if (half.size) result.halfWidth = half;
@@ -488,7 +576,7 @@ export class FontRegistry {
     }
     if (!result) {
       if (this.faces.length === 0) throw new Error('No fonts available. Supply fonts or use the node/browser entry point that loads bundled fonts.');
-      result = this.styled(this.faces[0], bold, italic, symKind ?? undefined);
+      result = this.styled(this.faces[0], styleBold, styleItalic, symKind ?? undefined);
       this.warnings.add(`Font "${family}" not available; using ${this.faces[0].familyName}`);
     }
     this.resolveCache.set(key, result);
@@ -521,8 +609,10 @@ export class FontRegistry {
    */
   faceForChar(family: string, bold: boolean, italic: boolean, cp: number, lang?: string, drawn = false, primary = this.resolve(family, bold, italic, lang)): ResolvedFace {
     const mapped = primary.symbolMap ? this.symbolChar(primary.symbolMap, cp) : cp;
-    if (primary.face.font.hasGlyph(mapped) || cp < 0x20 || cp === 0xa0 || cp === 0x2028) return this.eastAsianFallbackLine(family, cp, primary);
+    if (primary.face.font.hasGlyph(mapped) || cp < 0x20 || cp === 0xa0 || cp === 0x2028) return this.proportionalForms(family, cp, this.eastAsianFallbackLine(family, cp, primary));
     if (synthesized(primary.face.font, cp)) return primary;
+    // A fallback takes the weight the family's name gives (HG創英角ｺﾞｼｯｸUB's kanji are bold too).
+    bold ||= boldByName(family);
     const key = `${family}\u0000${bold ? 1 : 0}${italic ? 1 : 0}\u0000${cp}\u0000${lang ?? ''}\u0000${drawn ? 1 : 0}`;
     const cached = this.glyphCache.get(key);
     if (cached) return cached;
@@ -561,14 +651,14 @@ export class FontRegistry {
       const width = target && !(cp >= 0x590 && cp <= 0x5ff) && !(cp >= 0xfb1d && cp <= 0xfb4f) ? this.arabicSampleWidth(result.face) : 0;
       if (target && width) result.glyphScale = target / width;
     }
-    result = this.eastAsianFallbackLine(family, cp, result);
+    result = this.proportionalForms(family, cp, this.eastAsianFallbackLine(family, cp, result));
     this.glyphCache.set(key, result);
     return result;
   }
 
   /** Width (em) of ARABIC_SAMPLE in `face`, or 0 when it lacks those forms. */
   private arabicSampleWidth(face: FontFace): number {
-    let w = this.sampleWidths.get(face);
+    let w = sampleWidths.get(face.font);
     if (w === undefined) {
       w = 0;
       for (const ch of ARABIC_SAMPLE) {
@@ -579,7 +669,7 @@ export class FontRegistry {
         }
         w += face.font.advance(gid) / face.font.unitsPerEm;
       }
-      this.sampleWidths.set(face, w);
+      sampleWidths.set(face.font, w);
     }
     return w;
   }
@@ -601,8 +691,7 @@ export class FontRegistry {
   private widthForms(face: FontFace): { half: Map<number, number>; full: Map<number, number> } {
     let out = this.widthFormCache.get(face);
     if (!out) {
-      const gsub = face.font.tableBytes('GSUB');
-      out = gsub ? { half: singleSubstitutions(gsub, 'hwid'), full: singleSubstitutions(gsub, 'fwid') } : { half: new Map(), full: new Map() };
+      out = { half: face.substitutions('hwid'), full: face.substitutions('fwid') };
       this.widthFormCache.set(face, out);
     }
     return out;
@@ -614,6 +703,51 @@ export class FontRegistry {
     if (!line) return face;
     let out = this.fallbackLines.get(face);
     if (!out) this.fallbackLines.set(face, (out = { ...face, ascent: line[0], descent: line[1], externalLeading: line[2] }));
+    return out;
+  }
+
+  /** `face` with proportional kana and punctuation when it stands in for a font that has them. */
+  private proportionalForms(family: string, cp: number, face: ResolvedFace): ResolvedFace {
+    if (cp < 0x2010 || !proportionalKana(family) || normalizeFamily(face.face.familyName) === normalizeFamily(family)) return face;
+    let out = this.proportionalFaces.get(face);
+    if (!out) {
+      const widths = this.proportionalWidths();
+      this.proportionalFaces.set(face, (out = widths.size ? { ...face, proportional: widths } : face));
+    }
+    return out;
+  }
+
+  /**
+   * Proportional widths of kana, punctuation and full-width forms (OpenType palt), by character in
+   * em, from the first face that has them. Their proportions differ little between typefaces, so a
+   * stand-in without the feature (Noto Serif CJK) takes them too.
+   */
+  private proportionalWidths(): Map<number, { x: number; advance: number }> {
+    if (this.proportionalCache) return this.proportionalCache;
+    const out = new Map<number, { x: number; advance: number }>();
+    for (const face of this.faces) {
+      const palt = this.paltOf(face);
+      if (!palt.size) continue;
+      const em = face.font.unitsPerEm;
+      for (const [lo, hi] of [[0x2010, 0x206f], [0x3000, 0x30ff], [0xff00, 0xffef]]) {
+        for (let cp = lo; cp <= hi; cp++) {
+          const gid = face.font.glyphId(cp);
+          const a = gid ? palt.get(gid) : undefined;
+          if (a) out.set(cp, { x: a.x / em, advance: a.advance / em });
+        }
+      }
+      break;
+    }
+    return (this.proportionalCache = out);
+  }
+
+  /** A kana face's proportional adjustments (palt) by glyph id; empty for other faces. */
+  private paltOf(face: FontFace): Map<number, { x: number; advance: number }> {
+    let out = this.paltCache.get(face);
+    if (!out) {
+      out = face.font.hasGlyph(0x3042) ? face.adjustments('palt') : new Map();
+      this.paltCache.set(face, out);
+    }
     return out;
   }
 

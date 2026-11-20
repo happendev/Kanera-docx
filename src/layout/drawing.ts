@@ -1,11 +1,12 @@
 import type { Drawing, LineStyle, RunProps } from '../docx/model.js';
 import { DEFAULT_RUN } from '../docx/props.js';
+import { arc } from '../util/arc.js';
 import { layoutBlocks, type BoxEnv } from './box.js';
 import { renderChart } from './chart.js';
 import { gradientOps } from './gradient.js';
 import { metafileOps } from './metafile.js';
 import { shapeText } from './shaper.js';
-import { translateOps, type DrawOp, type GlyphOp, type PathSeg } from './types.js';
+import { appendOps, translateOps, type DrawOp, type GlyphOp, type PathSeg } from './types.js';
 import { uprightEastAsian } from './vertical.js';
 
 const K = 0.5522847498;
@@ -40,29 +41,6 @@ function ellipse(x: number, y: number, w: number, h: number): PathSeg[] {
     { op: 'C', pts: [cx + rx * K, cy - ry, cx + rx, cy - ry * K, cx + rx, cy] },
     { op: 'Z', pts: [] },
   ];
-}
-
-/**
- * Cubic Béziers along an elliptical arc from DrawingML's start angle through its sweep (degrees,
- * clockwise). The angles are visual: a ray at that angle meets the ellipse where the arc starts.
- */
-function arc(cx: number, cy: number, rx: number, ry: number, start: number, sweep: number): { from: number[]; segs: PathSeg[] } {
-  const param = (deg: number) => Math.atan2(rx * Math.sin((deg * Math.PI) / 180), ry * Math.cos((deg * Math.PI) / 180));
-  const t0 = param(start);
-  let dt = param(start + sweep) - t0;
-  if (sweep > 0) while (dt <= 1e-9) dt += 2 * Math.PI;
-  if (sweep < 0) while (dt >= -1e-9) dt -= 2 * Math.PI;
-  const n = Math.max(1, Math.ceil(Math.abs(dt) / (Math.PI / 2) - 1e-9));
-  const step = dt / n;
-  const k = (4 / 3) * Math.tan(step / 4);
-  const pt = (t: number) => [cx + rx * Math.cos(t), cy + ry * Math.sin(t)];
-  const segs: PathSeg[] = [];
-  for (let i = 0; i < n; i++) {
-    const a = t0 + i * step;
-    const b = a + step;
-    segs.push({ op: 'C', pts: [cx + rx * (Math.cos(a) - k * Math.sin(a)), cy + ry * (Math.sin(a) + k * Math.cos(a)), cx + rx * (Math.cos(b) + k * Math.sin(b)), cy + ry * (Math.sin(b) - k * Math.cos(b)), ...pt(b)] });
-  }
-  return { from: pt(t0), segs };
 }
 
 function poly(points: number[]): PathSeg[] {
@@ -392,9 +370,9 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
   if (m) ops.push({ kind: 'transform', matrix: m });
 
   if (d.kind === 'group' && d.children) {
-    for (const kid of d.children) ops.push(...renderDrawing(kid, x + (kid.x ?? 0), y + (kid.y ?? 0), env));
+    for (const kid of d.children) appendOps(ops, renderDrawing(kid, x + (kid.x ?? 0), y + (kid.y ?? 0), env));
   } else if (d.chart) {
-    ops.push(...renderChart(d.chart, x, y, w, h, env));
+    appendOps(ops, renderChart(d.chart, x, y, w, h, env));
   } else {
     const shape = d.kind === 'image' && d.geometry === 'rect' ? null : geometryPath(d, x, y, w, h);
     // A custom shape whose subpaths are all unfilled has nothing to fill or clip to.
@@ -406,7 +384,7 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
     const meta = d.image ? metafileOps(d.image, x, y, w, h, d.crop, env.fonts) : null;
     if (meta) {
       if (path && d.geometry !== 'rect') ops.push({ kind: 'clip', x, y, w, h, segs: path }, ...meta, { kind: 'restore' });
-      else ops.push(...meta);
+      else appendOps(ops, meta);
     } else if (d.image) {
       if (path && d.geometry !== 'rect') {
         // Pictures cropped to a shape (rounded corners, circles).
@@ -416,8 +394,8 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
       } else ops.push({ kind: 'image', x, y, w, h, image: d.image, crop: d.crop, rotation: 0, flipH: false, flipV: false });
     }
     const upright = d.textBox?.upright && m;
-    if (d.textBox && !upright) ops.push(...renderTextBox(d, x, y, w, h, env));
-    if (d.textPath) ops.push(...renderTextPath(d, x, y, w, h, env));
+    if (d.textBox && !upright) appendOps(ops, renderTextBox(d, x, y, w, h, env));
+    if (d.textPath) appendOps(ops, renderTextPath(d, x, y, w, h, env));
     const line = d.line;
     if (line?.color && line.width > 0) {
       const segs = d.geometry === 'custom' ? geometryPath(d, x, y, w, h, 'stroke') : path ?? geometryPath(d, x, y, w, h);
@@ -430,6 +408,19 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
   }
   if (m) ops.push({ kind: 'restore' });
   return ops;
+}
+
+/**
+ * The height of a text box set to resize to fit its text (a:spAutoFit, VML mso-fit-shape-to-text):
+ * Word refits it to its text and insets as it lays the page out, shrinking it as well as growing it,
+ * whatever size the file stored. Undefined for a box that keeps its size: one whose text area
+ * depends on its height (rounded, elliptical, legacy text rectangles), or with vertical text.
+ */
+export function fittedHeight(d: Drawing, env: BoxEnv): number | undefined {
+  const tb = d.textBox;
+  if (!tb?.autoFit || tb.rect || tb.vertical === 'vert' || tb.vertical === 'vert270' || tb.vertical === 'eaVert') return undefined;
+  if (!textRectInsets(d, d.width, d.height).every((v) => v === 0)) return undefined;
+  return layoutBlocks(tb.blocks, Math.max(1, d.width - tb.insetL - tb.insetR), env).height + tb.insetT + tb.insetB;
 }
 
 /**
@@ -463,7 +454,7 @@ function renderTextBox(d: Drawing, x: number, y: number, w: number, h: number, e
   if (tb.vAlign === 'center') dy = (innerH - box.height) / 2;
   else if (tb.vAlign === 'bottom') dy = innerH - box.height;
   const content: DrawOp[] = [];
-  for (const it of box.items) content.push(...it.ops);
+  for (const it of box.items) appendOps(content, it.ops);
   const ops: DrawOp[] = [];
   // A legacy shape's text area also bounds its text; Word cuts off what overflows it.
   if (!tb.unclipped) ops.push(rect && !vertical ? { kind: 'clip', x: x + rl, y: y + rt, w: w - rl - rr, h: h - rt - rb } : { kind: 'clip', x, y, w, h });
@@ -474,9 +465,9 @@ function renderTextBox(d: Drawing, x: number, y: number, w: number, h: number, e
     ops.push({ kind: 'transform', matrix: m });
     const turned = resolveBoxFloats(translateOps(content, ox + tb.insetL, oy + tb.insetT + dy), env);
     // East Asian vertical text keeps its ideographs and kana upright.
-    ops.push(...(tb.vertical === 'eaVert' ? uprightEastAsian(turned) : turned));
+    appendOps(ops, tb.vertical === 'eaVert' ? uprightEastAsian(turned) : turned);
     ops.push({ kind: 'restore' });
-  } else ops.push(...resolveBoxFloats(translateOps(content, x + tb.insetL, y + tb.insetT + dy), env));
+  } else appendOps(ops, resolveBoxFloats(translateOps(content, x + tb.insetL, y + tb.insetT + dy), env));
   if (!tb.unclipped) ops.push({ kind: 'restore' });
   return ops;
 }
@@ -493,7 +484,7 @@ function resolveBoxFloats(ops: DrawOp[], env: BoxEnv): DrawOp[] {
     const a = d.anchor;
     const fx = op.x + (a?.posH.offset ?? 0);
     const fy = op.y + (a?.posV.offset ?? 0);
-    out.push(...renderDrawing(d, fx, fy, env));
+    appendOps(out, renderDrawing(d, fx, fy, env));
   }
   return out;
 }

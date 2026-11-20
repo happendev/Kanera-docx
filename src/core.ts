@@ -16,7 +16,7 @@ export interface ConvertOptions {
   archiveLimits?: import('./util/zip.js').ArchiveLimits;
   /** Maximum pixels per raster image and across distinct images rendered. */
   imageLimits?: import('./image/budget.js').ImageLimits;
-  /** JPEG quality from 1 to 100. Omit to select JPEGs by quantization table and encode them at quality 80, or use false to disable lossy recompression. */
+  /** JPEG quality from 1 to 100. Omit to select JPEGs up to 4 megapixels by quantization table and encode them at quality 80, or use false to disable lossy recompression. */
   imageQuality?: number | false;
   /** Additional URI schemes to enable for PDF links, such as ['tel']. */
   additionalLinkSchemes?: readonly string[];
@@ -55,7 +55,7 @@ function toBytes(input: Uint8Array | ArrayBuffer): Uint8Array {
 /** Convert a .docx file to PDF. */
 export async function convertWithCompression(input: Uint8Array | ArrayBuffer, options: ConvertOptions, providers: FontProvider[], compression: Compression): Promise<ConvertResult> {
   const doc = parseDocx(toBytes(input), compression.inflateRaw, options.archiveLimits, options.embeddedFonts);
-  const fonts = new FontRegistry();
+  const fonts = new FontRegistry(doc.hasMath);
   for (const f of options.fonts ?? []) fonts.add(f, 'user');
   for (const e of doc.embeddedFonts) fonts.add({ data: e.data, family: e.family, bold: e.bold, italic: e.italic }, 'embedded');
   for (const p of providers) await p.register(fonts);

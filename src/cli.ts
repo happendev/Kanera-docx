@@ -13,7 +13,7 @@ Options:
   --font <file>      Use this TTF/OTF/TTC font (repeatable)
   --system-fonts     Also use fonts installed on this machine
   --mac              Match Word for Mac's PDFs (text on a 0.24pt grid)
-  --image-quality <1-100|off>  JPEG quality (default: automatic selection at quality 80)
+  --image-quality <1-100|off>  JPEG quality (default: automatic selection up to 4 MP at quality 80)
   --png <dir>        Write each page as <dir>/<input>-<n>.png instead of a PDF
                      (needs pdftoppm, mutool or Ghostscript installed)
   --dpi <n>          Resolution of --png images (default: 150)
@@ -35,8 +35,14 @@ async function main(argv: string[]): Promise<number> {
       console.log(USAGE);
       return 0;
     }
-    if (a === '--font') fonts.push({ data: await readFile(argv[++i]) });
-    else if (a === '--system-fonts') systemFonts = true;
+    if (a === '--font') {
+      const file = argv[++i];
+      if (!file || file.startsWith('-')) {
+        console.error('--font requires a filename');
+        return 2;
+      }
+      fonts.push({ data: await readFile(file) });
+    } else if (a === '--system-fonts') systemFonts = true;
     else if (a === '--image-quality') {
       const value = argv[++i];
       if (value === 'off') imageQuality = false;
@@ -65,7 +71,7 @@ async function main(argv: string[]): Promise<number> {
       return 2;
     } else files.push(a);
   }
-  if (!files.length) {
+  if (!files.length || files.length > 2) {
     console.error(USAGE);
     return 2;
   }

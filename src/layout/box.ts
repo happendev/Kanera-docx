@@ -1,6 +1,6 @@
 import type { AnchorProps, Block, Border, Drawing, FrameProps, Paragraph, ParaProps, Table, TableCell, TableRow } from '../docx/model.js';
 import { ParagraphLayout, type Line, type ParagraphEnv } from './paragraph.js';
-import { translateOps, type DrawOp } from './types.js';
+import { appendOps, translateOps, type DrawOp } from './types.js';
 
 /** Start of an unconsumed line or nested table row in the original cell. */
 export interface CellCursor {
@@ -24,6 +24,8 @@ export interface BoxResult {
   height: number;
   items: BoxItem[];
 }
+
+type CellParagraphs = (paragraph: Paragraph) => ParagraphLayout;
 
 export interface BoxEnv extends ParagraphEnv {
   compatibilityMode: number;
@@ -386,7 +388,7 @@ export type BoxWrap = (d: Drawing, y: number) => Exclusion | null;
  * Lay out blocks in a box. With `wrap`, text flows around the box's own floating objects; `cell`
  * marks a table cell's content.
  */
-export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: { wrap?: BoxWrap; cell?: boolean; trackCursor?: boolean; start?: CellCursor } = {}): BoxResult {
+export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: { paragraphs?: CellParagraphs; wrap?: BoxWrap; cell?: boolean; trackCursor?: boolean; start?: CellCursor } = {}): BoxResult {
   const wrap = opts.wrap;
   const items: BoxItem[] = [];
   const exclusions: Exclusion[] = [];
@@ -427,7 +429,7 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
       y += prevPara ? gap.after + gap.before : !inFlow && block.props.spaceBeforeAuto ? 0 : gap.before;
       inFlow = true;
       const frame = paraFrame(prevPara, block, next);
-      const layout = new ParagraphLayout(block, env);
+      const layout = opts.paragraphs?.(block) ?? new ParagraphLayout(block, env);
       const resume = bi === opts.start?.block ? opts.start.line : undefined;
       if (resume) layout.restore(resume);
       const continuing = !!resume && !resume.firstLine;
@@ -668,7 +670,7 @@ function inCellFloatsBottom(box: BoxResult, marginTop: number): number {
 const MAX_COLUMN = 1584;
 
 /** Narrowest and widest a cell's content can be laid out without breaking words (`hi` 0 with `loOnly`). */
-function cellContentWidths(cell: TableCell, env: BoxEnv, loOnly = false): { lo: number; hi: number } {
+function cellContentWidths(cell: TableCell, paragraphs: CellParagraphs, loOnly = false): { lo: number; hi: number } {
   let lo = 0;
   let hi = 0;
   const wide = 2 * MAX_COLUMN;
@@ -681,7 +683,7 @@ function cellContentWidths(cell: TableCell, env: BoxEnv, loOnly = false): { lo: 
       hi = Math.max(hi, w);
       continue;
     }
-    const layout = new ParagraphLayout(b, env);
+    const layout = paragraphs(b);
     lo = Math.max(lo, layout.minContentWidth());
     if (loOnly) continue;
     for (let line = layoutNextLine(layout, wide); line; line = layoutNextLine(layout, wide)) hi = Math.max(hi, line.contentRight + wide - line.right);
@@ -696,7 +698,7 @@ function cellContentWidths(cell: TableCell, env: BoxEnv, loOnly = false): { lo: 
  * width in place of that line; when the widest layout doesn't fit, the room above the minimums is
  * shared in proportion to how much more each column wants.
  */
-function autofitGrid(table: Table, maxWidth: number, env: BoxEnv): number[] {
+function autofitGrid(table: Table, maxWidth: number, paragraphs: CellParagraphs): number[] {
   const n = table.grid.length;
   const sp = table.rows[0]?.cellSpacing ?? 0;
   const min = new Array<number>(n).fill(0);
@@ -709,7 +711,7 @@ function autofitGrid(table: Table, maxWidth: number, env: BoxEnv): number[] {
       const to = Math.min(n, col + cell.gridSpan);
       col += cell.gridSpan;
       if (from >= n || cell.vMerge === 'continue') continue;
-      const { lo, hi } = cellContentWidths(cell, env);
+      const { lo, hi } = cellContentWidths(cell, paragraphs);
       const sides = cell.margins.left + cell.margins.right;
       const pref = cell.width.type === 'dxa' && cell.width.value > 0 ? cell.width.value : 0;
       const cellMin = lo + sides;
@@ -741,7 +743,7 @@ function autofitGrid(table: Table, maxWidth: number, env: BoxEnv): number[] {
 }
 
 /** An autofit table's grid with each column widened to its cells' longest word. */
-function widenToWords(table: Table, grid: number[], env: BoxEnv): number[] {
+function widenToWords(table: Table, grid: number[], paragraphs: CellParagraphs): number[] {
   const out = grid.slice();
   for (const row of table.rows) {
     let col = row.gridBefore;
@@ -753,7 +755,7 @@ function widenToWords(table: Table, grid: number[], env: BoxEnv): number[] {
       if (cell.gridSpan !== 1 || from >= out.length || cell.vMerge === 'continue' || turnedText(cell.textDirection)) continue;
       const lead = ci === 0 ? 2 * sp : sp;
       const trail = ci === row.cells.length - 1 ? 2 * sp : sp;
-      const need = cellContentWidths(cell, env, true).lo + cell.margins.left + cell.margins.right + lead + trail;
+      const need = cellContentWidths(cell, paragraphs, true).lo + cell.margins.left + cell.margins.right + lead + trail;
       if (need > out[from]) out[from] = need;
     }
   }
@@ -782,6 +784,17 @@ function gridContradicted(table: Table): boolean {
 export function measureTable(table: Table, avail: number, env: BoxEnv, nested = false, starts?: Map<TableCell, CellCursor>): TableLayout {
   // Word snaps lines in table cells to the document grid only when the document asks it to.
   const cellEnv = env.gridPitch && !env.settings.adjustLineHeightInTable ? { ...env, gridPitch: undefined } : env;
+  // Width measurement and placement use the same shaped atoms, each with a fresh line cursor.
+  const measured = new Map<Paragraph, ParagraphLayout>();
+  const paragraphs: CellParagraphs = (p) => {
+    let layout = measured.get(p);
+    if (layout) layout.reset();
+    else {
+      layout = new ParagraphLayout(p, cellEnv);
+      measured.set(p, layout);
+    }
+    return layout;
+  };
   let grid = gridWidths(table, avail);
   // A nested table stays inside its cell's text area: Word shrinks an autofit one that is too wide
   // and moves one that would start left of the text (a negative indent) back in.
@@ -805,11 +818,11 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
   const past = env.compatibilityMode < 15 && lastCell ? lastCell.margins.right + 2 * lastRow.cellSpacing : 0;
   const maxWidth = (aligned ? avail : avail - x) + past;
   if ((env.settings.generated || gridContradicted(table)) && !nested && table.props.layout === 'autofit' && table.props.width.type === 'auto' && !table.props.floating && grid.length > 0) {
-    grid = autofitGrid(table, maxWidth, env);
+    grid = autofitGrid(table, maxWidth, paragraphs);
   } else if (!nested && table.props.layout === 'autofit') {
     // Word widens a column to hold its longest word while the table still fits; past that it
     // breaks the word.
-    const wide = widenToWords(table, grid, cellEnv);
+    const wide = widenToWords(table, grid, paragraphs);
     if (wide.reduce((a, b) => a + b, 0) <= maxWidth + 0.01) grid = wide;
   }
   const colX: number[] = [0];
@@ -861,9 +874,10 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
       let length = 0;
       if (dir) {
         const exact = row.heightRule === 'exact' && row.height > 0;
-        length = Math.max(1, exact ? row.height - cell.margins.top - cell.margins.bottom : Math.min(MAX_COLUMN, cellContentWidths({ ...cell, content }, cellEnv).hi));
+        length = Math.max(1, exact ? row.height - cell.margins.top - cell.margins.bottom : Math.min(MAX_COLUMN, cellContentWidths({ ...cell, content }, paragraphs).hi));
       }
-      let box = empty ? { height: 0, items: [] } : layoutBlocks(content, dir ? length : inner, cellEnv, { cell: true, trackCursor: !!starts, start: starts?.get(cell) });
+      let box = empty ? { height: 0, items: [] } : layoutBlocks(content, dir ? length : inner, cellEnv, { paragraphs, cell: true, trackCursor: !!starts, start: starts?.get(cell) });
+      if (!dir) for (const b of content) if (b.type === 'paragraph') measured.delete(b);
       const floats = dir ? 0 : inCellFloatsBottom(box, cell.margins.top);
       if (floats > box.height) box = { ...box, height: floats };
       cells.push({ cell, col, x: cx, width: cw, box, rowSpan: 1, turned: dir ? { dir, length } : undefined });
@@ -904,7 +918,7 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
     cells.forEach((c, i) => {
       const length = h - borderTop - spaceTop - spaceBottom - c.cell.margins.top - c.cell.margins.bottom;
       if (!c.turned || row.heightRule === 'exact' || length <= c.turned.length + EPS) return;
-      c.box = layoutBlocks(contents[i], length, cellEnv, { cell: true });
+      c.box = layoutBlocks(contents[i], length, cellEnv, { paragraphs, cell: true });
       c.turned.length = length;
     });
     rows.push({ row, cells, height: h, borderTop, spaceTop, spaceBottom });
@@ -1080,7 +1094,7 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
           dir === 'up' ? [0, -1, 1, 0, innerX + off, top + height - m.bottom] : [0, 1, -1, 0, dir === 'down' ? innerX + area.w - off : innerX + off + cell.box.height, y0];
         content.push({ kind: 'transform', matrix });
         for (const it of items) {
-          content.push(...it.ops);
+          appendOps(content, it.ops);
           if (it.notes) notes.push(...it.notes);
         }
         content.push({ kind: 'restore' });

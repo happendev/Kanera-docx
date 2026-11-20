@@ -80,7 +80,7 @@ describe('convertDocx (node)', () => {
     const { pdf } = await convertDocx(makeDocx({
       body: `<w:p>${inlineImage('red', 96, 64)}${washed}${vml('gain="19661f" blacklevel="22938f"')}${vml('gain="2"')}</w:p>`,
       media: { red: { name: 'red.png', data: redPng() } },
-    }), { compress: false });
+    }), { compress: false, imageLimits: { maxTotalPixels: 8 } });
     const images = pdfText(pdf).match(/\/Subtype \/Image\b[^]*?stream/g) ?? [];
     expect(images.map((d) => /\/Decode \[([^\]]*)\]/.exec(d)?.[1] ?? 'none').sort())
       .toEqual(['-0.5 1.5 -0.5 1.5 -0.5 1.5', '0.805 1.105 0.805 1.105 0.805 1.105', 'none']);

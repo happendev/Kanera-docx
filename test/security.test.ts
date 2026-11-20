@@ -1,11 +1,16 @@
 import { nodeCompression } from '../src/util/node-compression.js';
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { encode } from 'jpeg-js';
 import { convertDocx } from '../src/node.js';
 import { ChartPointBudget, parseChart } from '../src/docx/chart.js';
 import { DEFAULT_THEME } from '../src/docx/theme.js';
-import { parseXml } from '../src/util/xml.js';
+import { formatNumber } from '../src/docx/numbering.js';
+import { parseWidth } from '../src/docx/props.js';
+import { applyWordTintShade, measure } from '../src/docx/values.js';
+import { ZipArchive } from '../src/util/zip.js';
+import { singleAdjustments, singleSubstitutions } from '../src/fonts/gsub.js';
+import { parseXml, decodeEntities, resolveAlternateContent } from '../src/util/xml.js';
 import { parseDocx } from '../src/docx/parser.js';
 import { collectionSize, FontBudget, MAX_FONT_FACES, SfntFont } from '../src/fonts/sfnt.js';
 import { ImageBudget } from '../src/image/budget.js';
@@ -55,6 +60,25 @@ describe('conversion limits', () => {
     const fitting = new ImageBudget({ maxImagePixels: width * height, maxTotalPixels: width * height });
     await toPdfImage(jpeg, nodeCompression, fitting);
     expect(fitting.tryReserve(1, 1)).toBe(false);
+  });
+
+  it('caps automatic JPEG selection at four million pixels and honors explicit quality above it', async () => {
+    // Change only the SOF dimensions. A declining budget lets us observe selection without
+    // allocating a four-megapixel image or passing the synthetic frame to the decoder.
+    const jpeg = Buffer.from(encode({ width: 8, height: 8, data: Buffer.alloc(256) }, 100).data);
+    const frame = jpeg.indexOf(Buffer.from([0xff, 0xc0]));
+    expect(frame).toBeGreaterThan(0);
+    jpeg.writeUInt16BE(2000, frame + 5);
+    for (const [width, quality, selected] of [
+      [2000, undefined, true], [2001, undefined, false], [2001, 80, true], [2001, false, false],
+    ] as const) {
+      jpeg.writeUInt16BE(width, frame + 7);
+      const budget = new ImageBudget({ maxTotalPixels: 0 });
+      const reserve = vi.spyOn(budget, 'tryReserve');
+      const image = await toPdfImage(jpeg, nodeCompression, budget, quality);
+      expect(reserve).toHaveBeenCalledTimes(selected ? 1 : 0);
+      expect(image?.data).toBe(jpeg);
+    }
   });
 
   it('charges JPEG pixels only when 8-bit table zero meets the automatic cutoff', async () => {
@@ -152,6 +176,52 @@ describe('conversion limits', () => {
     const cmap = new SfntFont(data).table('cmap')!;
     data.writeUInt16BE(Math.floor(cmap.length / 8) + 1, cmap.offset + 2);
     expect(() => new SfntFont(data)).toThrow(/Truncated/);
+  });
+
+  it('handles namespace shadowing and enforces the XML depth boundary', () => {
+    expect(decodeEntities('&lt;&constructor;&toString;')).toBe('<&constructor;&toString;');
+    const alternate = parseXml('<mc:AlternateContent xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">' +
+      '<mc:Choice xmlns:wps="unknown" Requires="wps"><first/></mc:Choice><mc:Choice Requires="wps"><second/></mc:Choice></mc:AlternateContent>');
+    expect(resolveAlternateContent(alternate).map((el) => el.name)).toEqual(['second']);
+    const tree = (n: number) => '<e>'.repeat(n) + '</e>'.repeat(n);
+    expect(parseXml(tree(128)).name).toBe('e');
+    expect(() => parseXml(tree(129))).toThrow(/nesting limit/);
+  });
+
+  it('keeps measurement, colour and numbering fallbacks finite and bounded', () => {
+    expect(measure('.5in')).toBe(36);
+    for (const value of ['.', '1.2.3', '9'.repeat(309) + 'in']) expect(measure(value)).toBeUndefined();
+    expect(parseWidth(parseXml('<w:tcW w:type="pct" w:w="%"/>'))?.value).toBe(0);
+    expect(applyWordTintShade('ABCDEF', 'GG', '2z')).toBe('ABCDEF');
+    expect(formatNumber(5, 'chicago')).toBe('**');
+    expect(formatNumber(0, 'chicago')).toBe('0');
+    for (const format of ['upperRoman', 'lowerLetter', 'chicago']) expect(formatNumber(1_000_000, format)).toBe('1000000');
+  });
+
+  it('reads legacy ZIP names and a comment containing a signature', () => {
+    const zip = Buffer.from(zipStore([['dir\\x.txt', Uint8Array.of(7)]]));
+    const central = zip.readUInt32LE(zip.length - 6);
+    zip[30 + 4] = zip[central + 46 + 4] = 0x82; // é in CP437
+    const comment = Buffer.alloc(32);
+    comment.writeUInt32LE(0x06054b50);
+    zip.writeUInt16LE(comment.length, zip.length - 2);
+    const archive = new ZipArchive(Buffer.concat([zip, comment]), nodeCompression.inflateRaw);
+    expect(Array.from(archive.read('dir/é.txt')!)).toEqual([7]);
+  });
+
+  it('applies the feature budget to substitution and adjustment tables', () => {
+    const font = new SfntFont(readFileSync(new URL('../fonts/NotoSansCJKjp-Regular.ttf', import.meta.url)));
+    const budget = new FontBudget();
+    budget.reserveFeatureWork(1_048_576);
+    expect(() => singleSubstitutions(font.tableBytes('GSUB')!, 'vert', budget)).toThrow(/feature limit/);
+    expect(() => singleAdjustments(font.tableBytes('GPOS')!, 'palt', budget)).toThrow(/feature limit/);
+  });
+
+  it('checks glyph locations against the declared table length', () => {
+    const font = new SfntFont(readFileSync(new URL('../fonts/Carlito-Regular.ttf', import.meta.url)));
+    expect(font.glyphRange(0)).toBeTruthy();
+    font.table('loca')!.length = 2;
+    expect(() => font.glyphRange(0)).toThrow(/Truncated font table/);
   });
 
   it('checks the complete table row and both forms of section columns', () => {

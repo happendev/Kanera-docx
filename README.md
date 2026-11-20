@@ -14,18 +14,18 @@ Stable and in production use: it converts Word documents in [Kanera](https://git
 <!-- benchmark-summary:start -->
 ### Benchmark at a glance
 
-208 DOCX documents · Last full run 2026-11-20 (UTC) · [Full comparison](#benchmark)
+278 DOCX documents [Full comparison](#benchmark)
 
-| Converter | Visual match | Page counts matched | Fresh process | Reused process |
-| --- | ---: | ---: | ---: | ---: |
-| Kanera | **95.7%** | **205/208** | **92.3 ms** | **8.4 ms** |
-| LibreOffice | 85.0% | 199/208 | 774.8 ms | 57.6 ms |
-| EigenPal | 73.4% | 200/208 | 753.1 ms | 257.4 ms |
-| Syncfusion DocIO (.NET) | 56.9% | 195/208 | 532.7 ms | 54.7 ms |
-| office2pdf (Rust) | 52.4% | 195/208 | 316.0 ms | 106.6 ms |
-| Aspose.Words (.NET) | 51.4% | 195/208 | 981.5 ms | 56.7 ms |
-| rdocx (Rust) | 41.9% | 177/208 | 205.0 ms | 23.4 ms |
-| dxpdf (Rust) | 35.5% | 189/208 | 1004.4 ms | 964.5 ms |
+| Converter | Visual match | Page counts matched | Fresh process | Reused process | Median peak memory |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Kanera | **92.6%** | **273/278** | **100.8 ms** | **7.9 ms** | 84.4 MiB |
+| LibreOffice | 80.3% | 256/278 | 807.2 ms | 58.0 ms | – |
+| EigenPal | 70.9% | 257/278 | 775.1 ms | 257.8 ms | 278.6 MiB |
+| Syncfusion DocIO (.NET) | 56.1% | 246/278 | 568.8 ms | 60.0 ms | 121.8 MiB |
+| Aspose.Words (.NET) | 52.1% | 250/278 | 1018.2 ms | 36.2 ms | 105.9 MiB |
+| office2pdf (Rust) | 49.1% | 240/278 | 321.4 ms | 107.5 ms | **42.5 MiB** |
+| rdocx (Rust) | 40.5% | 214/278 | 179.5 ms | 24.0 ms | 146.2 MiB |
+| dxpdf (Rust) | 36.4% | 236/278 | 1024.3 ms | 949.4 ms | 258.3 MiB |
 
 Visual match measures how closely text and graphics line up with the reference pages. Conversion times are medians and include file I/O.
 <!-- benchmark-summary:end -->
@@ -158,8 +158,7 @@ see [Converting untrusted documents](#converting-untrusted-documents).
 
 ### Browser
 
-Conversion runs in the browser. Try the [GitHub Pages demo](https://happendev.github.io/kanera-docx/)
-when the deployment is available, or run `pnpm demo:serve` from a checkout with dependencies installed.
+Conversion runs in the browser. Try the [GitHub Pages demo](https://happendev.github.io/kanera-docx/) or run `pnpm demo:serve` from a checkout with dependencies installed.
 The demo can compare your PDF with Word's output for the included benchmark documents. [Demo source](demo/)
 
 For a bundled app that serves `public/` at the site root, copy the bundled fonts into that folder
@@ -246,10 +245,11 @@ Font priority goes from `fonts` to embedded fonts, system fonts, substitutes and
 fallbacks. A font passed in `fonts` under a family name replaces every other font of that name,
 whatever its own name table says.
 
-With `imageQuality` omitted, eligible colour JPEGs are encoded at quality 80 when the 64 entries in their
-8-bit quantization table 0 sum to 750 or less. Other JPEGs keep their original stream,
-including those without that table. An explicit quality encodes every eligible JPEG once,
-even if the result is larger. Set `imageQuality: false` to preserve all original JPEG streams.
+With `imageQuality` omitted, eligible colour JPEGs of up to 4,000,000 pixels are encoded at quality 80
+when the 64 entries in their 8-bit quantization table 0 sum to 750 or less. Other JPEGs keep their
+original stream. An explicit quality encodes each eligible JPEG within the configured image budget
+once, even above 4 megapixels or when the encoded file grows. Set `imageQuality: false` to preserve
+all original JPEG streams.
 PNG and supported TIFF
 use lossless PDF compression of their decoded pixels. TIFF is decoded directly into a PDF image
 stream. As with other conversions, existing decoder limits apply.
@@ -259,8 +259,9 @@ stream. As with other conversions, existing decoder limits apply.
 Conversion stops when an image exceeds the pixel budget or either dimension exceeds 32,768 pixels.
 TIFF edge-tile padding counts toward the budget. Each conversion also allows up to 256 font faces,
 1,048,576 character mappings, 128 MiB of embedded font references, 256 columns per table and 64
-columns per section. Set `embeddedFonts: false` to skip reading embedded font binaries while
-keeping the font names and substitution hints.
+columns per section. XML parts support 128 levels of elements and layout allows 10,000 pages.
+OpenType single-substitution and positioning features share a budget of 1,048,576 work units per conversion.
+Set `embeddedFonts: false` to skip reading embedded font binaries while keeping the font names and substitution hints.
 
 Charts allow 32,768 slots per data cache and 262,144 across a conversion. Empty positions in
 sparse chart data count toward both limits.
@@ -318,7 +319,9 @@ original glyphs, supply the original font.
 - **East Asian.** A missing font falls back by style, then region, then the text's language
   (SimSun to Noto Serif CJK SC, MS Mincho to Noto Serif CJK JP). Kai faces fall back to a sans, as
   in Word for Mac. The full pack includes Noto Sans CJK JP (20.7 MiB) and Noto Serif CJK SC
-  (23.0 MiB); add other regional Noto CJK fonts through `fonts` or `systemFonts`.
+  (23.0 MiB). Node loads their layout tables first and reads the glyph outlines used in the PDF
+  asynchronously. Documents with equations use the full fonts to measure glyph bounds. Add other
+  regional Noto CJK fonts through `fonts` or `systemFonts`.
 - **Embedding.** TrueType fonts are subset, with a `ToUnicode` map so text can be copied and
   searched. CFF fonts and fonts that forbid subsetting are embedded whole; fonts that forbid
   embedding are skipped with a warning. Missing bold and italic are synthesised as Word does.
@@ -368,7 +371,8 @@ from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception; its source
 - Fields: PAGE, NUMPAGES, SECTIONPAGES, external hyperlinks and internal links to bookmarks (as
   clickable PDF links), legacy form checkboxes and drop-downs; other fields (TOC, dates,
   references) show the result Word last saved.
-- Footnotes and endnotes with separators, including footnotes continued across pages.
+- Footnotes and endnotes with separators, including footnotes continued across pages and footnotes
+  kept on the page of the table row that refers to them.
 - Plain-text and HTML/XHTML imports (`w:altChunk`). HTML is rendered as plain text. The warnings identify flattened HTML and unsupported import types.
 - Images: PNG (all colour types, transparency, interlacing), JPEG (including CMYK), GIF, BMP and
   TIFF (uncompressed, LZW, Deflate and PackBits). Basic SVG, EMF and WMF are drawn as vector paths.
@@ -377,7 +381,8 @@ from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception; its source
   raster pictures, except CMYK JPEGs; SVG and metafile pictures are drawn unadjusted.
 - Shapes and text boxes (DrawingML and VML): preset geometries, custom paths, fills (including
   linear and path gradients, blended as Word blends them), outlines, dash styles, transparency,
-  groups, rotated and vertical text, WordArt text paths and watermarks.
+  groups, rotated and vertical text, text boxes that resize to fit their text, WordArt text paths
+  and watermarks.
 - Charts: column, bar, line, area, scatter, pie, doughnut and radar charts (clustered, stacked and
   100%, combinations and secondary axes) are drawn as vector graphics from the values cached in the
   document, with Excel's automatic axis scaling, number formats, titles, legends, data labels,
@@ -435,7 +440,8 @@ Matching Word means reproducing its layout rules, not only its formatting:
 - **Tables and text wrap.** Word's border, indentation and row-height geometry, floating objects in
   cells, nested tables, and text wrapping around every floating object on the page.
 - **East Asian layout.** Document and character grids, punctuation compression, autospacing between
-  East Asian and Latin text, and metric-preserving fallbacks for missing CJK fonts.
+  East Asian and Latin text, and metric-preserving fallbacks for missing CJK fonts, including the
+  proportional kana and punctuation of fonts such as MS PGothic.
 - **Word for Mac PDFs.** Set `wordPlatform: 'mac'` or pass `--mac` on the CLI to snap text sizes,
   baselines and line starts to Word for Mac’s 0.24 pt grid during PDF rendering.
 
@@ -449,18 +455,18 @@ The [benchmark](benchmarks/word/README.md) compares converters on 278 documents 
 [178 vendored cases](benchmarks/word/upstream/fixtures.json) with Microsoft 365 Word and LibreOffice references.
 
 <!-- benchmark-results:start -->
-**Last full benchmark run** 2026-11-20 (UTC), 208 documents.
+| Converter | Mean ink overlap | Matching page count | Failed conversions | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS | Total PDF size |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| @kanera/docx2pdf 1.0.0 | **92.6%** | **273/278** | **0/278** | **100.8 ms** | **7.9 ms** | **82.2 ms** | **50.4** | 84.4 MiB | **200.0 MiB** | **17.67 MiB** |
+| LibreOffice 26.8.3.1 | 80.3% | 256/278 | **0/278** | 807.2 ms | 58.0 ms | 244.1 ms | 10.5 | – | – | 44.46 MiB |
+| EigenPal 2.39.0 | 70.9% | 257/278 | 1/278 | 775.1 ms | 257.8 ms | 661.0 ms | 3.6 | 278.6 MiB | 578.4 MiB | 21.98 MiB |
+| Syncfusion DocIO (.NET) 28.2.4.0 | 56.1% | 246/278 | 1/278 | 568.8 ms | 60.0 ms | 2507.9 ms | 1.2 | 121.8 MiB | 1128.7 MiB | 18.91 MiB |
+| Aspose.Words (.NET) 26.11.0.0 | 52.1% | 250/278 | **0/278** | 1018.2 ms | 36.2 ms | 356.7 ms | 11.3 | 105.9 MiB | 243.2 MiB | 19.84 MiB |
+| office2pdf (Rust) 0.11.0 | 49.1% | 240/278 | 1/278 | 321.4 ms | 107.5 ms | 242.6 ms | 8.1 | **42.5 MiB** | 250.0 MiB | 30.30 MiB |
+| rdocx (Rust) 0.17.0 | 40.5% | 214/278 | 44/278 | 179.5 ms | 24.0 ms | 227.9 ms | 14.8 | 146.2 MiB | 466.3 MiB | 24.12 MiB |
+| dxpdf (Rust) 0.8.1 | 36.4% | 236/278 | 9/278 | 1024.3 ms | 949.4 ms | 1271.7 ms | 1.0 | 258.3 MiB | 341.4 MiB | 15.80 MiB |
 
-| Converter | Mean ink overlap | Matching page count | Failed conversions | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Total PDF size |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 0.1.0 | **95.7%** | **205/208** | **0/208** | **92.3 ms** | **8.4 ms** | **41.5 ms** | **74.7** | 7.31 MiB |
-| LibreOffice 26.8.3.1 | 85.0% | 199/208 | **0/208** | 774.8 ms | 57.6 ms | 121.5 ms | 12.0 | 24.06 MiB |
-| EigenPal 2.39.0 | 73.4% | 200/208 | **0/208** | 753.1 ms | 257.4 ms | 334.9 ms | 3.9 | 9.28 MiB |
-| Syncfusion DocIO (.NET) 28.2.4.0 | 56.9% | 195/208 | **0/208** | 532.7 ms | 54.7 ms | 1230.2 ms | 2.8 | **6.52 MiB** |
-| office2pdf (Rust) 0.11.0 | 52.4% | 195/208 | **0/208** | 316.0 ms | 106.6 ms | 164.3 ms | 9.0 | 12.73 MiB |
-| Aspose.Words (.NET) 26.11.0.0 | 51.4% | 195/208 | **0/208** | 981.5 ms | 56.7 ms | 183.5 ms | 13.0 | 9.27 MiB |
-| rdocx (Rust) 0.17.0 | 41.9% | 177/208 | 24/208 | 205.0 ms | 23.4 ms | 97.6 ms | 28.1 | 8.69 MiB |
-| dxpdf (Rust) 0.8.1 | 35.5% | 189/208 | 4/208 | 1004.4 ms | 964.5 ms | 1148.4 ms | 1.0 | 7.98 MiB |
+Peak RSS is the peak resident memory during a successful cold conversion. LibreOffice memory is unavailable because GNU time measured its launcher.
 
 The smallest total PDF size is determined among converters that completed every document.
 <!-- benchmark-results:end -->
@@ -470,9 +476,13 @@ one-pixel shift, and gives each document equal weight. Missing pages and failed 
 zero. See the [benchmark README](benchmarks/word/README.md) for the breakdown by reference source,
 measurement details, and reproduction steps.
 
-**Full corpus.** Across all 3,103 documents (2,925 Hugging Face, 178 vendored; 13,426 reference
-pages), ours scores **85.2%** and matches the page count on 2,962. See the [full corpus accuracy
-check](benchmarks/word/README.md#full-corpus-accuracy).
+<!-- full-corpus-accuracy:start -->
+**Full-corpus ink test.** Last run 2026-11-20 (UTC).
+Kanera scored **90.49%** across 2,650 documents
+(2,472 Hugging Face and 178 vendored, 10,376 reference pages).
+Page counts matched on 2,554 documents. 1 conversion failed.
+[Full corpus accuracy](benchmarks/word/README.md#full-corpus-accuracy).
+<!-- full-corpus-accuracy:end -->
 
 ## Development
 

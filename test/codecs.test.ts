@@ -1,6 +1,7 @@
 import { deflateRawSync, deflateSync, inflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { toPdfImage } from '../src/image/image.js';
+import { imageSize, toPdfImage } from '../src/image/image.js';
+import { decodeTiff } from '../src/image/tiff.js';
 import { nodeCompression } from '../src/util/node-compression.js';
 import { pakoCompression } from '../src/util/pako.js';
 import { child, children, parseXml, resolveAlternateContent, textContent } from '../src/util/xml.js';
@@ -223,5 +224,93 @@ describe.each(codecs)('$name PNG decoding', ({ codec }) => {
 
   it('rejects formats it cannot draw', async () => {
     expect(await toPdfImage(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"></svg>'), codec)).toBeNull();
+  });
+});
+
+/** A one-row BMP: `header` is the info header's size; `masks` follow a 40-byte header or fill a larger one's. */
+function bmp(bpp: number, compression: number, pixels: number[], masks: number[] = [], header = 40): Uint8Array {
+  const width = pixels.length / (bpp / 8);
+  const offset = 14 + header + (header === 40 ? masks.length * 4 : 0);
+  const out = new Uint8Array(offset + Math.ceil(pixels.length / 4) * 4);
+  const dv = new DataView(out.buffer);
+  out.set([0x42, 0x4d]);
+  dv.setUint32(2, out.length, true);
+  dv.setUint32(10, offset, true);
+  dv.setUint32(14, header, true);
+  dv.setInt32(18, width, true);
+  dv.setInt32(22, 1, true);
+  dv.setUint16(26, 1, true);
+  dv.setUint16(28, bpp, true);
+  dv.setUint32(30, compression, true);
+  masks.forEach((m, i) => dv.setUint32(54 + i * 4, m, true));
+  out.set(pixels, offset);
+  return out;
+}
+
+describe('raster decoding', () => {
+  const rgb = (img: { data: Uint8Array } | null) => Array.from(inflateSync(img!.data));
+
+  it('reads BMP pixels through their channel masks', async () => {
+    // 32-bit BI_BITFIELDS with the bytes in R, G, B, unused order.
+    expect(rgb(await toPdfImage(bmp(32, 3, [10, 20, 30, 0], [0xff, 0xff00, 0xff0000]), nodeCompression))).toEqual([10, 20, 30]);
+    // 16-bit: 5-6-5 from masks, and the default 5-5-5 when uncompressed.
+    const rgb565 = await toPdfImage(bmp(16, 3, [0x00, 0xf8, 0xe0, 0x07, 0x1f, 0x00], [0xf800, 0x07e0, 0x001f]), nodeCompression);
+    expect(rgb(rgb565)).toEqual([255, 0, 0, 0, 255, 0, 0, 0, 255]);
+    expect(rgb(await toPdfImage(bmp(16, 0, [0x00, 0x7c, 0x10, 0x42]), nodeCompression))).toEqual([255, 0, 0, 132, 132, 132]);
+  });
+
+  it('takes BMP alpha from an alpha mask, treating an all-zero channel as opaque', async () => {
+    const bgra = [0xff0000, 0xff00, 0xff, 0xff000000];
+    const pixels = [30, 20, 10, 128, 60, 50, 40, 255];
+    for (const image of [bmp(32, 3, pixels, bgra, 108), bmp(32, 6, pixels, bgra)]) {
+      const img = await toPdfImage(image, nodeCompression);
+      expect(rgb(img)).toEqual([10, 20, 30, 40, 50, 60]);
+      expect(Array.from(inflateSync(img!.smask!))).toEqual([128, 255]);
+    }
+    // Without an alpha mask the fourth byte is unused, and an alpha channel that is all zero is ignored.
+    expect((await toPdfImage(bmp(32, 3, pixels, bgra.slice(0, 3)), nodeCompression))?.smask).toBeUndefined();
+    expect((await toPdfImage(bmp(32, 3, [30, 20, 10, 0, 60, 50, 40, 0], bgra, 108), nodeCompression))?.smask).toBeUndefined();
+  });
+
+  it('undoes TIFF horizontal prediction without writing to the source bytes', () => {
+    // Three grey pixels, uncompressed, stored as differences: 10, +5, +5.
+    const entries = [[256, 3], [257, 1], [258, 8], [259, 1], [262, 1], [273, 134], [277, 1], [278, 1], [279, 3], [317, 2]];
+    const tiff = new Uint8Array(137);
+    const dv = new DataView(tiff.buffer);
+    tiff.set([0x49, 0x49, 42, 0]);
+    dv.setUint32(4, 8, true);
+    dv.setUint16(8, entries.length, true);
+    entries.forEach(([tag, value], i) => {
+      dv.setUint16(10 + i * 12, tag, true);
+      dv.setUint16(12 + i * 12, 4, true);
+      dv.setUint32(14 + i * 12, 1, true);
+      dv.setUint32(18 + i * 12, value, true);
+    });
+    tiff.set([10, 5, 5], 134);
+    const source = tiff.slice();
+    const grey = () => Array.from(decodeTiff(tiff, nodeCompression.inflateZlib)!.data.filter((_, i) => i % 4 === 0));
+    expect(grey()).toEqual([10, 15, 20]);
+    expect(grey()).toEqual([10, 15, 20]);
+    expect(tiff).toEqual(source);
+  });
+
+  it('skips a JPEG whose frame header has no width or height', async () => {
+    // SOI, a baseline frame header for three 8-bit components, then the start of scan.
+    const jpeg = (w: number, h: number) => new Uint8Array([0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, h >> 8, h & 255, w >> 8, w & 255, 3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xda, 0, 2]);
+    expect(await toPdfImage(jpeg(2, 3), nodeCompression, undefined, false)).toMatchObject({ width: 2, height: 3, filter: 'DCTDecode' });
+    expect(await toPdfImage(jpeg(0, 3), nodeCompression, undefined, false)).toBeNull();
+    expect(await toPdfImage(jpeg(2, 0), nodeCompression, undefined, false)).toBeNull();
+  });
+
+  it('reports no size for truncated PNG, GIF and BMP headers', () => {
+    const cases: Array<[Uint8Array, number]> = [
+      [png(2, 3, 0, [[0, 0], [0, 0], [0, 0]]), 24],
+      [new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 2, 0, 3, 0, 0, 0, 0]), 10],
+      [bmp(24, 0, [0, 0, 0, 0, 0, 0]).map((b, i) => (i === 22 ? 3 : b)), 26],
+    ];
+    for (const [image, needed] of cases) {
+      expect(imageSize(image)).toEqual({ width: 2, height: 3 });
+      expect(imageSize(image.subarray(0, needed - 1))).toBeNull();
+    }
   });
 });

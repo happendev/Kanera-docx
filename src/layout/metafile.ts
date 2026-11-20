@@ -36,7 +36,7 @@ export function metafileOps(image: ImageRef, x: number, y: number, w: number, h:
     clip = op.clip;
     if (op.kind === 'path') out.push({ kind: 'path', segs: op.segs, fill: op.fill ?? null, stroke: op.stroke ?? null, strokeWidth: op.width, nonzero: !op.evenOdd });
     else if (op.kind === 'image')
-      out.push({ kind: 'image', x: op.x, y: op.y, w: op.w, h: op.h, image: { id: `${image.id}#${++images}`, data: op.bmp, contentType: 'image/bmp' }, crop: op.crop, rotation: 0, flipH: false, flipV: false });
+      out.push({ kind: 'image', x: op.x, y: op.y, w: op.w, h: op.h, image: { id: `${image.id}#${++images}`, data: op.dib.header, dibBits: op.dib.bits, contentType: 'image/bmp' }, crop: op.crop, rotation: 0, flipH: false, flipV: false });
     else out.push(...textOps(op, fonts));
   }
   for (let i = 0; i < clip.length; i++) out.push({ kind: 'restore' });

@@ -17,7 +17,7 @@ export function parseGradient(grad: XmlElement, color: ColorOf): { gradient: Gra
   if (!stops.length) return undefined;
   const lin = child(grad, 'a:lin');
   const path = child(grad, 'a:path');
-  const gradient: GradientFill = { stops: stops.map((g) => ({ pos: g.pos, color: g.c.color })), angle: (Number(lin?.attrs.ang) || 0) / 60000 };
+  const gradient: GradientFill = { stops: stops.map((g) => ({ pos: g.pos, color: g.c.color, ...(g.c.alpha < 1 && { alpha: g.c.alpha }) })), angle: (Number(lin?.attrs.ang) || 0) / 60000 };
   if (lin?.attrs.scaled === '1' || lin?.attrs.scaled === 'true') gradient.scaled = true;
   if (path && !lin) {
     const kind = path.attrs.path;

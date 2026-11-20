@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from datetime import datetime, timezone
+from hashlib import file_digest, sha256
 import json
 import math
 import os
@@ -9,14 +10,13 @@ import sys
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from fetch import BENCHMARK_FIXTURES, HERE, OUTPUT, verify
+from fetch import BENCHMARK_FIXTURES, HERE, OUTPUT, benchmark_lock, verify
 from libreoffice_warm import batch_times
 
 GNU_TIME = '/usr/bin/time'
 OFFICE2PDF = OUTPUT / 'office2pdf-bin' / 'office2pdf'
-# Engines whose failures are recorded as zero-score cases instead of stopping the run.
-TOLERANT = ('dxpdf', 'rdocx', 'office2pdf')
-TOLERANT_TIMEOUT_S = 300
+# A failed or timed-out conversion is recorded as a zero-score case instead of stopping the run.
+TIMEOUT_S = 300
 
 
 def version(command):
@@ -72,10 +72,9 @@ def convert_case(fixture, work, node_worker, workers, *, kanera_only=False):
     for engine, command in commands.items():
         target = directory / f'{engine}.pdf'
         target.unlink(missing_ok=True)
-        tolerant = engine in TOLERANT
         start = perf_counter()
         try:
-            metrics, result = measure(command, work / 'rss.txt', TOLERANT_TIMEOUT_S if tolerant else None)
+            metrics, result = measure(command, work / 'rss.txt', TIMEOUT_S)
             if engine == 'libreoffice':
                 (lo / 'input.pdf').replace(target)
             if not target.is_file():
@@ -86,10 +85,9 @@ def convert_case(fixture, work, node_worker, workers, *, kanera_only=False):
         except (subprocess.CalledProcessError, RuntimeError) as error:
             stderr = getattr(error, 'stderr', None)
             message = (stderr or '').strip()[-2000:] or str(error)
-            if not tolerant:
-                raise RuntimeError(f'{name} ({engine}) failed: {message}') from error
             target.unlink(missing_ok=True)
-            print(f'{name} {engine} FAILED: {message.splitlines()[-1] if message else error}', flush=True)
+            summary = next((line.strip() for line in message.splitlines() if line.strip()), str(error))
+            print(f'{name} {engine} FAILED: {summary[:200]}', flush=True)
             yield {'case': name, 'engine': engine, 'cold_ms': (perf_counter() - start) * 1000,
                    'peak_rss_kib': None, 'error': message}
             continue
@@ -107,6 +105,37 @@ def read_batch(command):
     return json.loads(result.stdout)
 
 
+def resumable_warm(engine, cases, work, by_case, max_restarts=5):
+    # A CLI batch can exit partway (LibreOffice occasionally does). Record what it timed, leave the
+    # document it stopped on without a warm time, and continue with a fresh batch after it.
+    command = (office2pdf_command, 'office2pdf') if engine == 'office2pdf' else ()
+    remaining = cases
+    for attempt in range(max_restarts + 1):
+        attempt_dir = work / f'attempt-{attempt}'
+        attempt_dir.mkdir()
+        jobs = [(str(OUTPUT / 'cases' / name / 'input.docx'), str(attempt_dir / f'{i}.pdf'))
+                for i, name in enumerate([remaining[0], *remaining])]
+        times = batch_times(jobs, attempt_dir, *command)
+        if any(not math.isfinite(t) or t <= 0 for t in times):
+            raise ValueError(f'Invalid warm timings for {engine}')
+        for _, target in jobs[:len(times)]:
+            with Path(target).open('rb') as pdf:
+                if pdf.read(5) != b'%PDF-':
+                    raise ValueError(f'Invalid warm conversion output for {engine}')
+        timed = remaining[:max(0, len(times) - 1)]
+        for name, ms in zip(timed, times[1:]):
+            by_case[engine, name]['warm_ms'] = ms
+        if len(timed) == len(remaining):
+            return
+        # The batch stopped on the warm-up or on the next document after those it timed.
+        stopped = remaining[len(timed)]
+        by_case[engine, stopped]['warm_error'] = 'warm batch stopped on this document'
+        remaining = remaining[len(timed) + 1:]
+        if not remaining:
+            return
+    raise RuntimeError(f'{engine} warm batch stopped more than {max_restarts} times')
+
+
 def measure_warm(results, workspace, workers):
     names = [fixture['case'] for fixture in BENCHMARK_FIXTURES]
     by_case = {(row['engine'], row['case']): row for row in results}
@@ -121,10 +150,9 @@ def measure_warm(results, workspace, workers):
         jobs = [(str(OUTPUT / 'cases' / name / 'input.docx'), str(work / f'{i}.pdf'))
                 for i, name in enumerate([cases[0], *cases])]
         print(f'{engine}: warm-up and {len(cases)} warm conversions', flush=True)
-        if engine == 'libreoffice':
-            times = batch_times(jobs, work)
-        elif engine == 'office2pdf':
-            times = batch_times(jobs, work, office2pdf_command, 'office2pdf')
+        if engine in ('libreoffice', 'office2pdf'):
+            resumable_warm(engine, cases, work, by_case)
+            continue
         else:
             jobs_file = work / 'jobs.json'
             jobs_file.write_text(json.dumps(jobs))
@@ -140,12 +168,96 @@ def measure_warm(results, workspace, workers):
             by_case[engine, name]['warm_ms'] = ms
 
 
+def renderer_digest():
+    root = HERE.parents[1]
+    digest = sha256()
+    for path in (HERE / 'convert.mjs', *sorted((root / 'dist').rglob('*.js'))):
+        digest.update(str(path.relative_to(root)).encode())
+        digest.update(b'\0')
+        with path.open('rb') as file:
+            digest.update(file_digest(file, 'sha256').digest())
+    return digest.hexdigest()
+
+
+def load_cold_checkpoint(checkpoint, output, settings, engines):
+    saved = json.loads(checkpoint.read_text())
+    if not isinstance(saved, dict) or saved.get('versions') != settings['versions']:
+        raise ValueError('Checkpoint versions differ from the current run')
+    # Earlier checkpoints only recorded versions and results.
+    for key in ('inputs', 'renderer_build'):
+        if key in saved and saved[key] != settings[key]:
+            raise ValueError(f'Checkpoint {key} differs from the current run')
+    results = saved['results']
+    expected = {(case, engine) for case in settings['inputs'] for engine in engines}
+    if len(results) != len(expected) or {(row['case'], row['engine']) for row in results} != expected:
+        raise ValueError('Checkpoint does not cover the requested engines and fixtures')
+    for case, digest in settings['inputs'].items():
+        verify(OUTPUT / 'cases' / case / 'input.docx', digest)
+    for row in results:
+        if 'error' not in row:
+            pdf = output / 'cases' / row['case'] / f"{row['engine']}.pdf"
+            with pdf.open('rb') as file:
+                if file.read(5) != b'%PDF-':
+                    raise ValueError(f'Invalid cold output {pdf}')
+    return results
+
+
+def write_log(path, work, data):
+    temporary = work / path.name
+    temporary.write_text(json.dumps(data, indent=2) + '\n')
+    temporary.replace(path)
+
+
+def run_conversions(args, versions, workers):
+    output = OUTPUT / 'kanera-only' if args.kanera_only else OUTPUT
+    output.mkdir(parents=True, exist_ok=True)
+    log = output / 'conversion.json'
+    checkpoint = output / 'conversion-cold.json'
+    settings = {
+        'versions': versions,
+        'inputs': {fixture['case']: fixture['docx_sha256'] for fixture in BENCHMARK_FIXTURES},
+        'renderer_build': renderer_digest(),
+    }
+    with TemporaryDirectory(prefix='convert-', dir=output) as temporary:
+        work = Path(temporary)
+        if not args.fresh and not log.exists() and checkpoint.exists():
+            engines = ('ours',) if args.kanera_only else ('ours', 'eigenpal', 'libreoffice', *workers)
+            try:
+                results = load_cold_checkpoint(checkpoint, output, settings, engines)
+            except (KeyError, OSError, TypeError, ValueError) as error:
+                raise SystemExit(f'Cannot resume from {checkpoint}: {error}. '
+                                 'Retry with the original settings or use --fresh.') from None
+            print(f'Resuming warm conversions from {checkpoint} ({len(results)} cold results)', flush=True)
+        else:
+            # Invalidate old logs before replacing any cold PDFs.
+            checkpoint.unlink(missing_ok=True)
+            log.unlink(missing_ok=True)
+            results = []
+            for fixture in BENCHMARK_FIXTURES:
+                results.extend(convert_case(fixture, work, HERE / 'convert.mjs', workers,
+                                            kanera_only=args.kanera_only))
+            write_log(checkpoint, work, dict(settings, results=results))
+
+        try:
+            measure_warm(results, work, workers)
+        except Exception:
+            print(f'Cold results saved in {checkpoint}. Retry the same command without --fresh to resume.',
+                  file=sys.stderr, flush=True)
+            raise
+        write_log(log, work, {
+            'completed_at': datetime.now(timezone.utc).isoformat(),
+            'versions': versions,
+            'results': results,
+        })
+
+
 def main():
     parser = ArgumentParser(description='Run cold and warm conversions on the pinned DOCX fixtures.')
     parser.add_argument('--kanera-only', action='store_true', help='Run Kanera alone on all benchmark fixtures.')
     parser.add_argument('--aspose', action='store_true', help='Include the licensed Aspose .NET runner.')
     parser.add_argument('--syncfusion', action='store_true', help='Include the licensed Syncfusion DocIO .NET runner.')
     parser.add_argument('--rust', action='store_true', help='Include the Rust engines dxpdf, rdocx and office2pdf.')
+    parser.add_argument('--fresh', action='store_true', help='Start cold conversions even if a warm pass is pending.')
     args = parser.parse_args()
     if args.kanera_only and (args.aspose or args.syncfusion or args.rust):
         parser.error('--kanera-only cannot be combined with --aspose, --syncfusion or --rust')
@@ -183,23 +295,8 @@ def main():
         workers['rdocx'] = [*runner, 'rdocx']
         workers['office2pdf'] = [OFFICE2PDF]
 
-    output = OUTPUT / 'kanera-only' if args.kanera_only else OUTPUT
-    output.mkdir(parents=True, exist_ok=True)
-    log = output / 'conversion.json'
-    log.unlink(missing_ok=True)
-    results = []
-    with TemporaryDirectory(prefix='convert-', dir=output) as temporary:
-        work = Path(temporary)
-        for fixture in BENCHMARK_FIXTURES:
-            results.extend(convert_case(fixture, work, HERE / 'convert.mjs', workers,
-                                        kanera_only=args.kanera_only))
-        measure_warm(results, work, workers)
-    completed_at = datetime.now(timezone.utc).isoformat()
-    log.write_text(json.dumps({
-        'completed_at': completed_at,
-        'versions': versions,
-        'results': results,
-    }, indent=2) + '\n')
+    with benchmark_lock(OUTPUT):
+        run_conversions(args, versions, workers)
 
 
 if __name__ == '__main__':

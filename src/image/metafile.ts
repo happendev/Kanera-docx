@@ -21,9 +21,14 @@ export interface MetaFont {
   strike: boolean;
 }
 
+interface Dib {
+  header: Uint8Array;
+  bits: Uint8Array;
+}
+
 export type MetaOp =
   | { kind: 'path'; segs: MetaSeg[]; fill?: string; stroke?: string; width: number; evenOdd: boolean; clip: MetaSeg[][] }
-  | { kind: 'image'; x: number; y: number; w: number; h: number; bmp: Uint8Array; crop?: { l: number; t: number; r: number; b: number }; clip: MetaSeg[][] }
+  | { kind: 'image'; x: number; y: number; w: number; h: number; dib: Dib; crop?: { l: number; t: number; r: number; b: number }; clip: MetaSeg[][] }
   | {
       kind: 'text';
       x: number;
@@ -158,18 +163,10 @@ function arcSegs(cx: number, cy: number, rx: number, ry: number, a0: number, a1:
   return segs;
 }
 
-/** A BMP file for a device-independent bitmap's header and bits. */
-function bmpFile(bytes: Uint8Array, bmiOff: number, bmiLen: number, bitsOff: number, bitsLen: number): Uint8Array | null {
-  if (bmiLen < 12 || bmiOff + bmiLen > bytes.length || bitsOff + bitsLen > bytes.length) return null;
-  const out = new Uint8Array(14 + bmiLen + bitsLen);
-  const v = new DataView(out.buffer);
-  out[0] = 0x42;
-  out[1] = 0x4d;
-  v.setUint32(2, out.length, true);
-  v.setUint32(10, 14 + bmiLen, true);
-  out.set(bytes.subarray(bmiOff, bmiOff + bmiLen), 14);
-  out.set(bytes.subarray(bitsOff, bitsOff + bitsLen), 14 + bmiLen);
-  return out;
+// Preserve views into the record. The raster decoder checks its pixel budget before allocating.
+function dibParts(bytes: Uint8Array, recordEnd: number, bmiOff: number, bmiLen: number, bitsOff: number, bitsLen: number): Dib | null {
+  if (bmiLen < 12 || bitsLen <= 0 || bmiOff + bmiLen > recordEnd || bitsOff + bitsLen > recordEnd) return null;
+  return { header: bytes.subarray(bmiOff, bmiOff + bmiLen), bits: bytes.subarray(bitsOff, bitsOff + bitsLen) };
 }
 
 /** Length of a packed DIB's header and colour table (WMF bitmaps carry the bits right after). */
@@ -190,7 +187,6 @@ class Player {
   readonly ops: MetaOp[] = [];
   dc: DcState;
   private stack: DcState[] = [];
-  objects: (GdiObject | undefined)[] = [];
   path: MetaSeg[] | null = null;
   /** A path closed by ENDPATH, waiting for a fill, stroke or clip record. */
   pendingPath: MetaSeg[] | null = null;
@@ -223,7 +219,8 @@ class Player {
   }
 
   save(): void {
-    this.stack.push({ ...this.dc, clip: [...this.dc.clip] });
+    if (this.stack.length >= 1024) throw new Error('Metafile saved state limit exceeded');
+    this.stack.push({ ...this.dc });
   }
   restore(n: number): void {
     // A positive argument names the save (1 = first), a negative one counts back from the latest.
@@ -403,11 +400,12 @@ class Player {
 
   /** Clip to a polygon list in page coordinates (intersecting with the current clip). */
   clipTo(segs: MetaSeg[], replace: boolean): void {
+    if (!replace && this.dc.clip.length >= 128) throw new Error('Metafile clip depth limit exceeded');
     this.dc.clip = replace ? [segs] : [...this.dc.clip, segs];
   }
 
-  image(bmp: Uint8Array | null, l: number, t: number, w: number, h: number, crop?: { l: number; t: number; r: number; b: number }): void {
-    if (!bmp) return;
+  image(dib: Dib | null, l: number, t: number, w: number, h: number, crop?: { l: number; t: number; r: number; b: number }): void {
+    if (!dib) return;
     const a = this.pt(l, t);
     const b = this.pt(l + w, t + h);
     const x = Math.min(a[0], b[0]);
@@ -415,7 +413,7 @@ class Player {
     const W = Math.abs(b[0] - a[0]);
     const H = Math.abs(b[1] - a[1]);
     if (W <= 0 || H <= 0) return;
-    this.ops.push({ kind: 'image', x, y, w: W, h: H, bmp, crop, clip: this.dc.clip });
+    this.ops.push({ kind: 'image', x, y, w: W, h: H, dib, crop, clip: this.dc.clip });
   }
 
   text(x: number, y: number, s: string, dx: number[] | undefined): void {
@@ -522,7 +520,8 @@ function playEmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
     for (let i = 0; i < n; i++) out.push(small ? [d.getInt16(o + i * 4, true), d.getInt16(o + i * 4 + 2, true)] : [i32(o + i * 8), i32(o + i * 8 + 4)]);
     return out;
   };
-  const obj = (index: number) => (index & 0x80000000 ? stockObject(index) : p.objects[index]);
+  const objects = new Map<number, GdiObject>();
+  const obj = (index: number) => (index & 0x80000000 ? stockObject(index) : objects.get(index));
 
   let off = 0;
   let records = 0;
@@ -699,26 +698,25 @@ function playEmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
         p.select(obj(u32(r + 8)));
         break;
       case 38: // CREATEPEN
-        p.objects[u32(r + 8)] = { kind: 'pen', style: u32(r + 12), width: i32(r + 16), color: colorRef(d, r + 24) };
+        objects.set(u32(r + 8), { kind: 'pen', style: u32(r + 12), width: i32(r + 16), color: colorRef(d, r + 24) });
         break;
       case 95: // EXTCREATEPEN
-        p.objects[u32(r + 8)] = { kind: 'pen', style: u32(r + 28), width: u32(r + 32), color: u32(r + 36) === 1 ? '000000' : colorRef(d, r + 40) };
-        if (u32(r + 36) === 1) (p.objects[u32(r + 8)] as Pen).style = 5;
+        objects.set(u32(r + 8), { kind: 'pen', style: u32(r + 36) === 1 ? 5 : u32(r + 28), width: u32(r + 32), color: u32(r + 36) === 1 ? '000000' : colorRef(d, r + 40) });
         break;
       case 39: // CREATEBRUSHINDIRECT
-        p.objects[u32(r + 8)] = { kind: 'brush', style: u32(r + 12), color: colorRef(d, r + 16) };
+        objects.set(u32(r + 8), { kind: 'brush', style: u32(r + 12), color: colorRef(d, r + 16) });
         break;
       case 93: // CREATEMONOBRUSH
       case 94: // CREATEDIBPATTERNBRUSHPT
-        p.objects[u32(r + 8)] = { kind: 'brush', style: 0, color: '808080' };
+        objects.set(u32(r + 8), { kind: 'brush', style: 0, color: '808080' });
         break;
       case 40: // DELETEOBJECT
-        p.objects[u32(r + 8)] = undefined;
+        objects.delete(u32(r + 8));
         break;
       case 82: {
         // EXTCREATEFONTINDIRECTW
         const o = r + 12;
-        p.objects[u32(r + 8)] = {
+        objects.set(u32(r + 8), {
           kind: 'font',
           height: i32(o),
           escapement: i32(o + 8),
@@ -727,7 +725,7 @@ function playEmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
           underline: !!bytes[o + 21],
           strike: !!bytes[o + 22],
           face: readFace(bytes, o + 28, true),
-        };
+        });
         break;
       }
       case 42: {
@@ -811,7 +809,7 @@ function playEmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
           break;
         }
         if (!copiesSource(rop)) break;
-        const bmp = bmpFile(bytes, r + u32(r + 84), cbBmi, r + u32(r + 92), u32(r + 96));
+        const bmp = dibParts(bytes, off, r + u32(r + 84), cbBmi, r + u32(r + 92), u32(r + 96));
         const sx = i32(r + 44);
         const sy = i32(r + 48);
         const sw = type === 77 ? i32(r + 100) : w;
@@ -821,14 +819,14 @@ function playEmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
       }
       case 80: {
         // SETDIBITSTODEVICE
-        const bmp = bmpFile(bytes, r + u32(r + 48), u32(r + 52), r + u32(r + 56), u32(r + 60));
+        const bmp = dibParts(bytes, off, r + u32(r + 48), u32(r + 52), r + u32(r + 56), u32(r + 60));
         p.image(bmp, i32(r + 24), i32(r + 28), i32(r + 40), i32(r + 44), sourceCrop(d, r + u32(r + 48), i32(r + 32), i32(r + 36), i32(r + 40), i32(r + 44)));
         break;
       }
       case 81: {
         // STRETCHDIBITS
         if (!copiesSource(u32(r + 68))) break;
-        const bmp = bmpFile(bytes, r + u32(r + 48), u32(r + 52), r + u32(r + 56), u32(r + 60));
+        const bmp = dibParts(bytes, off, r + u32(r + 48), u32(r + 52), r + u32(r + 56), u32(r + 60));
         p.image(bmp, i32(r + 24), i32(r + 28), i32(r + 72), i32(r + 76), sourceCrop(d, r + u32(r + 48), i32(r + 32), i32(r + 36), i32(r + 40), i32(r + 44)));
         break;
       }
@@ -900,10 +898,10 @@ function playWmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
   const headerWords = u16(off + 2);
   const numObjects = u16(off + 10);
   off += headerWords * 2;
-  p.objects = new Array(Math.max(numObjects, 1)).fill(undefined);
+  const objects: (GdiObject | undefined)[] = new Array(Math.max(numObjects, 1)).fill(undefined);
   const free = () => {
-    const i = p.objects.findIndex((o) => o === undefined);
-    return i < 0 ? p.objects.length : i;
+    const i = objects.findIndex((o) => o === undefined);
+    return i < 0 ? objects.length : i;
   };
   // The window (from the placeable bounds, then the window records) maps onto the target; WMF has
   // no world transform or reference device.
@@ -963,13 +961,13 @@ function playWmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
         p.restore(s16(r));
         break;
       case 0x02fa: // CREATEPENINDIRECT
-        p.objects[free()] = { kind: 'pen', style: u16(r), width: s16(r + 2), color: colorRef(d, r + 6) };
+        objects[free()] = { kind: 'pen', style: u16(r), width: s16(r + 2), color: colorRef(d, r + 6) };
         break;
       case 0x02fc: // CREATEBRUSHINDIRECT
-        p.objects[free()] = { kind: 'brush', style: u16(r), color: colorRef(d, r + 2) };
+        objects[free()] = { kind: 'brush', style: u16(r), color: colorRef(d, r + 2) };
         break;
       case 0x02fb: // CREATEFONTINDIRECT
-        p.objects[free()] = {
+        objects[free()] = {
           kind: 'font',
           height: s16(r),
           escapement: s16(r + 4),
@@ -983,18 +981,18 @@ function playWmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
       case 0x00f7: // CREATEPALETTE
       case 0x01f9: // CREATEPATTERNBRUSH
       case 0x06ff: // CREATEREGION
-        p.objects[free()] = { kind: 'other' };
+        objects[free()] = { kind: 'other' };
         break;
       case 0x0142: // DIBCREATEPATTERNBRUSH
-        p.objects[free()] = { kind: 'brush', style: 0, color: '808080' };
+        objects[free()] = { kind: 'brush', style: 0, color: '808080' };
         break;
       case 0x012d: {
         // SELECTOBJECT
-        p.select(p.objects[u16(r)]);
+        p.select(objects[u16(r)]);
         break;
       }
       case 0x01f0: // DELETEOBJECT
-        p.objects[u16(r)] = undefined;
+        objects[u16(r)] = undefined;
         break;
       case 0x0214: // MOVETO
         p.cur = [s16(r + 2), s16(r)];
@@ -1100,7 +1098,7 @@ function playWmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
         const [sh, sw, sy, sx, dh, dw, dy, dx] = [s16(r + 6), s16(r + 8), s16(r + 10), s16(r + 12), s16(r + 14), s16(r + 16), s16(r + 18), s16(r + 20)];
         const dib = r + 22;
         const head = dibHeaderLength(d, dib);
-        p.image(bmpFile(bytes, dib, head, dib + head, r + size - 6 - dib - head), dx, dy, dw, dh, sourceCrop(d, dib, sx, sy, sw, sh));
+        p.image(dibParts(bytes, off, dib, head, dib + head, r + size - 6 - dib - head), dx, dy, dw, dh, sourceCrop(d, dib, sx, sy, sw, sh));
         break;
       }
       case 0x0b41: // DIBSTRETCHBLT
@@ -1129,7 +1127,7 @@ function playWmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
         if (!copiesSource(rop)) break;
         const dib = base + (stretch ? 16 : 12);
         const head = dibHeaderLength(d, dib);
-        p.image(bmpFile(bytes, dib, head, dib + head, r + size - 6 - dib - head), dx, dy, dw, dh, sourceCrop(d, dib, sx, sy, sw, sh));
+        p.image(dibParts(bytes, off, dib, head, dib + head, r + size - 6 - dib - head), dx, dy, dw, dh, sourceCrop(d, dib, sx, sy, sw, sh));
         break;
       }
       case 0x0d33: {
@@ -1137,7 +1135,7 @@ function playWmf(bytes: Uint8Array, target: MetaTarget): MetaOp[] | null {
         const [sy, sx, h, w, dy, dx] = [s16(r + 6), s16(r + 8), s16(r + 10), s16(r + 12), s16(r + 14), s16(r + 16)];
         const dib = r + 18;
         const head = dibHeaderLength(d, dib);
-        p.image(bmpFile(bytes, dib, head, dib + head, r + size - 6 - dib - head), dx, dy, w, h, sourceCrop(d, dib, sx, sy, w, h));
+        p.image(dibParts(bytes, off, dib, head, dib + head, r + size - 6 - dib - head), dx, dy, w, h, sourceCrop(d, dib, sx, sy, w, h));
         break;
       }
       default:

@@ -44,6 +44,8 @@ export interface DocxSpec {
   glossary?: string;
   /** Contents of `<cp:coreProperties>` (title, author and the like). */
   coreProperties?: string;
+  /** Part name of the core properties, which the package relationship points to. */
+  corePropertiesPart?: string;
 }
 
 export const A4_SECT = '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>';
@@ -124,11 +126,12 @@ export function makeDocx(spec: DocxSpec): Uint8Array {
   }
   const packageRels = [`<Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/>`];
   if (spec.coreProperties !== undefined) {
+    const part = spec.corePropertiesPart ?? 'docProps/core.xml';
     files.push([
-      'docProps/core.xml',
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">${spec.coreProperties}</cp:coreProperties>`,
+      part,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">${spec.coreProperties}</cp:coreProperties>`,
     ]);
-    packageRels.push('<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>');
+    packageRels.push(`<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="${part}"/>`);
   }
 
   files.push([

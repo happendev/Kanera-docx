@@ -2,7 +2,7 @@ import type { FontRegistry } from '../fonts/registry.js';
 import { arabicForms, bidiClass, bidiLevels, joinsArabic, mirrored, visualOrder } from './bidi.js';
 import type { DocSettings, Drawing, FieldInline, Link, Paragraph, RunProps, TabStop } from '../docx/model.js';
 import { shapeSimple, shapeText, type ShapedRun } from './shaper.js';
-import { translateOps, type DrawOp, type GlyphOp } from './types.js';
+import { appendOps, translateOps, type DrawOp, type GlyphOp } from './types.js';
 import { layoutMath, mathLineProps, type MathBox } from './math.js';
 
 const EPS = 0.01;
@@ -48,6 +48,8 @@ export interface ParagraphEnv {
   /** Extra width per character when the section uses a character grid. */
   charGrid?: number;
   drawInline(drawing: Drawing, x: number, y: number, w: number, h: number): DrawOp[];
+  /** The drawing at the size it is laid out at (a text box fitted to its text). */
+  fitDrawing?(drawing: Drawing): Drawing;
 }
 
 type Atom =
@@ -146,6 +148,7 @@ export class ParagraphLayout {
   /** Atoms before the label: page or column breaks opening the paragraph. */
   private labelStart = 0;
   private hasLabel = false;
+  private readonly relativeRules: Array<{ index: number; atom: Extract<Atom, { k: 'obj' }> }> = [];
   readonly tabs: TabStop[];
 
   constructor(
@@ -188,11 +191,13 @@ export class ParagraphLayout {
           this.atoms.push({ k: 'br', type: inl.breakType, run: shapeSimple(' ', inl.props, fonts)[0] ?? this.markRun });
           break;
         case 'drawing': {
-          const d = inl.drawing;
+          const d = env.fitDrawing?.(inl.drawing) ?? inl.drawing;
           if (d.inline) {
             const w = d.width + d.effectL + d.effectR;
             const h = d.height + d.effectT + d.effectB;
-            this.atoms.push({ k: 'obj', drawing: d, w, h, props: inl.props, link: inl.link, run: shapeSimple(' ', inl.props, fonts)[0] ?? this.markRun });
+            const atom = { k: 'obj' as const, drawing: d, w, h, props: inl.props, link: inl.link, run: shapeSimple(' ', inl.props, fonts)[0] ?? this.markRun };
+            this.atoms.push(atom);
+            if (d.hr && d.hr.pct > 0) this.relativeRules.push({ index: this.atoms.length - 1, atom });
           } else this.atoms.push({ k: 'float', drawing: d });
           break;
         }
@@ -351,7 +356,8 @@ export class ParagraphLayout {
     }
     const label = atoms.slice(0, this.labelEnd);
     const breaks = atoms.slice(this.labelEnd, lead);
-    atoms.splice(0, lead, ...breaks, ...label);
+    for (let k = 0; k < breaks.length; k++) atoms[k] = breaks[k];
+    for (let k = 0; k < label.length; k++) atoms[breaks.length + k] = label[k];
     this.labelStart = breaks.length;
     this.labelEnd = breaks.length + label.length;
   }
@@ -461,9 +467,8 @@ export class ParagraphLayout {
   nextLine(left: number, right: number, areaWidth: number): Line | null {
     const atoms = this.atoms;
     // A horizontal rule given as a share of the column takes it from the text width.
-    for (let k = this.pos; k < atoms.length; k++) {
-      const a = atoms[k];
-      if (a.k === 'obj' && a.drawing.hr && a.drawing.hr.pct > 0) a.w = a.drawing.width = a.drawing.hr.pct * Math.max(0, right - left);
+    for (const { index, atom } of this.relativeRules) {
+      if (index >= this.pos) atom.w = atom.drawing.width = atom.drawing.hr!.pct * Math.max(0, right - left);
     }
     if (this.pos >= atoms.length && !this.firstLine && !this.pendingMarkLine) return null;
     const start = this.pos;
@@ -872,18 +877,18 @@ export class ParagraphLayout {
   /** Width of the text following atom i up to the next tab/break (and to a decimal point if asked). */
   private segmentWidth(i: number, decimal = false): number {
     let w = 0;
-    for (let k = i + 1; k < this.atoms.length; k++) {
-      const a = this.atoms[k];
-      if (a.k === 'tab' || a.k === 'ptab' || a.k === 'br') break;
-      if (decimal && a.k === 'g' && (a.cp === 0x2e || a.cp === 0x2c)) break;
-      w += atomWidth(a);
-    }
     // Trailing spaces do not count towards alignment.
+    let spaces = 0;
     for (let k = i + 1; k < this.atoms.length; k++) {
       const a = this.atoms[k];
       if (a.k === 'tab' || a.k === 'ptab' || a.k === 'br') break;
+      if (decimal && a.k === 'g' && (a.cp === 0x2e || a.cp === 0x2c)) return w;
+      const aw = atomWidth(a);
+      w += aw;
+      if (a.k === 'g' && isSpaceCp(a.cp)) spaces += aw;
+      else if (aw > 0) spaces = 0;
     }
-    return w;
+    return w - spaces;
   }
 
   private resolveTab(i: number, x: number, first: boolean, areaWidth: number, isLabelTab: boolean): { width: number; leader: TabStop['leader']; overflow: boolean; reach?: number } {
@@ -1048,7 +1053,7 @@ export class ParagraphLayout {
           ops.push(cur);
         }
         cur.gids.push(a.cp === 0xad ? run_hyphen(a.run) : g.gid);
-        cur.xs.push(x - cur.x);
+        cur.xs.push(x - cur.x + (g.dx ?? 0));
         cur.texts.push(a.cp === 0xad ? '-' : g.text);
       } else {
         flushDeco(k - 1);
@@ -1056,12 +1061,12 @@ export class ParagraphLayout {
         segStart = -1;
         cur = null;
         if (a.k === 'math') {
-          ops.push(...translateOps(a.box.ops, x, baseline));
+          appendOps(ops, translateOps(a.box.ops, x, baseline));
         } else if (a.k === 'obj') {
           const w = a.w;
           const h = a.h;
           const y = baseline - h - a.props.position;
-          ops.push(...this.env.drawInline(a.drawing, x + a.drawing.effectL, y + a.drawing.effectT, a.drawing.width, a.drawing.height));
+          appendOps(ops, this.env.drawInline(a.drawing, x + a.drawing.effectL, y + a.drawing.effectT, a.drawing.width, a.drawing.height));
           if (a.link) ops.push({ kind: 'link', x, y, w, h, link: a.link });
         } else if (a.k === 'sep') {
           const w = a.w < 0 ? line.right - line.left : a.w;
@@ -1129,9 +1134,7 @@ export class ParagraphLayout {
     ops: DrawOp[],
     isTab = false,
   ): void {
-    const props = run.props;
     if (to < from) return;
-    const lineStart = line.start;
     // Trailing spaces at the end of a line are not underlined or highlighted.
     let last = to;
     if (!isTab) {
@@ -1142,9 +1145,49 @@ export class ParagraphLayout {
       }
     }
     if (last < from) return;
-    const x1 = positions[from - lineStart];
-    const x2 = positions[last - lineStart] + widthOf(last);
+    for (const span of this.visualSpans(from, last, positions, widthOf, line)) this.decorateSpan(run, span, positions, line, baseline, deco, back, ops, isTab);
+  }
+
+  /**
+   * The stretches of the line that atoms `from`..`last` cover, left to right, each with its atoms in
+   * visual order. Right-to-left text runs from right to left once reordered, and text of the other
+   * direction set inside it splits a run into pieces apart on the line.
+   */
+  private visualSpans(from: number, last: number, positions: number[], widthOf: (k: number) => number, line: Line): Array<{ x1: number; x2: number; ks: number[] }> {
+    const ls = line.start;
+    if (!this.levels) return [{ x1: positions[from - ls], x2: positions[last - ls] + widthOf(last), ks: Array.from({ length: last - from + 1 }, (_, i) => from + i) }];
+    const order = Array.from({ length: line.end - ls }, (_, i) => ls + i).sort((a, b) => positions[a - ls] - positions[b - ls] || a - b);
+    const spans: Array<{ x1: number; x2: number; ks: number[] }> = [];
+    let cur: (typeof spans)[number] | null = null;
+    for (const k of order) {
+      const w = widthOf(k);
+      if (k < from || k > last) {
+        if (w > EPS) cur = null;
+        continue;
+      }
+      const x = positions[k - ls];
+      if (cur) {
+        cur.x2 = Math.max(cur.x2, x + w);
+        cur.ks.push(k);
+      } else spans.push((cur = { x1: x, x2: x + w, ks: [k] }));
+    }
+    return spans;
+  }
+
+  private decorateSpan(
+    run: ShapedRun,
+    { x1, x2, ks }: { x1: number; x2: number; ks: number[] },
+    positions: number[],
+    line: Line,
+    baseline: number,
+    deco: DrawOp[],
+    back: DrawOp[],
+    ops: DrawOp[],
+    isTab: boolean,
+  ): void {
     if (x2 <= x1) return;
+    const props = run.props;
+    const lineStart = line.start;
     const font = run.face.face.font;
     const em = run.size / font.unitsPerEm;
     const yBase = baseline - run.baselineShift;
@@ -1163,7 +1206,7 @@ export class ParagraphLayout {
       if (style === 'words') {
         // Underline each word, not the spaces between them.
         let segX: number | null = null;
-        for (let k = from; k <= last; k++) {
+        for (const k of ks) {
           const a = this.atoms[k];
           const isSp = a.k === 'g' && isSpaceCp(a.cp);
           const px = positions[k - lineStart];

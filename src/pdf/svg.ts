@@ -94,7 +94,7 @@ function color(value: string, current: string, stroke: boolean): string {
   if (value === 'currentcolor') value = current.trim().toLowerCase();
   if (value === 'none') return '';
   let rgb: number[];
-  const hex = COLORS[value] ?? (/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/.test(value) ? value.slice(1) : undefined);
+  const hex = Object.hasOwn(COLORS, value) ? COLORS[value] : (/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/.test(value) ? value.slice(1) : undefined);
   if (hex) {
     const pairs = hex.length === 3 ? [...hex].map((ch) => ch + ch) : hex.match(/../g)!;
     rgb = pairs.map((pair) => parseInt(pair, 16) / 255);

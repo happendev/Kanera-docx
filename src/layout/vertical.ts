@@ -1,4 +1,3 @@
-import { singleSubstitutions } from '../fonts/gsub.js';
 import type { FontFace } from '../fonts/registry.js';
 import type { DrawOp, GlyphOp } from './types.js';
 
@@ -32,9 +31,8 @@ const verticalForms = new WeakMap<FontFace, Map<number, number>>();
 function verticalFormsOf(face: FontFace): Map<number, number> {
   let out = verticalForms.get(face);
   if (!out) {
-    const gsub = face.font.tableBytes('GSUB');
-    out = gsub ? singleSubstitutions(gsub, 'vert') : new Map<number, number>();
-    if (gsub && !out.size) out = singleSubstitutions(gsub, 'vrt2');
+    out = face.substitutions('vert');
+    if (!out.size) out = face.substitutions('vrt2');
     verticalForms.set(face, out);
   }
   return out;

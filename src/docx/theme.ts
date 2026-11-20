@@ -66,7 +66,7 @@ export function parseTheme(root: XmlElement | undefined, langs: { eastAsia?: str
       const srgb = child(c, 'a:srgbClr');
       const sys = child(c, 'a:sysClr');
       const val = srgb?.attrs.val ?? sys?.attrs.lastClr ?? (sys?.attrs.val === 'window' ? 'FFFFFF' : sys?.attrs.val === 'windowText' ? '000000' : undefined);
-      if (val) theme.colors[name] = val.toUpperCase();
+      if (val && /^[0-9a-f]{6}$/i.test(val)) theme.colors[name] = val.toUpperCase();
     }
   }
   const fonts = descendant(root, 'a:fontScheme');
@@ -107,9 +107,9 @@ export function themeColorValue(theme: Theme, name: string, mapping?: Record<str
     followedHyperlink: 'folHlink',
     phClr: 'accent1',
   };
-  const slot = map[name] ?? name;
+  const slot = Object.hasOwn(map, name) ? map[name] : name;
   const norm = slot === 'dark1' ? 'dk1' : slot === 'light1' ? 'lt1' : slot === 'dark2' ? 'dk2' : slot === 'light2' ? 'lt2' : slot;
-  return theme.colors[norm];
+  return Object.hasOwn(theme.colors, norm) ? theme.colors[norm] : undefined;
 }
 
 export function themeFont(theme: Theme, ref: string): string | undefined {

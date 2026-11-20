@@ -1,3 +1,4 @@
+import { arc } from '../util/arc.js';
 import { child, children, descendant, descendants, path, resolveAlternateContent, type XmlElement } from '../util/xml.js';
 import { parseChart, type ChartPointBudget } from './chart.js';
 import { parseGradient } from './gradient.js';
@@ -235,14 +236,40 @@ function applyGeometry(d: Drawing, spPr: XmlElement | undefined): void {
       const h = Number(p.attrs.h ?? 0) || Number(ext?.attrs.cy ?? 0) || 1;
       const segs: Array<{ op: 'M' | 'L' | 'C' | 'Z'; pts: number[] }> = [];
       const pts = (el: XmlElement) => children(el, 'a:pt').flatMap((pt) => [(Number(pt.attrs.x) || 0) / w, (Number(pt.attrs.y) || 0) / h]);
+      // The current point and the subpath's start: a quadratic curve begins at the current point.
+      let [cx, cy, sx, sy] = [0, 0, 0, 0];
       for (const cmd of children(p)) {
-        if (cmd.name === 'a:moveTo') segs.push({ op: 'M', pts: pts(cmd) });
-        else if (cmd.name === 'a:lnTo') segs.push({ op: 'L', pts: pts(cmd) });
-        else if (cmd.name === 'a:cubicBezTo') segs.push({ op: 'C', pts: pts(cmd) });
-        else if (cmd.name === 'a:quadBezTo') {
-          const q = pts(cmd);
-          segs.push({ op: 'C', pts: [q[0], q[1], q[0], q[1], q[2], q[3]] });
-        } else if (cmd.name === 'a:close') segs.push({ op: 'Z', pts: [] });
+        const q = pts(cmd);
+        if (cmd.name === 'a:moveTo' && q.length >= 2) {
+          segs.push({ op: 'M', pts: q.slice(0, 2) });
+          [cx, cy, sx, sy] = [q[0], q[1], q[0], q[1]];
+        } else if (cmd.name === 'a:lnTo' && q.length >= 2) {
+          segs.push({ op: 'L', pts: q.slice(0, 2) });
+          [cx, cy] = [q[0], q[1]];
+        } else if (cmd.name === 'a:cubicBezTo' && q.length >= 6) {
+          segs.push({ op: 'C', pts: q.slice(0, 6) });
+          [cx, cy] = [q[4], q[5]];
+        } else if (cmd.name === 'a:quadBezTo' && q.length >= 4) {
+          // The same curve as a cubic: its control points lie two thirds of the way from each end to the quadratic's.
+          const k = 2 / 3;
+          segs.push({ op: 'C', pts: [cx + k * (q[0] - cx), cy + k * (q[1] - cy), q[2] + k * (q[0] - q[2]), q[3] + k * (q[1] - q[3]), q[2], q[3]] });
+          [cx, cy] = [q[2], q[3]];
+        } else if (cmd.name === 'a:arcTo') {
+          const n = (a: string) => Number(cmd.attrs[a]) || 0;
+          const [wR, hR, swAng] = [Math.abs(n('wR')), Math.abs(n('hR')), n('swAng')];
+          if (wR && hR && swAng) {
+            // The arc continues from the current point. Its angles are measured in path units, so it is
+            // traced there and then scaled to the path like a point.
+            const a = arc(0, 0, wR, hR, n('stAng') / 60000, swAng / 60000);
+            const [ox, oy] = [cx * w - a.from[0], cy * h - a.from[1]];
+            for (const c of a.segs) segs.push({ op: 'C', pts: c.pts.map((v, i) => (i % 2 === 0 ? (v + ox) / w : (v + oy) / h)) });
+            const end = segs[segs.length - 1].pts;
+            [cx, cy] = [end[4], end[5]];
+          }
+        } else if (cmd.name === 'a:close') {
+          segs.push({ op: 'Z', pts: [] });
+          [cx, cy] = [sx, sy];
+        }
       }
       // A shape can fill one subpath and only outline another (an open arc beside a closed body).
       d.path.push({ fill: p.attrs.fill !== 'none', stroke: p.attrs.stroke !== '0' && p.attrs.stroke !== 'false', segs });
@@ -672,10 +699,10 @@ function vmlColor(v: string | undefined): Color | undefined {
   return hexColor(c) ?? undefined;
 }
 
-function vmlFraction(v: string | undefined): number {
-  if (!v) return 0;
-  if (v.endsWith('f')) return (Number(v.slice(0, -1)) || 0) / 65536;
-  return Number(v) || 0;
+/** A VML fraction: a number, 16.16 fixed point ("32768f") or a percentage; `fallback` when absent or unreadable. */
+function vmlFraction(v: string | undefined, fallback = 0): number {
+  const n = !v ? NaN : v.endsWith('f') ? Number(v.slice(0, -1)) / 65536 : v.endsWith('%') ? Number(v.slice(0, -1)) / 100 : Number(v);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 // A VML shape names its shape type (type="#id") and takes the type's attributes, path and text
@@ -776,7 +803,7 @@ function parseVmlShape(shape: XmlElement, ctx: DrawingContext, top: boolean): Dr
   const off = (v: string | undefined) => v === 'f' || v === 'false';
   const fillEl = child(shape, 'v:fill');
   const filled = !off(attr('filled')) && !off(fillEl?.attrs.on);
-  const opacity = fillEl?.attrs.opacity ? vmlFraction(fillEl.attrs.opacity) || 1 : 1;
+  const opacity = Math.max(0, Math.min(1, vmlFraction(fillEl?.attrs.opacity, 1)));
   const fc = vmlColor(attr('fillcolor'));
   // A shape of a known type takes VML's defaults, a white fill and a black 0.75pt outline, unless
   // it or its type turns them off (pictures' type 75 does). Without the type, only what the shape
@@ -794,7 +821,7 @@ function parseVmlShape(shape: XmlElement, ctx: DrawingContext, top: boolean): Dr
     d.kind = 'image';
     // VML's gain is the contrast slope and blacklevel half the brightness (Washout is gain 0.3,
     // blacklevel 0.35).
-    const gain = imagedata.attrs.gain ? vmlFraction(imagedata.attrs.gain) : 1;
+    const gain = vmlFraction(imagedata.attrs.gain, 1);
     d.image = adjusted(loadImage(ctx, imagedata.attrs['r:id'] ?? imagedata.attrs['r:pict']), Math.max(0, gain), 2 * vmlFraction(imagedata.attrs.blacklevel));
     const crop = {
       l: vmlFraction(imagedata.attrs.cropleft),

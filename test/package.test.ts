@@ -57,6 +57,9 @@ it('ships the full font pack for the CLI and exposes the browser subset after an
     const pdf = join(dir, 'japanese.pdf');
     writeFileSync(doc, makeDocx({ body: p('日本語') }));
     const original = readFileSync(doc);
+    for (const args of [[doc, '--font'], [doc, pdf, 'extra.pdf']]) {
+      expect(spawnSync(process.execPath, [cli, ...args]).status).toBe(2);
+    }
     const hardlink = join(dir, 'linked.docx');
     linkSync(doc, hardlink);
     const aliases = [doc, hardlink];

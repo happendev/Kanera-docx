@@ -24,28 +24,23 @@ export function num(v: string | undefined): number | undefined {
  */
 export function measure(v: string | undefined, baseToPt: (n: number) => number = twip): number | undefined {
   if (v === undefined || v === '') return undefined;
-  const m = /^(-?[\d.]+)\s*(pt|in|cm|mm|pc|pi|px|emu)?$/.exec(v.trim());
+  const m = /^(-?(?:\d+(?:\.\d*)?|\.\d+))\s*(pt|in|cm|mm|pc|pi|px|emu)?$/.exec(v.trim());
   if (!m) return undefined;
-  const n = parseFloat(m[1]);
+  const n = Number(m[1]);
+  if (!Number.isFinite(n)) return undefined;
+  let points: number;
   switch (m[2]) {
-    case 'pt':
-      return n;
-    case 'in':
-      return n * 72;
-    case 'cm':
-      return (n * 72) / 2.54;
-    case 'mm':
-      return (n * 72) / 25.4;
+    case 'pt': points = n; break;
+    case 'in': points = n * 72; break;
+    case 'cm': points = n * (72 / 2.54); break;
+    case 'mm': points = n * (72 / 25.4); break;
     case 'pc':
-    case 'pi':
-      return n * 12;
-    case 'px':
-      return n * 0.75;
-    case 'emu':
-      return n / 12700;
-    default:
-      return baseToPt(n);
+    case 'pi': points = n * 12; break;
+    case 'px': points = n * 0.75; break;
+    case 'emu': points = n / 12700; break;
+    default: points = baseToPt(n);
   }
+  return Number.isFinite(points) ? points : undefined;
 }
 
 export function twipAttr(el: XmlElement | undefined, name: string): number | undefined {
@@ -66,7 +61,7 @@ export function hexColor(v: string | undefined): Color | undefined {
   const s = v.replace(/^#/, '');
   if (/^[0-9a-fA-F]{6}$/.test(s)) return s.toUpperCase();
   if (/^[0-9a-fA-F]{3}$/.test(s)) return (s[0] + s[0] + s[1] + s[1] + s[2] + s[2]).toUpperCase();
-  return NAMED_COLORS[v.toLowerCase()] ?? undefined;
+  return Object.hasOwn(NAMED_COLORS, v.toLowerCase()) ? NAMED_COLORS[v.toLowerCase()] : undefined;
 }
 
 const NAMED_COLORS: Record<string, string> = {
@@ -217,12 +212,12 @@ export function applyColorMods(hex: string, mods: Array<{ name: string; val: num
 /** Word's w:themeTint / w:themeShade (hex byte, 0..FF) applied to a theme colour. */
 export function applyWordTintShade(hex: string, tint?: string, shade?: string): string {
   let [r, g, b] = rgb(hex);
-  if (tint) {
+  if (tint && /^[0-9a-f]{2}$/i.test(tint)) {
     const t = parseInt(tint, 16) / 255;
     const [h, s, l] = rgbToHsl(r, g, b);
     [r, g, b] = hslToRgb(h, s, l * t + (1 - t));
   }
-  if (shade) {
+  if (shade && /^[0-9a-f]{2}$/i.test(shade)) {
     const sh = parseInt(shade, 16) / 255;
     const [h, s, l] = rgbToHsl(r, g, b);
     [r, g, b] = hslToRgb(h, s, l * sh);

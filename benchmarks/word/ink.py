@@ -9,26 +9,28 @@ INK_THRESHOLD = 216
 INK_TOLERANCE_PX = 1
 
 
-def render(pdf, raster_dir=None):
+def render(pdf, raster_dir=None, *, raster_format='png'):
     raster_dir = raster_dir if raster_dir is not None else pdf.parent / 'raster'
     raster_dir.mkdir(exist_ok=True)
     prefix = raster_dir / pdf.stem
-    for old in prefix.parent.glob(prefix.name + '-*.png'):
+    pattern = f'{prefix.name}-*.{raster_format}'
+    for old in prefix.parent.glob(pattern):
         old.unlink()
-    subprocess.run(['pdftoppm', '-r', str(DPI), '-png', str(pdf), str(prefix)], check=True)
-    pages = prefix.parent.glob(prefix.name + '-*.png')
+    flags = {'png': ['-png'], 'ppm': []}[raster_format]
+    subprocess.run(['pdftoppm', '-r', str(DPI), *flags, str(pdf), str(prefix)], check=True)
+    pages = prefix.parent.glob(pattern)
     return sorted(pages, key=lambda p: int(p.stem.rsplit('-', 1)[1]))
 
 
-def render_reference(directory, fixture, raster_dir):
+def render_reference(directory, fixture, raster_dir, *, raster_format='png'):
     if 'pdf' in fixture:
-        return render(directory / fixture['pdf'], raster_dir)
+        return render(directory / fixture['pdf'], raster_dir, raster_format=raster_format)
 
     raster_dir.mkdir(exist_ok=True)
     scale = DPI / fixture['reference_dpi']
     pages = []
     for number, page in enumerate(fixture['reference_images'], 1):
-        path = raster_dir / f'reference-{number}.png'
+        path = raster_dir / f'reference-{number}.{raster_format}'
         with Image.open(directory / page['path']) as image:
             size = (round(image.width * scale), round(image.height * scale))
             image.convert('RGB').resize(size, Image.Resampling.LANCZOS).save(path)

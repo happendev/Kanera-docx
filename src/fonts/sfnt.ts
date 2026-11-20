@@ -51,6 +51,12 @@ export class FontBudget {
   private faces = 0;
   private mappings = 0;
   private kerningWork = 0;
+  private featureWork = 0;
+
+  reserveFeatureWork(n: number): void {
+    if (n < 0 || n > 1_048_576 - this.featureWork) throw new FontLimitError('Font feature limit exceeded');
+    this.featureWork += n;
+  }
 
   /** Account for the tables of a shared, single-face font in a conversion's budget. */
   chargeMappingsTo(target: FontBudget): void {
@@ -95,6 +101,8 @@ const MAC_ROMAN_HIGH =
   'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©™´¨≠ÆØ∞±≤≥¥µ∂∑∏π∫ªºΩæø¿¡¬√ƒ≈∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰ÂÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ';
 
 export class SfntFont {
+  /** Node can supply outline bytes for a PDF subset separately from the layout tables. */
+  readSubsetGlyphs?: (gids: readonly number[]) => Promise<ReadonlyMap<number, Uint8Array>>;
   readonly r: Reader;
   readonly tables = new Map<string, TableRecord>();
   readonly sfntVersion: number;
@@ -147,7 +155,7 @@ export class SfntFont {
   constructor(
     readonly data: Uint8Array,
     collectionIndex = 0,
-    private readonly budget = new FontBudget(),
+    readonly budget = new FontBudget(),
   ) {
     this.r = new Reader(data);
     let dir = 0;
@@ -156,6 +164,7 @@ export class SfntFont {
       if (!Number.isSafeInteger(collectionIndex) || collectionIndex < 0 || collectionIndex >= n) throw new Error('Font collection index out of range');
       dir = this.r.u32(12 + collectionIndex * 4);
     }
+    requireBytes(dir, 12, data.length);
     this.dirOffset = dir;
     this.sfntVersion = this.r.u32(dir);
     if (this.r.tag(dir) === 'wOFF' || this.r.tag(dir) === 'wOF2') throw new Error('WOFF fonts are not supported; supply TTF/OTF');
@@ -213,6 +222,7 @@ export class SfntFont {
     const t = this.table('head');
     if (!t) throw new Error('Font has no head table');
     const o = t.offset;
+    requireBytes(0, 54, t.length);
     this.unitsPerEm = this.r.u16(o + 18) || 1000;
     this.bbox = [this.r.i16(o + 36), this.r.i16(o + 38), this.r.i16(o + 40), this.r.i16(o + 42)];
     this.macStyle = this.r.u16(o + 44);
@@ -221,6 +231,7 @@ export class SfntFont {
 
   private parseMaxp(): void {
     const t = this.table('maxp');
+    if (t) requireBytes(0, 6, t.length);
     this.numGlyphs = t ? this.r.u16(t.offset + 4) : 0;
   }
 
@@ -228,6 +239,7 @@ export class SfntFont {
     const t = this.table('hhea');
     if (!t) throw new Error('Font has no hhea table');
     const o = t.offset;
+    requireBytes(0, 36, t.length);
     this.hheaAscender = this.r.i16(o + 4);
     this.hheaDescender = this.r.i16(o + 6);
     this.hheaLineGap = this.r.i16(o + 8);
@@ -238,6 +250,8 @@ export class SfntFont {
     const t = this.table('hmtx');
     this.advances = new Uint16Array(Math.max(this.numGlyphs, 1));
     if (!t) return;
+    if (this.numberOfHMetrics > this.numGlyphs) throw new Error('Invalid font metric count');
+    requireBytes(0, 2 * (this.numGlyphs + this.numberOfHMetrics), t.length);
     let last = 0;
     for (let g = 0; g < this.numGlyphs; g++) {
       if (g < this.numberOfHMetrics) last = this.r.u16(t.offset + g * 4);
@@ -247,7 +261,7 @@ export class SfntFont {
 
   private parseOS2(): void {
     const t = this.table('OS/2');
-    if (!t || t.length < 68) {
+    if (!t || t.length < 78) {
       this.winAscent = this.hheaAscender;
       this.winDescent = -this.hheaDescender;
       this.typoAscender = this.hheaAscender;
@@ -292,6 +306,7 @@ export class SfntFont {
     const t = this.table('post');
     if (!t) return;
     const o = t.offset;
+    requireBytes(0, 16, t.length);
     this.italicAngle = this.r.i16(o + 4) + this.r.u16(o + 6) / 65536;
     this.underlinePosition = this.r.i16(o + 8);
     this.underlineThickness = this.r.i16(o + 10);
@@ -394,7 +409,9 @@ export class SfntFont {
   }
 
   private readCmapSubtable(o: number, format: number, macRoman: boolean, tableEnd: number): void {
-    const map = this.cmap;
+    const add = (cp: number, gid: number) => {
+      if (gid > 0 && gid < this.numGlyphs) this.cmap.set(cp, gid);
+    };
     const r = this.r;
     const long = format === 12 || format === 13;
     requireBytes(o, long ? 8 : 4, tableEnd);
@@ -408,7 +425,7 @@ export class SfntFont {
         const g = r.u8(o + 6 + c);
         if (!g) continue;
         const cp = macRoman && c >= 128 ? MAC_ROMAN_HIGH.charCodeAt(c - 128) : c;
-        map.set(cp, g);
+        add(cp, g);
       }
     } else if (format === 4) {
       const segX2 = r.u16(o + 6);
@@ -437,7 +454,7 @@ export class SfntFont {
             g = r.u16(addr);
             if (g) g = (g + delta) & 0xffff;
           }
-          if (g) map.set(c, g);
+          add(c, g);
         }
       }
     } else if (format === 6) {
@@ -447,7 +464,7 @@ export class SfntFont {
       this.budget.reserveMappings(count);
       for (let i = 0; i < count; i++) {
         const g = r.u16(o + 10 + i * 2);
-        if (g) map.set(first + i, g);
+        add(first + i, g);
       }
     } else if (format === 12 || format === 13) {
       const groups = r.u32(o + 12);
@@ -461,7 +478,7 @@ export class SfntFont {
         last = end;
         this.budget.reserveMappings(end - start + 1);
         const gid = r.u32(g0 + 8);
-        for (let c = start; c <= end; c++) map.set(c, format === 12 ? gid + (c - start) : gid);
+        for (let c = start; c <= end; c++) add(c, format === 12 ? gid + (c - start) : gid);
       }
     }
   }
@@ -481,17 +498,28 @@ export class SfntFont {
     return this.glyphId(cp) !== 0;
   }
 
+  /** A compact coverage predicate for a system font whose tables can now be released. */
+  coverageTest(): (cp: number) => boolean {
+    let last = 0;
+    for (const cp of this.cmap.keys()) last = Math.max(last, cp);
+    const bits = new Uint8Array((last >>> 3) + 1);
+    for (const cp of this.cmap.keys()) bits[cp >>> 3] |= 1 << (cp & 7);
+    const has = (cp: number) => !!(bits[cp >>> 3] & (1 << (cp & 7)));
+    const symbol = this.symbolCmap;
+    return (cp) => has(cp) || (symbol && (cp < 256 ? has(cp + 0xf000) : cp >= 0xf000 && cp <= 0xf0ff && has(cp - 0xf000)));
+  }
+
   advance(gid: number): number {
     return gid < this.advances.length ? this.advances[gid] : this.advances[this.advances.length - 1];
   }
 
   /** Byte range of a glyph inside the glyf table (TrueType outlines only). */
-  glyphRange(gid: number): [number, number] | null {
+  glyphRange(gid: number, glyf = this.table('glyf')): [number, number] | null {
     const loca = this.table('loca');
-    const glyf = this.table('glyf');
-    if (!loca || !glyf || gid >= this.numGlyphs) return null;
+    if (!loca || !glyf || !Number.isInteger(gid) || gid < 0 || gid >= this.numGlyphs) return null;
     let start: number;
     let end: number;
+    requireBytes(0, (gid + 2) * (this.indexToLocFormat === 0 ? 2 : 4), loca.length);
     if (this.indexToLocFormat === 0) {
       start = this.r.u16(loca.offset + gid * 2) * 2;
       end = this.r.u16(loca.offset + gid * 2 + 2) * 2;
@@ -506,23 +534,7 @@ export class SfntFont {
   /** Component IDs and the offsets of their ID fields within a composite glyph. */
   compositeComponents(gid: number): Array<{ gid: number; offset: number }> {
     const range = this.glyphRange(gid);
-    if (!range || range[1] - range[0] < 10) return [];
-    const [start, end] = range;
-    if (this.r.i16(start) >= 0) return [];
-    const out: Array<{ gid: number; offset: number }> = [];
-    let p = start + 10;
-    for (;;) {
-      requireBytes(p, 4, end);
-      const flags = this.r.u16(p);
-      out.push({ gid: this.r.u16(p + 2), offset: p + 2 - start });
-      p += 4;
-      p += flags & 0x0001 ? 4 : 2;
-      if (flags & 0x0008) p += 2;
-      else if (flags & 0x0040) p += 4;
-      else if (flags & 0x0080) p += 8;
-      if (!(flags & 0x0020)) break;
-    }
-    return out;
+    return range ? readComponents(this.r, range[0], range[1]) : [];
   }
 
   /** Pair kerning in font units (legacy `kern` table, then GPOS pair adjustments). */
@@ -536,6 +548,7 @@ export class SfntFont {
     const t = this.table('kern');
     if (t) {
       const o = t.offset;
+      requireBytes(o, 4, o + t.length);
       const version = this.r.u16(o);
       if (version === 0) {
         const nTables = this.r.u16(o + 2);
@@ -549,6 +562,7 @@ export class SfntFont {
           const coverage = this.r.u16(p + 4);
           const format = coverage >> 8;
           if (format === 0 && (coverage & 1) === 1) {
+            requireBytes(p, 14, p + len);
             const nPairs = this.r.u16(p + 6);
             requireBytes(p, 14 + nPairs * 6, p + len);
             this.budget.reserveKerning(nPairs);
@@ -575,20 +589,25 @@ export class SfntFont {
       requireBytes(start, count * size, tableEnd);
       this.budget.reserveKerning(count);
     };
+    requireBytes(base, 10, tableEnd);
     const featureList = base + r.u16(base + 6);
     const lookupList = base + r.u16(base + 8);
     const kernLookups = new Set<number>();
+    requireBytes(featureList, 2, tableEnd);
+    requireBytes(lookupList, 2, tableEnd);
     const fCount = r.u16(featureList);
     records(featureList + 2, fCount, 6);
     for (let i = 0; i < fCount; i++) {
       const rec = featureList + 2 + i * 6;
       if (r.tag(rec) !== 'kern') continue;
       const feat = featureList + r.u16(rec + 4);
+      requireBytes(feat, 4, tableEnd);
       const n = r.u16(feat + 2);
       records(feat + 4, n, 2);
       for (let k = 0; k < n; k++) kernLookups.add(r.u16(feat + 4 + k * 2));
     }
     const coverage = (off: number): number[] => {
+      requireBytes(off, 4, tableEnd);
       const fmt = r.u16(off);
       const out: number[] = [];
       if (fmt === 1) {
@@ -610,8 +629,10 @@ export class SfntFont {
     };
     const classDef = (off: number): Map<number, number> => {
       const m = new Map<number, number>();
+      requireBytes(off, 4, tableEnd);
       const fmt = r.u16(off);
       if (fmt === 1) {
+        requireBytes(off, 6, tableEnd);
         const start = r.u16(off + 2);
         const n = r.u16(off + 4);
         records(off + 6, n, 2);
@@ -644,6 +665,7 @@ export class SfntFont {
       return r.i16(p + off);
     };
     const handleSubtable = (st: number) => {
+      requireBytes(st, 8, tableEnd);
       const fmt = r.u16(st);
       const cov = coverage(st + r.u16(st + 2));
       const vf1 = r.u16(st + 4);
@@ -651,9 +673,12 @@ export class SfntFont {
       const s1 = valueSize(vf1);
       const s2 = valueSize(vf2);
       if (fmt === 1) {
+        requireBytes(st, 10, tableEnd);
         const setCount = r.u16(st + 8);
+        records(st + 10, setCount, 2);
         for (let i = 0; i < setCount && i < cov.length; i++) {
           const ps = st + r.u16(st + 10 + i * 2);
+          requireBytes(ps, 2, tableEnd);
           const n = r.u16(ps);
           records(ps + 2, n, 2 + s1 + s2);
           for (let k = 0; k < n; k++) {
@@ -665,6 +690,7 @@ export class SfntFont {
           }
         }
       } else if (fmt === 2) {
+        requireBytes(st, 16, tableEnd);
         const cd1 = classDef(st + r.u16(st + 8));
         const cd2 = classDef(st + r.u16(st + 10));
         const c1Count = r.u16(st + 12);
@@ -698,8 +724,10 @@ export class SfntFont {
       }
     };
     for (const li of kernLookups) {
+      if (li >= r.u16(lookupList)) throw new Error('Invalid font lookup index');
       requireBytes(lookupList + 2 + li * 2, 2, tableEnd);
       const lookup = lookupList + r.u16(lookupList + 2 + li * 2);
+      requireBytes(lookup, 6, tableEnd);
       const type = r.u16(lookup);
       const n = r.u16(lookup + 4);
       records(lookup + 6, n, 2);
@@ -707,6 +735,7 @@ export class SfntFont {
         let st = lookup + r.u16(lookup + 6 + k * 2);
         let stType = type;
         if (type === 9) {
+          requireBytes(st, 8, tableEnd);
           stType = r.u16(st + 2);
           st = st + r.u32(st + 4);
         }
@@ -714,4 +743,28 @@ export class SfntFont {
       }
     }
   }
+}
+
+/** Component references in a detached TrueType outline, with offsets local to that glyph. */
+export function glyphComponents(bytes: Uint8Array): Array<{ gid: number; offset: number }> {
+  return readComponents(new Reader(bytes), 0, bytes.length);
+}
+
+function readComponents(reader: Reader, start: number, end: number): Array<{ gid: number; offset: number }> {
+  if (end - start < 10) return [];
+  if (reader.i16(start) >= 0) return [];
+  const out: Array<{ gid: number; offset: number }> = [];
+  let p = start + 10;
+  for (;;) {
+    requireBytes(p, 4, end);
+    const flags = reader.u16(p);
+    out.push({ gid: reader.u16(p + 2), offset: p + 2 - start });
+    p += 4;
+    p += flags & 0x0001 ? 4 : 2;
+    if (flags & 0x0008) p += 2;
+    else if (flags & 0x0040) p += 4;
+    else if (flags & 0x0080) p += 8;
+    if (!(flags & 0x0020)) break;
+  }
+  return out;
 }
