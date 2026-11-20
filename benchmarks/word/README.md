@@ -5,10 +5,21 @@ with Microsoft Word for Mac references and uses all [178 vendored cases](upstrea
 Both sets are verified against SHA-256 hashes. See the [Hugging Face corpus](https://huggingface.co/datasets/arthrod/neurotic_docx_bench-fixtures)
 for attribution and notices about individual files.
 
-The Hugging Face sample combines 35 documents from `sources_500`, 25 from `en_pairs_500`,
-25 focused layout fixtures, and 15 editing fixtures split evenly between comments, tracked
-changes, and both. The source documents cover text, tables, images, and combinations of those
+The Hugging Face sample combines 39 documents from `sources_500`, 26 from `en_pairs_500`, and
+35 focused fixtures. The source documents cover text, tables, images, and combinations of those
 elements. We selected by Word reference page count and DOCX features without using converter scores.
+
+The sample leaves out two kinds of document whose Word reference shows something docx2pdf
+deliberately doesn't draw:
+
+- **Tracked changes and comments.** Word exported these in markup view, with struck-through
+  deletions, coloured insertions, and comment balloons beside a shrunken page. docx2pdf renders the
+  final text without comments, so only pairs in the corpus's `clean` state are used.
+- **Scripts without a bundled font.** Thai, Devanagari, Khmer, and Thaana text needs a font the user
+  supplies.
+
+Each excluded document was replaced by the clean pair with the lowest corpus ID from the same
+`sets` group and page-count range below, or from `sources_500` when that group had none left.
 
 | Word reference pages | Documents |
 | --- | ---: |
@@ -18,7 +29,7 @@ elements. We selected by Word reference page count and DOCX features without usi
 | 16–29 | 7 |
 
 The sample includes mixed page orientations, columns, charts, diagrams, equations, notes, and
-Arabic, Cyrillic, Greek, Indic, Latin, Thai, and East Asian text.
+Arabic, Cyrillic, Greek, Latin, and East Asian text.
 
 ## Run from the repository root
 
@@ -205,10 +216,12 @@ converted PDFs, images, results, and build outputs are Git-ignored.
 ## Full corpus accuracy
 
 Run this accuracy check from the repository root on Linux. It builds the current checkout and
-scores 3,103 DOCX files from two sources.
+scores 2,650 DOCX files from two sources.
 
-- **Hugging Face.** All 2,925 pairs in `word/documents.csv` at the pinned revision of the public
-  corpus, with Microsoft Word for Mac references. The runner downloads these into a local cache.
+- **Hugging Face.** 2,472 of the 2,925 pairs in `word/documents.csv` at the pinned revision of the
+  public corpus, with Microsoft Word for Mac references. The runner downloads these into a local
+  cache. It leaves out the 447 pairs with tracked changes or comments and six pairs in scripts
+  without a bundled font, for the reasons the [sample](#docx-to-pdf-benchmark) gives.
 - **Vendored fixtures.** The same 178 [issue and classic cases](#vendored-fixtures) as the benchmark.
 
 The runner uses the same 96 DPI ink score as the benchmark, averaging pages within each document

@@ -31,6 +31,7 @@ import {
 import { renderDrawing } from './drawing.js';
 import { ParagraphLayout, type Line } from './paragraph.js';
 import { translateOps, type DrawOp, type FloatOp, type Page } from './types.js';
+import { turnVertical } from './vertical.js';
 
 const EPS = 0.01;
 const DEFAULT_FOOTNOTE_SEPARATOR: BoxResult = {
@@ -173,6 +174,8 @@ class Paginator {
   /** The page each bookmark landed on, for page references. */
   private anchorPages = new Map<string, { number: number; format: string }>();
   private pages: PageState[] = [];
+  /** Vertical sections' real pages, by the turned section they are laid out as. */
+  private verticalSections = new Map<Section, Section>();
   private page!: PageState;
   private col = 0;
   private y = 0;
@@ -370,13 +373,36 @@ class Paginator {
     for (const b of this.doc.body) {
       cur.push(b);
       if (b.type === 'paragraph' && b.sectPr) {
-        out.push({ section: b.sectPr, blocks: cur });
+        out.push({ section: this.turned(b.sectPr), blocks: cur });
         cur = [];
       }
     }
     // A trailing empty group (document ends on a section-break paragraph) adds nothing.
-    if (cur.length || out.length === 0) out.push({ section: this.doc.finalSection, blocks: cur });
+    if (cur.length || out.length === 0) out.push({ section: this.turned(this.doc.finalSection), blocks: cur });
     return out;
+  }
+
+  /**
+   * A vertical section as the page turned a quarter, which its lines run across: from the real
+   * page's right margin towards its left, starting at its top margin. Its header and footer stay
+   * on the real page and leave the text where its margins put it.
+   */
+  private turned(s: Section): Section {
+    if (!s.vertical) return s;
+    const t: Section = {
+      ...s,
+      pageWidth: s.pageHeight,
+      pageHeight: s.pageWidth,
+      marginLeft: s.marginTop,
+      marginRight: s.marginBottom,
+      marginTop: s.marginRight,
+      marginBottom: s.marginLeft + s.gutter,
+      marginTopExact: true,
+      marginBottomExact: true,
+      gutter: 0,
+    };
+    this.verticalSections.set(t, s);
+    return t;
   }
 
   private useSection(section: Section, index: number): void {
@@ -500,7 +526,7 @@ class Paginator {
     }
     const width = s.pageWidth;
     const height = s.pageHeight;
-    const hf = this.headerFooterFor(s, number, firstOfSection);
+    const hf = this.verticalSections.has(s) ? {} : this.headerFooterFor(s, number, firstOfSection);
     const hfWidth = width - marginLeft - marginRight;
     this.fieldPage = { number, format: s.pageNumberFormat, total: null, sectionTotal: null };
     const frame: PageFrame = { section: s, width, height, marginLeft, marginRight };
@@ -775,7 +801,7 @@ class Paginator {
             const slot = findSlot(this.page.exclusions, this.y, estimate.h, this.column.x + base.left, this.column.x + base.right, estimate.text);
             if (slot.y <= this.y + EPS && slot.left > this.column.x + base.left + EPS) lineX = slot.left;
           }
-          this.placeFloats(drawings, this.column, this.y, lineX);
+          this.placeFloats(drawings, this.column, this.y, lineX, estimate.h);
           floatsPlaced = true;
         }
         const snap = layout.snapshot();
@@ -1082,10 +1108,15 @@ class Paginator {
     return drawing;
   }
 
-  private placeFloats(drawings: Drawing[], col: Column, paraY: number, lineX?: number): void {
+  private placeFloats(drawings: Drawing[], col: Column, paraY: number, lineX?: number, lineHeight = 0): void {
     const index = this.pages.length - 1;
+    const real = this.verticalSections.get(this.page.section);
     for (const d of drawings) {
       if (!d.anchor || d.hidden) continue;
+      if (real) {
+        this.page.floats.push({ z: d.anchor.zIndex, behind: d.anchor.behindDoc, ops: this.verticalFloat(d, real, col, paraY, lineHeight) });
+        continue;
+      }
       const earlyPage = this.early.get(d);
       if (earlyPage === index) continue;
       if (earlyPage !== undefined) {
@@ -1112,7 +1143,21 @@ class Paginator {
   }
 
   /** Floats inside table cells and header boxes, already translated to page coordinates. */
-  private extractFloats(ops: DrawOp[], page: PageState, target: DrawOp[], floats: FloatEntry[]): void {
+  /**
+   * A floating object of a vertical section, drawn upright on the real page: Word places it there
+   * as on any page, measuring across from the right edge of the anchor's line (where the line
+   * starts the column) and down from where its paragraph starts. Text does not wrap around it.
+   */
+  private verticalFloat(d: Drawing, real: Section, col: Column, paraY: number, lineHeight: number): DrawOp[] {
+    const width = this.page.height;
+    const frame: PageFrame = { section: real, width, height: this.page.width, marginLeft: real.marginLeft + real.gutter, marginRight: real.marginRight };
+    const pitch = this.env.gridPitch;
+    const h = pitch ? Math.ceil(lineHeight / pitch - 1e-6) * pitch : lineHeight;
+    const pos = this.floatPosition(d, frame, { x: width - paraY, w: h }, width - paraY, col.x);
+    return renderDrawing(d, pos.x, pos.y, this.env);
+  }
+
+  private extractFloats(ops: DrawOp[], page: PageFrame, target: DrawOp[], floats: FloatEntry[]): void {
     for (const op of ops) {
       if (op.kind !== 'float') {
         target.push(op);
@@ -1433,14 +1478,25 @@ class Paginator {
     for (const p of this.pages) {
       const s = p.section;
       const hfOps: DrawOp[] = [];
+      // A vertical section's page is laid out turned; its header and footer sit on the real page.
+      const real = this.verticalSections.get(s);
+      const frame: PageFrame = real ? { section: real, width: p.height, height: p.width, marginLeft: real.marginLeft + real.gutter, marginRight: real.marginRight } : p;
       const floats = p.floats.slice();
-      const hf = p.blank ? {} : this.headerFooterFor(s, p.number, p.firstOfSection);
+      const hf = p.blank ? {} : this.headerFooterFor(real ?? s, p.number, p.firstOfSection);
       this.useSection(s, p.sectionIndex);
       this.fieldPage = { number: p.number, format: s.pageNumberFormat, total, sectionTotal: sectionTotals.get(p.section) ?? null };
+      const hfFloats: FloatEntry[] = [];
       for (const [blocks, footer] of [[hf.header, false], [hf.footer, true]] as const) {
         if (!blocks) continue;
-        const { box, y0 } = this.hfBox(blocks, p, footer);
-        for (const it of box.items) this.extractFloats(translateOps(it.ops, p.marginLeft, y0), p, hfOps, floats);
+        const { box, y0 } = this.hfBox(blocks, frame, footer);
+        for (const it of box.items) this.extractFloats(translateOps(it.ops, frame.marginLeft, y0), frame, hfOps, hfFloats);
+      }
+      // Word draws the header and footer beneath the body: their objects in front of text cover
+      // only their own text, and those behind text go behind everything like the body's.
+      hfFloats.sort((a, b) => a.z - b.z);
+      for (const f of hfFloats) {
+        if (f.behind) floats.push(f);
+        else hfOps.push(...f.ops);
       }
       this.fieldPage = null;
 
@@ -1482,12 +1538,14 @@ class Paginator {
         }
       }
 
+      if (real) body.splice(0, body.length, ...turnVertical(body, frame.width));
       const behind: DrawOp[] = [];
       const front: DrawOp[] = [];
-      if (this.doc.background && this.doc.settings.displayBackgroundShape) behind.push({ kind: 'rect', x: 0, y: 0, w: p.width, h: p.height, fill: this.doc.background });
+      if (this.doc.background && this.doc.settings.displayBackgroundShape) behind.push({ kind: 'rect', x: 0, y: 0, w: frame.width, h: frame.height, fill: this.doc.background });
       floats.sort((a, b) => a.z - b.z);
       for (const f of floats) (f.behind ? behind : front).push(...f.ops);
-      const borders = p.blank ? [] : this.pageBorders(p);
+      let borders = p.blank ? [] : this.pageBorders(p);
+      if (real && borders.length) borders = turnVertical(borders, frame.width);
       if (borders.length) (s.pageBorders?.zOrder === 'back' ? behind : front).push(...borders);
       for (const layer of [body, behind, front]) {
         for (const op of layer) {
@@ -1503,7 +1561,7 @@ class Paginator {
           }
         }
       }
-      out.push({ width: p.width, height: p.height, behind, headerFooter: hfOps, body, front, section: p.sectionIndex, number: p.number, numberFormat: s.pageNumberFormat });
+      out.push({ width: frame.width, height: frame.height, behind, headerFooter: hfOps, body, front, section: p.sectionIndex, number: p.number, numberFormat: s.pageNumberFormat });
     }
     return out;
   }

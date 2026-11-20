@@ -56,6 +56,8 @@ const RULES: Record<string, SubstituteRule> = {
   'segoe ui semibold': { families: ['selawik semibold'], close: ['selawik'], metricCompatible: true },
   'segoe ui semilight': { families: ['selawik semilight'], close: ['selawik'], metricCompatible: true },
   'segoe ui black': { families: ['selawik'], metricCompatible: false, generic: 'sans', vmetrics: [2210 / 2048, 514 / 2048, 0] },
+  // An Office cloud font for Arabic and Latin; its Arabic is drawn by a fallback at Dubai's width (see ARABIC_WIDTHS).
+  dubai: { families: ['liberation sans', 'arimo'], metricCompatible: false, generic: 'sans', vmetrics: [1.129, 0.559, 0] },
   roboto: { families: ['roboto'], metricCompatible: true },
   'roboto medium': { families: ['roboto medium'], close: ['roboto'], metricCompatible: true },
   aptos: { families: ['morrow sans'], close: ['selawik', 'liberation sans'], metricCompatible: true, vmetrics: APTOS_LINE_METRICS },
@@ -234,6 +236,61 @@ export const GENERIC_FALLBACKS: Record<GenericFamily, string[]> = {
   symbol: ['dejavu sans', 'noto sans symbols2', 'noto sans symbols', 'symbola'],
 };
 
+/**
+ * Fonts that carry their own Arabic and Hebrew on Windows and Mac. Word sets text in those scripts
+ * in the font itself, so it sits on that font's lines even where a fallback has to draw it here.
+ * Their stand-ins count too: a missing font falls back to them here as it does to Arial or Times New
+ * Roman in Word.
+ */
+const OWN_ARABIC_HEBREW = new Set([
+  'arial', 'times new roman', 'courier new', 'tahoma', 'segoe ui', 'microsoft sans serif', 'arial unicode ms',
+  'liberation sans', 'liberation serif', 'liberation mono', 'arimo', 'tinos', 'cousine',
+]);
+
+/** Whether `cp` is Arabic or Hebrew that the font `family` really has (see OWN_ARABIC_HEBREW). */
+export function ownArabicHebrew(family: string, cp: number): boolean {
+  const script = (cp >= 0x590 && cp <= 0x6ff) || (cp >= 0x750 && cp <= 0x77f) || (cp >= 0x8a0 && cp <= 0x8ff) || (cp >= 0xfb1d && cp <= 0xfdff) || (cp >= 0xfe70 && cp <= 0xfefe);
+  return script && OWN_ARABIC_HEBREW.has(normalizeFamily(family));
+}
+
+/**
+ * Arabic text in its joined forms (الرقم الاستدلالي للأثمان عند الاستهلاك في المملكة العربية
+ * السعودية خلال شهر يونيو مقارنة بالشهر السابق, without spaces), to compare one font's Arabic
+ * width with another's.
+ */
+export const ARABIC_SAMPLE = String.fromCodePoint(
+  0xfe8d, 0xfedf, 0xfeae, 0xfed7, 0xfee2, 0xfe8d, 0xfefb, 0xfeb3, 0xfe98, 0xfeaa, 0xfefb, 0xfedf, 0xfef2, 0xfedf,
+  0xfef8, 0xfe9b, 0xfee4, 0xfe8e, 0xfee5, 0xfecb, 0xfee8, 0xfeaa, 0xfe8d, 0xfefb, 0xfeb3, 0xfe98, 0xfeec, 0xfefc,
+  0xfed9, 0xfed3, 0xfef2, 0xfe8d, 0xfedf, 0xfee4, 0xfee4, 0xfee0, 0xfedc, 0xfe94, 0xfe8d, 0xfedf, 0xfecc, 0xfeae,
+  0xfe91, 0xfef4, 0xfe94, 0xfe8d, 0xfedf, 0xfeb4, 0xfecc, 0xfeee, 0xfea9, 0xfef3, 0xfe94, 0xfea7, 0xfefc, 0xfedd,
+  0xfeb7, 0xfeec, 0xfeae, 0xfef3, 0xfeee, 0xfee7, 0xfef4, 0xfeee, 0xfee3, 0xfed8, 0xfe8e, 0xfead, 0xfee7, 0xfe94,
+  0xfe91, 0xfe8e, 0xfedf, 0xfeb8, 0xfeec, 0xfeae, 0xfe8d, 0xfedf, 0xfeb4, 0xfe8e, 0xfe91, 0xfed6,
+);
+
+/**
+ * Width (em) of ARABIC_SAMPLE in the Arabic of Word's own fonts, regular and bold, from Word's PDFs
+ * set beside the fallbacks drawn here. A fallback drawing that Arabic is scaled to the same width,
+ * so lines break where Word's do: DejaVu Sans's Arabic is about 1.3 times as wide as Arial's.
+ * Stand-ins take their font's widths, since a missing font falls back to them as to Arial in Word.
+ * (Courier New's Arabic is monospaced, which no scale imitates.)
+ */
+const ARABIC_WIDTHS: Record<string, [number, number]> = {
+  arial: [30.3, 31.1],
+  'times new roman': [29.8, 30.9],
+  // An Office cloud font: Word for Mac downloads it, so a document asking for it gets its width.
+  dubai: [35.05, 36.4],
+};
+const ARABIC_STAND_INS: Record<string, string> = {
+  'liberation sans': 'arial', arimo: 'arial',
+  'liberation serif': 'times new roman', tinos: 'times new roman',
+};
+
+/** Width of ARABIC_SAMPLE in the Arabic of `family` (see ARABIC_WIDTHS), when known. */
+export function arabicWidth(family: string, bold: boolean): number | undefined {
+  const norm = normalizeFamily(family);
+  return ARABIC_WIDTHS[ARABIC_STAND_INS[norm] ?? norm]?.[bold ? 1 : 0];
+}
+
 /** Families tried, in order, for characters the chosen font lacks; `cjk` is from cjkFallbacks(). */
 export function glyphFallbacks(cjk: string[]): string[] {
   return ['dejavu sans', 'liberation sans', 'noto sans symbols2', 'noto sans symbols', 'noto sans math', ...cjk, 'symbola'];
@@ -267,6 +324,9 @@ const SONG_METRICS: [number, number, number] = [258 / 256, 74 / 256, 0];
 const MING_METRICS: [number, number, number] = [205 / 256, 51 / 256, 0];
 // DengXian's own metrics are 1659 and 475 units; Word makes its lines 1.3 times that, like SimSun's.
 const DENG_METRICS: [number, number, number] = [(1659 + 0.15 * 2134) / 2048, (475 + 0.15 * 2134) / 2048, 0];
+// Meiryo's own metrics are 1.06 and 0.44em; Word makes its lines 1.3 times that too, so 10.5pt
+// Meiryo takes two lines of an 18pt document grid.
+const MEIRYO_METRICS: [number, number, number] = [1.06 + 0.15 * 1.5, 0.44 + 0.15 * 1.5, 0];
 const CJK_LINE_METRICS: Record<string, [number, number, number]> = {
   simsun: SONG_METRICS, nsimsun: SONG_METRICS, 宋体: SONG_METRICS, 新宋体: SONG_METRICS,
   simhei: SONG_METRICS, 黑体: SONG_METRICS, kaiti: SONG_METRICS, 楷体: SONG_METRICS,
@@ -279,7 +339,7 @@ const CJK_LINE_METRICS: Record<string, [number, number, number]> = {
   dengxian: DENG_METRICS, 'dengxian light': DENG_METRICS, 等线: DENG_METRICS, '等线 light': DENG_METRICS,
   'microsoft jhenghei': [1.076, 0.254, 0], 微軟正黑體: [1.076, 0.254, 0],
   'malgun gothic': [1.088, 0.242, 0], '맑은 고딕': [1.088, 0.242, 0],
-  meiryo: [1.06, 0.44, 0], メイリオ: [1.06, 0.44, 0],
+  meiryo: MEIRYO_METRICS, メイリオ: MEIRYO_METRICS,
 };
 
 // East Asian fonts of fixed pitch draw ASCII half an em wide (the proportional ones, PMingLiU or
@@ -390,6 +450,6 @@ export function genericFamily(name: string, hints?: FontTableHints): GenericFami
   if (hints?.family === 'roman') return 'serif';
   if (hints?.family === 'swiss') return 'sans';
   if (/sans|gothic|grotesk|arial|helvet|verdana|tahoma|segoe|calibri|aptos|roboto|open|lato|montserrat|univers|futura/.test(n)) return 'sans';
-  if (/serif|roman|times|georgia|garamond|book|cambria|palatino|minion|baskerville|century/.test(n)) return 'serif';
+  if (/serif|roman|times|georgia|garamond|book|cambria|palatino|minion|baskerville|century|naskh/.test(n)) return 'serif';
   return 'sans';
 }

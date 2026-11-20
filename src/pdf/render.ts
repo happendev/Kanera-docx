@@ -3,7 +3,7 @@ import type { Compression } from '../util/compression.js';
 import type { FontFace } from '../fonts/registry.js';
 import { buildSfnt, canSubsetTrueType, subsetTrueType } from '../fonts/subset.js';
 import { ImageBudget, type ImageLimits } from '../image/budget.js';
-import { sniffImage, toPdfImage, type PdfImage } from '../image/image.js';
+import { adjustImage, sniffImage, toPdfImage, type PdfImage } from '../image/image.js';
 import type { DrawOp, GlyphOp, Page, PathSeg } from '../layout/types.js';
 import { latin1, num, PdfObjects, pdfName, textString } from './objects.js';
 
@@ -102,7 +102,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
       images.set(ref.id, null);
       return;
     }
-    const use = { resName: `Im${images.size + 1}`, objNum: writeImage(pdf, img) };
+    const use = { resName: `Im${images.size + 1}`, objNum: writeImage(pdf, ref.adjust ? adjustImage(img, ref.adjust) : img) };
     images.set(ref.id, use);
   };
 

@@ -4,6 +4,7 @@ import { deobfuscateFont } from '../fonts/odttf.js';
 import { attr, child, children, decodeEntities, descendant, descendants, elements, parseXml, path, resolveAlternateContent, textContent, type XmlElement } from '../util/xml.js';
 import { ChartPointBudget, chartTexts } from './chart.js';
 import { parseDrawing, parseVml, loadImage, type DrawingContext } from './drawing.js';
+import { mathTexts, parseOmml, type MathContext } from './math.js';
 import type {
   Block,
   Border,
@@ -496,33 +497,35 @@ class DocxParser {
     }
   }
 
-  /** Office Math is rendered linearly (base text of each math run) in the run's font. */
+  /**
+   * An equation, inline (m:oMath) or displayed (m:oMathPara: each of its equations on a line of
+   * its own, aligned by the equation rather than the paragraph).
+   */
   private parseMath(el: XmlElement, para: Paragraph, pctx: PartContext, styleId: string | undefined, tableOverridesSize: boolean): void {
-    for (const c of children(el)) {
-      if (c.name === 'm:r') {
-        const props = this.runProps(child(c, 'w:rPr'), styleId, pctx, tableOverridesSize);
-        const text = children(c, 'm:t')
-          .map((t) => textContent(t))
-          .join('');
-        if (text && !this.suppressed()) {
-          if (!child(c, 'w:rPr')?.children.some((x) => typeof x !== 'string' && x.name === 'w:rFonts')) {
-            props.fontAscii = props.fontHAnsi = 'Cambria Math';
-          }
-          props.italic = !child(child(c, 'm:rPr'), 'm:sty') && /[A-Za-z]/.test(text);
-          this.pushText(para, text, props);
-        }
-      } else if (c.name === 'm:f') {
-        // Fraction: num/den
-        this.parseMath(child(c, 'm:num') ?? c, para, pctx, styleId, tableOverridesSize);
-        const props = this.runProps(undefined, styleId, pctx, tableOverridesSize);
-        this.pushText(para, '/', props);
-        this.parseMath(child(c, 'm:den') ?? c, para, pctx, styleId, tableOverridesSize);
-      } else if (c.name === 'w:r') {
-        this.parseRun(c, para, pctx, styleId, tableOverridesSize);
-      } else if (!c.name.endsWith('Pr')) {
-        this.parseMath(c, para, pctx, styleId, tableOverridesSize);
-      }
+    if (this.suppressed()) return;
+    const ctx: MathContext = {
+      props: (rPr) => {
+        const props = this.runProps(rPr, styleId, pctx, tableOverridesSize);
+        if (!child(rPr, 'w:rFonts')) props.fontAscii = props.fontHAnsi = 'Cambria Math';
+        return props;
+      },
+    };
+    const parse = (m: XmlElement) => {
+      const math = parseOmml(m, ctx);
+      for (const t of mathTexts(math)) this.noteFonts(t.props, t.text);
+      return math;
+    };
+    if (el.name === 'm:oMath') {
+      para.content.push({ type: 'math', math: parse(el), display: false, props: ctx.props(undefined) });
+      return;
     }
+    const jc = child(child(el, 'm:oMathParaPr'), 'm:jc')?.attrs['m:val'];
+    const align = jc === 'left' || jc === 'right' ? jc : 'center';
+    children(el, 'm:oMath').forEach((m, i) => {
+      const props = ctx.props(undefined);
+      if (i > 0) para.content.push({ type: 'break', breakType: 'line', props });
+      para.content.push({ type: 'math', math: parse(m), display: true, align, props });
+    });
   }
 
   private runProps(rPr: XmlElement | undefined, styleId: string | undefined, pctx: PartContext, tableOverridesSize: boolean): RunProps {
@@ -530,7 +533,7 @@ class DocxParser {
     let charStyle = direct.styleId;
     // Word shows table-of-contents entries in their TOC paragraph styles: the Hyperlink character
     // style that the TOC field's \h switch puts on every entry is not drawn (the link still works).
-    if (charStyle && this.styles.styles.get(charStyle)?.name.toLowerCase() === 'hyperlink' && this.fieldStack.some((f) => f.toc)) charStyle = undefined;
+    if (charStyle && this.styles.get(charStyle)?.name.toLowerCase() === 'hyperlink' && this.fieldStack.some((f) => f.toc)) charStyle = undefined;
     const delta = this.styles.runDelta({ paraStyle: styleId, charStyle, tableRun: pctx.table?.tableRun, direct, tableOverridesSize });
     const props = finalizeRun(delta);
     props.styleId = direct.styleId;
@@ -659,7 +662,9 @@ class DocxParser {
   }
 
   private noteFonts(props: RunProps, text: string): void {
-    for (const ch of text || ' ') {
+    // Long runs often repeat the same font request for every occurrence of a letter.
+    const characters = text.length >= 32 ? new Set(text) : text || ' ';
+    for (const ch of characters) {
       const cp = ch.codePointAt(0)!;
       const { family, bold, italic } = fontFor(cp, props);
       const lang = props.eastAsiaLang;
@@ -1181,6 +1186,7 @@ class DocxParser {
       footnoteRestart: restart === 'eachSect' || restart === 'eachPage' ? restart : 'continuous',
       footnoteStart: num(noteValue('w:numStart')) ?? 1,
       footnoteFormat: noteValue('w:numFmt') ?? 'decimal',
+      ...(['tbRl', 'tbRlV', 'rl', 'rlV'].includes(attr(child(sectPr, 'w:textDirection'), 'w:val') ?? '') && { vertical: true }),
     };
   }
 

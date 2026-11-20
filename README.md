@@ -79,6 +79,17 @@ Pass an output path or options as needed.
 npx --no-install docx2pdf in.docx out.pdf --font BrandSans.ttf --system-fonts
 ```
 
+To get page images instead of a PDF, pass `--png` with a directory. This writes `pages/in-1.png`,
+`pages/in-2.png` and so on, with page numbers zero-padded to the same width so they sort in order.
+`--dpi` sets the resolution (default 150).
+
+```bash
+npx --no-install docx2pdf in.docx --png pages --dpi 200
+```
+
+The PNGs are rasterised from the converted PDF by `pdftoppm` (Poppler), `mutool` (MuPDF) or
+Ghostscript, whichever is found first on the `PATH`; install one of them to use `--png`.
+
 ### Page count and warnings
 
 Use `convertDocx` to get conversion warnings along with the PDF and page count.
@@ -362,7 +373,8 @@ from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception; its source
 - Images: PNG (all colour types, transparency, interlacing), JPEG (including CMYK), GIF, BMP and
   TIFF (uncompressed, LZW, Deflate and PackBits). Basic SVG, EMF and WMF are drawn as vector paths.
   Images can be inline or floating, with cropping, rotation, flips and square/tight/top-and-bottom
-  text wrap, also around pictures in headers and footers.
+  text wrap, also around pictures in headers and footers. Brightness, contrast and Washout apply to
+  raster pictures, except CMYK JPEGs; SVG and metafile pictures are drawn unadjusted.
 - Shapes and text boxes (DrawingML and VML): preset geometries, custom paths, fills (including
   linear and path gradients, blended as Word blends them), outlines, dash styles, transparency,
   groups, rotated and vertical text, WordArt text paths and watermarks.
@@ -371,9 +383,18 @@ from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception; its source
   document, with Excel's automatic axis scaling, number formats, titles, legends, data labels,
   trendlines, error bars, gradient fills and shadows. SmartArt is drawn from the shapes Word saves
   with the diagram, text included.
+- Equations (OMML) laid out as Word's equation editor sets them: fractions, sub- and superscripts,
+  radicals, integrals and other large operators with their limits, stretching brackets, matrices,
+  equation arrays aligned at their marks, accents, bars and grouping characters, in Cambria Math's
+  proportions.
+- Vertical East Asian text: sections (`w:textDirection` `tbRl`) and text boxes set top to bottom
+  with lines running right to left, ideographs and kana upright in the font's vertical forms;
+  headers and footers stay horizontal, as in Word.
 - Tracked changes render as the final document (insertions shown, deletions hidden).
-- Right-to-left paragraphs, headers and table text, with bidirectional reordering and Arabic
-  letter joining.
+- Right-to-left paragraphs, headers and tables (`w:bidiVisual`, first column on the right), with
+  bidirectional reordering and Arabic, Persian and Urdu letter joining. Arabic drawn by a fallback
+  font for Arial, Times New Roman or Dubai takes that font's width and line height, so lines break
+  where Word's do.
 
 ## Limitations
 
@@ -385,10 +406,12 @@ from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception; its source
   (waterfall, treemap, histogram and others) show the fallback Word saves with them. No document in
   the benchmark or test corpora has a radar chart or error bars, so those follow Excel's documented
   behaviour without a Word reference to check them against.
-- Equations render as linear text.
+- Equations are drawn with Caladea standing in for Cambria Math, spaced to Cambria Math's widths.
 - Bidirectional text follows a simplified Unicode algorithm without explicit embeddings, and Arabic
-  joins through presentation forms; no Indic shaping, no OpenType ligatures, and right-to-left
-  tables (`w:bidiVisual`) are not mirrored.
+  joins through presentation forms; no Indic shaping and no OpenType ligatures. No Arabic font is
+  bundled: pass one in `fonts` (such as Noto Naskh Arabic or Noto Sans Arabic) for a closer look
+  than the DejaVu Sans fallback.
+- Text in vertical sections does not wrap around floating objects.
 - A floating table taller than the space left on its page is laid out inline (Word splits it
   across pages and keeps it floating).
 - Text in continuous-section columns is not balanced; no automatic hyphenation; frames in the body

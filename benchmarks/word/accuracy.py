@@ -29,9 +29,18 @@ REVISION = MANIFEST['revision']
 MANIFEST_SHA256 = '1682abfccf34d12f9da8dfff9f18087580e90065f0c3397d83321657a6458848'
 CACHE = Path(gettempdir()) / f'kanera-docx-word-{getuid()}' / REVISION
 EXPECTED_DOCUMENTS = 2925
+# Word exported the corpus's tracked changes and comments in markup view (struck-through deletions,
+# comment balloons on a shrunken page). docx2pdf renders the final text without comments, so only
+# the `clean` pairs are scored. These clean pairs are in scripts no bundled font covers; users
+# supply fonts for them.
+UNBUNDLED_SCRIPTS = {
+    '521bb53c59': 'Devanagari', '92f6ee8aac': 'Devanagari', 'e3d87c5d40': 'Devanagari',
+    'a9477e435a': 'Khmer', '55fcbe9086': 'Thaana', 'de4654ccf5': 'Thai',
+}
+SCORED_DOCUMENTS = 2472
 SOURCES = {
     'huggingface': {
-        'source': MANIFEST['source'], 'revision': REVISION, 'documents': EXPECTED_DOCUMENTS,
+        'source': MANIFEST['source'], 'revision': REVISION, 'documents': SCORED_DOCUMENTS,
     },
     'upstream': {
         'source': UPSTREAM['source'], 'revision': UPSTREAM['revision'],
@@ -98,6 +107,9 @@ def load_corpus(cache):
         if digests[row['docx']] != row['sha256'] or row['pdf'] not in digests:
             raise ValueError(f"Inconsistent source manifest for {row['stem']}")
         row['reference_application'] = 'Microsoft Word for Mac'
+    rows = [row for row in rows if row['state'] == 'clean' and row['id'] not in UNBUNDLED_SCRIPTS]
+    if len(rows) != SCORED_DOCUMENTS:
+        raise ValueError('Unexpected number of clean documents in the index')
     return rows, digests
 
 

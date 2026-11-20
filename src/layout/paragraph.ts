@@ -1,8 +1,9 @@
 import type { FontRegistry } from '../fonts/registry.js';
-import { arabicForms, bidiClass, bidiLevels, visualOrder } from './bidi.js';
+import { arabicForms, bidiClass, bidiLevels, joinsArabic, mirrored, visualOrder } from './bidi.js';
 import type { DocSettings, Drawing, FieldInline, Link, Paragraph, RunProps, TabStop } from '../docx/model.js';
 import { shapeSimple, shapeText, type ShapedRun } from './shaper.js';
-import type { DrawOp, GlyphOp } from './types.js';
+import { translateOps, type DrawOp, type GlyphOp } from './types.js';
+import { layoutMath, mathLineProps, type MathBox } from './math.js';
 
 const EPS = 0.01;
 /**
@@ -55,6 +56,7 @@ type Atom =
   | { k: 'ptab'; run: ShapedRun; alignment: 'left' | 'center' | 'right'; relativeTo: 'margin' | 'indent'; leader: TabStop['leader'] }
   | { k: 'br'; type: 'line' | 'page' | 'column'; run: ShapedRun }
   | { k: 'obj'; drawing: Drawing; w: number; h: number; props: RunProps; link?: Link; run: ShapedRun }
+  | { k: 'math'; box: MathBox; run: ShapedRun; align?: 'left' | 'center' | 'right' }
   | { k: 'sep'; w: number; run: ShapedRun; continuation: boolean }
   | { k: 'float'; drawing: Drawing }
   | { k: 'bm'; name: string }
@@ -228,6 +230,13 @@ export class ParagraphLayout {
         case 'renderedPageBreak':
           this.atoms.push({ k: 'rpb' });
           break;
+        case 'math': {
+          const box = layoutMath(inl.math, inl.props, inl.display, fonts);
+          // The equation's own text size (its runs' w:sz), not the paragraph's, sizes its line.
+          const run = shapeSimple(' ', { ...mathLineProps(inl.props), size: box.em || inl.props.size }, fonts)[0] ?? this.markRun;
+          this.atoms.push({ k: 'math', box, run, align: inl.display ? inl.align : undefined });
+          break;
+        }
       }
     }
     if (this.hasLabel) this.moveLabelPastBreaks();
@@ -238,14 +247,31 @@ export class ParagraphLayout {
     const classes = this.atoms.map((a) => (a.k === 'g' ? bidiClass(a.cp) : 'N'));
     if (base || classes.some((c) => c === 'R' || c === 'AL')) {
       this.levels = bidiLevels(classes, this.atoms.map((a) => a.k === 'g' && a.run.props.rtl), base);
+      this.mirrorBrackets(this.levels);
     }
+  }
+
+  /** Brackets in right-to-left text face the other way (rule L4): ")" ends what reads as "(". */
+  private mirrorBrackets(levels: number[]): void {
+    this.atoms.forEach((a, i) => {
+      if (a.k !== 'g' || levels[i] % 2 === 0) return;
+      const m = mirrored(a.cp);
+      const g = a.run.glyphs[a.gi];
+      const font = a.run.face.face.font;
+      const gid = m === undefined ? 0 : font.glyphId(m);
+      if (g.gid < 0 || gid <= 0) return;
+      g.advance += (font.advance(gid) - font.advance(g.gid)) * ((a.run.size * a.run.scaleX) / font.unitsPerEm);
+      g.gid = gid;
+      g.text = String.fromCodePoint(m!);
+      a.w = g.advance;
+    });
   }
 
   /** Arabic letters take their joining forms from the letters around them. */
   private shapeArabic(): void {
     const atoms = this.atoms;
     const cps = atoms.map((a) => (a.k === 'g' ? a.cp : -1));
-    if (!cps.some((cp) => cp >= 0x621 && cp <= 0x64a)) return;
+    if (!cps.some(joinsArabic)) return;
     const forms = arabicForms(cps);
     for (let i = 0; i < atoms.length; i++) {
       const a = atoms[i];
@@ -348,16 +374,16 @@ export class ParagraphLayout {
     };
     for (let i = 0; i < n; i++) {
       const a = atoms[i];
-      if (a.k === 'tab' || a.k === 'ptab' || a.k === 'obj' || a.k === 'br') {
+      if (a.k === 'tab' || a.k === 'ptab' || a.k === 'obj' || a.k === 'math' || a.k === 'br') {
         this.breakAfter[i] = true;
-        if (a.k === 'obj' && i > 0) this.breakAfter[i - 1] = true;
+        if ((a.k === 'obj' || a.k === 'math') && i > 0) this.breakAfter[i - 1] = true;
         continue;
       }
       if (a.k !== 'g') continue;
       const cp = a.cp;
       // Look past zero-width atoms for the next character.
       let j = i + 1;
-      while (j < n && atoms[j].k !== 'g' && atoms[j].k !== 'tab' && atoms[j].k !== 'obj' && atoms[j].k !== 'br' && atoms[j].k !== 'ptab') j++;
+      while (j < n && atoms[j].k !== 'g' && atoms[j].k !== 'tab' && atoms[j].k !== 'obj' && atoms[j].k !== 'math' && atoms[j].k !== 'br' && atoms[j].k !== 'ptab') j++;
       const next = cpAt(j);
       if (isSpaceCp(cp)) {
         // Break after the last space of a run of spaces. A run of fixed-width spaces after ordinary
@@ -543,7 +569,7 @@ export class ParagraphLayout {
       ws.push(w);
       x += w;
       if (punctOn && a.k === 'g' && COMPRESSIBLE.has(a.cp) && (i < this.labelStart || i >= this.labelEnd)) punct += (w - (a.grid ?? 0)) * PUNCT_SQUEEZE;
-      if (w > 0 || a.k === 'obj') hasContent = true;
+      if (w > 0 || a.k === 'obj' || a.k === 'math') hasContent = true;
       if (w > 0) {
         inkX = x;
         inkSpaces = spaceSum;
@@ -597,7 +623,7 @@ export class ParagraphLayout {
       const a = atoms[k];
       if (a.k === 'g' && (a.cp === 0x20 || a.cp === 0x3000)) continue;
       if (a.k === 'br') continue;
-      if ((a.k === 'g' || a.k === 'obj' || a.k === 'tab' || a.k === 'ptab' || a.k === 'sep') && ws[k - start] >= 0) {
+      if ((a.k === 'g' || a.k === 'obj' || a.k === 'math' || a.k === 'tab' || a.k === 'ptab' || a.k === 'sep') && ws[k - start] >= 0) {
         contentRight = xs[k - start] + ws[k - start] - (a.k === 'g' ? (a.aspace ?? 0) : 0);
         break;
       }
@@ -686,6 +712,13 @@ export class ParagraphLayout {
           // A horizontal rule's line is as tall as its run's text.
           if (a.drawing.hr) add(a.run.ascent, a.run.descent, a.run.extLeading);
           break;
+        case 'math':
+          // An equation's font sizes its line like text. Where its ink reaches further, the line
+          // grows like a picture, beyond what "multiple" spacing scales: to the ink below the
+          // baseline and 0.15em above it (measured against Word's PDFs).
+          add(a.run.ascent, a.run.descent, a.run.extLeading);
+          add(a.box.top + 0.15 * a.box.em, a.box.bottom, 0, false);
+          break;
         case 'float':
           floats.push(a.drawing);
           break;
@@ -729,11 +762,18 @@ export class ParagraphLayout {
     const used = contentRight - left;
     let alignShift = 0;
     const justify = { from: start, perGap: 0, perChar: 0 };
+    // A displayed equation keeps its own alignment, whatever the paragraph's.
+    let display: 'left' | 'center' | 'right' | undefined;
+    for (let k = start; k < end; k++) {
+      const a = atoms[k];
+      if (a.k === 'math' && a.align) display = a.align;
+    }
     const endsWithLineBreak = brk === 'line';
     const justifyThis = (p.align === 'both' && !isLast && !(endsWithLineBreak && this.env.settings.doNotExpandShiftReturn)) || p.align === 'distribute';
     // A justified line that kept its last word by shrinking its spaces stays shrunk, even when it
     // is the paragraph's last line (which otherwise isn't justified).
-    if ((justifyThis && used < avail) || (p.align === 'both' && !hung && used > avail + EPS)) {
+    if (display) alignShift = display === 'center' ? (avail - used) / 2 : display === 'right' ? avail - used : 0;
+    else if ((justifyThis && used < avail) || (p.align === 'both' && !hung && used > avail + EPS)) {
       const extra = avail - used;
       // Only spaces after the last tab stretch.
       let from = start;
@@ -1015,7 +1055,9 @@ export class ParagraphLayout {
         curRun = null;
         segStart = -1;
         cur = null;
-        if (a.k === 'obj') {
+        if (a.k === 'math') {
+          ops.push(...translateOps(a.box.ops, x, baseline));
+        } else if (a.k === 'obj') {
           const w = a.w;
           const h = a.h;
           const y = baseline - h - a.props.position;
@@ -1198,6 +1240,8 @@ function atomWidth(a: Atom): number {
       return a.w;
     case 'obj':
       return a.w;
+    case 'math':
+      return a.box.w;
     case 'sep':
       return a.w < 0 ? 0 : a.w;
     default:

@@ -1,7 +1,9 @@
 import type { FontRequest } from '../docx/model.js';
 import { SfntFont, collectionSize, FontBudget, FontLimitError } from './sfnt.js';
 import {
+  ARABIC_SAMPLE,
   GENERIC_FALLBACKS,
+  arabicWidth,
   cjkFallbackLine,
   cjkFallbacks,
   cjkLineMetrics,
@@ -10,6 +12,7 @@ import {
   glyphFallbacks,
   halfWidthLatin,
   normalizeFamily,
+  ownArabicHebrew,
   substituteFamilies,
   unstyledFamily,
   type FontTableHints,
@@ -160,6 +163,8 @@ export interface ResolvedFace {
   halfWidth?: Map<number, number>;
   /** With halfWidth: the stand-in's full-width forms (fwid), for the punctuation such a font draws an em wide. */
   fullWidth?: Map<number, number>;
+  /** Glyph size relative to the text's, for a fallback drawn to the width of the font it stands in for. */
+  glyphScale?: number;
 }
 
 const ORIGIN_RANK: Record<FontOrigin, number> = { embedded: 1, user: 0, system: 2, bundled: 3 };
@@ -184,6 +189,7 @@ export class FontRegistry {
   private resolveCache = new Map<string, ResolvedFace>();
   private glyphCache = new Map<string, ResolvedFace>();
   private fallbackLines = new WeakMap<ResolvedFace, ResolvedFace>();
+  private sampleWidths = new WeakMap<FontFace, number>();
   private widthFormCache = new WeakMap<FontFace, { half: Map<number, number>; full: Map<number, number> }>();
   private symbolCache = new Map<string, number>();
   readonly hints = new Map<string, FontTableHints>();
@@ -513,8 +519,7 @@ export class FontRegistry {
    * The face that renders `cp` for the requested font: the resolved face when it has the glyph,
    * otherwise a fallback font that does (like Word's font linking).
    */
-  faceForChar(family: string, bold: boolean, italic: boolean, cp: number, lang?: string, drawn = false): ResolvedFace {
-    const primary = this.resolve(family, bold, italic, lang);
+  faceForChar(family: string, bold: boolean, italic: boolean, cp: number, lang?: string, drawn = false, primary = this.resolve(family, bold, italic, lang)): ResolvedFace {
     const mapped = primary.symbolMap ? this.symbolChar(primary.symbolMap, cp) : cp;
     if (primary.face.font.hasGlyph(mapped) || cp < 0x20 || cp === 0xa0 || cp === 0x2028) return this.eastAsianFallbackLine(family, cp, primary);
     if (synthesized(primary.face.font, cp)) return primary;
@@ -540,7 +545,7 @@ export class FontRegistry {
       }
     }
     if (!result) {
-      const any = this.faces.find((f) => f.font.hasGlyph(mapped));
+      const any = this.anyFaceWith(family, mapped, bold, italic);
       const math = any || primary.symbolMap ? undefined : mathLetter(cp);
       // Word draws a mathematical letter from Cambria Math; without it, the plain letter in the
       // style it stands for looks the same.
@@ -550,9 +555,46 @@ export class FontRegistry {
       if (!any && !math) this.warnings.add(this.missingGlyph(family, primary.symbolMap, cp, mapped));
     }
     if (found && !primary.symbolMap && (drawn || symbolFallback(cp))) result = { ...result, ...this.symbolLine(family, primary, drawn) };
+    if (found && (ownArabicHebrew(family, cp) || ownArabicHebrew(primary.face.familyName, cp))) {
+      result = { ...result, ascent: primary.ascent, descent: primary.descent, externalLeading: primary.externalLeading };
+      const target = arabicWidth(family, bold) ?? arabicWidth(primary.face.familyName, bold);
+      const width = target && !(cp >= 0x590 && cp <= 0x5ff) && !(cp >= 0xfb1d && cp <= 0xfb4f) ? this.arabicSampleWidth(result.face) : 0;
+      if (target && width) result.glyphScale = target / width;
+    }
     result = this.eastAsianFallbackLine(family, cp, result);
     this.glyphCache.set(key, result);
     return result;
+  }
+
+  /** Width (em) of ARABIC_SAMPLE in `face`, or 0 when it lacks those forms. */
+  private arabicSampleWidth(face: FontFace): number {
+    let w = this.sampleWidths.get(face);
+    if (w === undefined) {
+      w = 0;
+      for (const ch of ARABIC_SAMPLE) {
+        const gid = face.font.glyphId(ch.codePointAt(0)!);
+        if (gid <= 0) {
+          w = 0;
+          break;
+        }
+        w += face.font.advance(gid) / face.font.unitsPerEm;
+      }
+      this.sampleWidths.set(face, w);
+    }
+    return w;
+  }
+
+  /**
+   * The loaded face, outside the fallback families, closest to `family` that has `cp`: of the same
+   * kind (serif, sans) where one is, then in the nearest style. A font passed in to cover a script
+   * comes in several kinds (Noto Naskh and Noto Sans Arabic).
+   */
+  private anyFaceWith(family: string, cp: number, bold: boolean, italic: boolean): FontFace | undefined {
+    const faces = this.faces.filter((f) => f.font.hasGlyph(cp));
+    if (!faces.length) return undefined;
+    const generic = this.generic(family);
+    const kin = faces.filter((f) => this.generic(f.families[0] ?? '') === generic);
+    return this.pickStyle(kin.length ? kin : faces, bold, italic);
   }
 
   /** A face's half- and full-width forms of proportional glyphs (empty when it has none). */

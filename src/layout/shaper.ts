@@ -54,6 +54,8 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
   const out: ShapedRun[] = [];
   let cur: ShapedRun | null = null;
   const scale = props.scale / 100;
+  let previousChoice: ReturnType<typeof fontFor> | undefined;
+  let primary: ResolvedFace | undefined;
   for (const ch of text) {
     let cp = ch.codePointAt(0)!;
     let display = ch;
@@ -70,9 +72,14 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
     let size = choice.size;
     if (small) size *= 0.8;
     const sm = scriptMetrics(size, props.vertAlign);
-    const resolved: ResolvedFace = fonts.faceForChar(choice.family, choice.bold, choice.italic, cp, props.eastAsiaLang, props.drawn);
+    if (!previousChoice || choice.family !== previousChoice.family || choice.bold !== previousChoice.bold || choice.italic !== previousChoice.italic) {
+      primary = fonts.resolve(choice.family, choice.bold, choice.italic, props.eastAsiaLang);
+      previousChoice = choice;
+    }
+    const resolved: ResolvedFace = fonts.faceForChar(choice.family, choice.bold, choice.italic, cp, props.eastAsiaLang, props.drawn, primary);
     const glyphSize = sm.size;
-    if (!cur || cur.face !== resolved || cur.size !== glyphSize) {
+    const sx = scale * (resolved.glyphScale ?? 1);
+    if (!cur || cur.face !== resolved || cur.size !== glyphSize || cur.scaleX !== sx) {
       const face: FontFace = resolved.face;
       cur = {
         face: resolved,
@@ -85,7 +92,7 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
         ascent: resolved.ascent * size - sm.shift,
         descent: resolved.descent * size + sm.shift,
         extLeading: resolved.externalLeading * size,
-        scaleX: scale,
+        scaleX: sx,
         link,
       };
       out.push(cur);
@@ -109,23 +116,23 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
       else if (cp === 0x2002 || cp === 0x2003 || cp === 0x2009 || cp === 0x2005 || cp === 0x2006) advanceCp = 0x20;
       if (advanceCp !== mapped) gid = font.glyphId(advanceCp);
     }
-    let advance = (font.advance(gid) / font.unitsPerEm) * glyphSize * scale;
+    let advance = (font.advance(gid) / font.unitsPerEm) * glyphSize * sx;
     const half = resolved.halfWidth && cp >= 0x20 && cp <= 0x7e;
     const full = !half && FULL_WIDTH_PUNCT.has(cp) ? resolved.fullWidth?.get(gid) : undefined;
     if (half) {
       gid = resolved.halfWidth!.get(gid) ?? gid;
-      advance = (glyphSize * scale) / 2;
+      advance = (glyphSize * sx) / 2;
     } else if (full !== undefined) {
       gid = full;
-      advance = glyphSize * scale;
+      advance = glyphSize * sx;
     }
-    if (cp === 0x2003 && gid === font.glyphId(0x20)) advance = glyphSize * scale;
-    if (cp === 0x2002 && gid === font.glyphId(0x20)) advance = (glyphSize * scale) / 2;
+    if (cp === 0x2003 && gid === font.glyphId(0x20)) advance = glyphSize * sx;
+    if (cp === 0x2002 && gid === font.glyphId(0x20)) advance = (glyphSize * sx) / 2;
     advance += props.spacing;
     // Pair kerning applies when w:kern is set and the font is at least that size.
     if (props.kern > 0 && size >= props.kern && cur.glyphs.length > 0 && !half && full === undefined) {
       const prev = cur.glyphs[cur.glyphs.length - 1];
-      if (prev.gid > 0 && gid > 0) prev.advance += (resolved.face.kerning(prev.gid, gid) / font.unitsPerEm) * glyphSize * scale;
+      if (prev.gid > 0 && gid > 0) prev.advance += (resolved.face.kerning(prev.gid, gid) / font.unitsPerEm) * glyphSize * sx;
     }
     // Symbol-font characters (Wingdings, Symbol PUA codes) copy as the Unicode they were mapped to.
     const text = mapped !== cp && !resolved.char && (mapped < 0xe000 || mapped > 0xf8ff) ? String.fromCodePoint(mapped) : display;

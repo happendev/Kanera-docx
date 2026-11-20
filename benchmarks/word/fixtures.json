@@ -206,109 +206,109 @@
       "pdf_sha256": "a45cc297177c5742121495cd18b94921a587ce778e673dc053760471f0cff499"
     },
     {
-      "case": "tracked-word-replacement",
-      "docx": "tracking_without_comments/docx/4cb1926093_behavior__sd_1960_word_replacement_no_comments_1.docx",
-      "docx_sha256": "4cb1926093e042348534feaa09f4009c20059da27d52d9afe1fe1ec7e62d5387",
-      "pdf": "tracking_without_comments/pdf/4cb1926093_behavior__sd_1960_word_replacement_no_comments_1.pdf",
-      "pdf_sha256": "f2cbb26e909bb31a4f0b6a172571f9ad18104b81575366d4dde7c282ef769455"
+      "case": "hyperlink-multiple-runs",
+      "docx": "clean/docx/049a315896_super_editor__hyperlink_multiple_runs_0138c312.docx",
+      "docx_sha256": "049a31589633f0e73cec78dde1886f318bcfd977cadc94c0564a3ea0dd1182b9",
+      "pdf": "clean/pdf/049a315896_super_editor__hyperlink_multiple_runs_0138c312.pdf",
+      "pdf_sha256": "de1fc7b0289b191589a47b98fadbc5364b33d6fb64bcef0e05830b97e64d511c"
     },
     {
-      "case": "tracked-table-edits",
-      "docx": "tracking_without_comments/docx/2c0c942234_super_editor__sd_2766_pirates_tracked_changes_32.docx",
-      "docx_sha256": "2c0c942234d5766cb5bbe66f7a2a39e18e7c58616da06f1f1d77404211f9a994",
-      "pdf": "tracking_without_comments/pdf/2c0c942234_super_editor__sd_2766_pirates_tracked_changes_32.pdf",
-      "pdf_sha256": "78f02b3fe6e5d8bd2dbae65d496271e651fb2bd27a67ca6df129d4b0720cc6f5"
+      "case": "clinical-trial-report",
+      "docx": "clean/docx/0a2898b58a_evals__report_with_formatting_03f385ed.docx",
+      "docx_sha256": "0a2898b58af03454d2191d830cfa2ae580eb1fb611cd95b72b6c6c7b759d7e48",
+      "pdf": "clean/pdf/0a2898b58a_evals__report_with_formatting_03f385ed.pdf",
+      "pdf_sha256": "c2a8af70fb11f7091ce377106e838516e08b2c0eacdd8f91f6f54281efcdc462"
     },
     {
-      "case": "tracked-list-item-deletion",
-      "docx": "tracking_without_comments/docx/b1356a4fa4_tracked-deleted-listitem.docx",
-      "docx_sha256": "b1356a4fa4e73d19e38387ffe18c5357d14320f2821b860c2cf1e39b8555e378",
-      "pdf": "tracking_without_comments/pdf/b1356a4fa4_tracked-deleted-listitem.pdf",
-      "pdf_sha256": "d3cede974f50eca36471f5ff18013f12e0b558de949af89490089f5065419c8a"
+      "case": "verdana-font-demo",
+      "docx": "clean/docx/4ec5ae2a61_verdana-font-demo_id-paraid-overflow-2.docx",
+      "docx_sha256": "4ec5ae2a619e695bc67a57f135b8a759f5dcda5a5233b4fbc87cf37d75b64f72",
+      "pdf": "clean/pdf/4ec5ae2a61_verdana-font-demo_id-paraid-overflow-2.pdf",
+      "pdf_sha256": "55f259b98cf29c4ad9ff7194b9b3e50085bd82585625f2e1f2f13e0612590a9d"
     },
     {
-      "case": "accepted-tracking-with-graphics",
-      "docx": "tracking_without_comments/docx/8d7d184041_512b24be1e_accepted_tracking.docx",
-      "docx_sha256": "8d7d18404138620ed02397fa0fb0ee67e6cc3c2368e646fd35f9553224aaeaa0",
-      "pdf": "tracking_without_comments/pdf/8d7d184041_512b24be1e_accepted_tracking.pdf",
-      "pdf_sha256": "3fbd93625a6a1cc9ae89c0c88d411f56497b203188f178c2fe672cf08ef1d938"
+      "case": "turkish-course-syllabus",
+      "docx": "clean/docx/27a22c8ac3_4cb34c212d_accepted_tracking.docx",
+      "docx_sha256": "27a22c8ac3f0051d72585a4455900cedd003f25f26b3c80d8e0b095d7f0e9189",
+      "pdf": "clean/pdf/27a22c8ac3_4cb34c212d_accepted_tracking.pdf",
+      "pdf_sha256": "2ea006b5a4909d0e23bb5c286300e26c0f11890f7843e6e1b19112403c485fc6"
     },
     {
-      "case": "rejected-tracking-with-graphics",
-      "docx": "tracking_without_comments/docx/98af75f057_4ca3f73206_rejected_tracking.docx",
-      "docx_sha256": "98af75f057ce7f5334f5190155fb7df1041daa257945cdd1d62bffa0b20caa9d",
-      "pdf": "tracking_without_comments/pdf/98af75f057_4ca3f73206_rejected_tracking.pdf",
-      "pdf_sha256": "4b963ccd9df55c92fa1b237e3a02f91f1ee05850a1b8cac26f8c0895f41c2615"
+      "case": "hf-source-08074964d7",
+      "docx": "clean/docx/08074964d7_01870f7ea5cec263713c811d8938a05f1730d362aad060f6.docx",
+      "docx_sha256": "08074964d7d668f3e7a199e5405f20e77c22539970902708bfed244ce2b2cb5d",
+      "pdf": "clean/pdf/08074964d7_01870f7ea5cec263713c811d8938a05f1730d362aad060f6.pdf",
+      "pdf_sha256": "828f3979545aa9f3b1ff98d92045a363ce6010e3260ac7ca1bc3123d74cfe353"
     },
     {
-      "case": "threaded-comment",
-      "docx": "with_comments_clean/docx/9f6091a4ac_super_editor__threaded_comment_27bda0ba.docx",
-      "docx_sha256": "9f6091a4acb46fd48d2ecccf39c7c6589ef05f809613c7ec0691f8eced701484",
-      "pdf": "with_comments_clean/pdf/9f6091a4ac_super_editor__threaded_comment_27bda0ba.pdf",
-      "pdf_sha256": "87e8a81f6c0f44fa8e75947c5acbcef49beca4ca683bfb0546464acf926b5fa7"
+      "case": "image-only-document",
+      "docx": "clean/docx/058cd936de_super_editor__image_doc_c7d007ac.docx",
+      "docx_sha256": "058cd936dededfbe957ad5a5d310ee26accda4de60ca7132e50555dc2d039cf9",
+      "pdf": "clean/pdf/058cd936de_super_editor__image_doc_c7d007ac.pdf",
+      "pdf_sha256": "846919c3e94188c06ccd223e09face9aa7d8fc7e815a906f6b3077280427d12b"
     },
     {
-      "case": "resolved-comment",
-      "docx": "with_comments_clean/docx/08286ffbfb_super_editor__basic_resolved_comment_cac5a1b0.docx",
-      "docx_sha256": "08286ffbfb7924b6ec91305f25af6e20205e9a3769c0313ba02fb29a579455a1",
-      "pdf": "with_comments_clean/pdf/08286ffbfb_super_editor__basic_resolved_comment_cac5a1b0.pdf",
-      "pdf_sha256": "8fc0c33cd57467f9f1224c58c4f71e89239df71c06e0319514cc32f3f320f87c"
+      "case": "missing-section-properties",
+      "docx": "clean/docx/0a1badc333_super_editor__missing_sectpr_967a402d.docx",
+      "docx_sha256": "0a1badc3330c202f8f2426014bd27e50ffde042f5344ef49355ceca7f21cd5fa",
+      "pdf": "clean/pdf/0a1badc333_super_editor__missing_sectpr_967a402d.pdf",
+      "pdf_sha256": "a551a4680eee70d8db57e6f199bda40934bd14b2bc35aed7056cc5a732dcd75a"
     },
     {
-      "case": "comment-in-content-control",
-      "docx": "with_comments_clean/docx/52dab5bc1c_super_editor__sdt_node_comment_ec887683.docx",
-      "docx_sha256": "52dab5bc1c452aa287e862aae3430fb1936040df22a950190a4a88d93976f49a",
-      "pdf": "with_comments_clean/pdf/52dab5bc1c_super_editor__sdt_node_comment_ec887683.pdf",
-      "pdf_sha256": "73a625c35da356d0f2f189b4d1b2377fb37ac4924a107bfd8cb933bb645fa285"
+      "case": "math-radicals",
+      "docx": "clean/docx/0b1d0278ce_behavior__math_radical_tests_4c1ce187.docx",
+      "docx_sha256": "0b1d0278ce5d48874c194d3ae01196073e58fe15a00e92b38ecbdc616f4e006a",
+      "pdf": "clean/pdf/0b1d0278ce_behavior__math_radical_tests_4c1ce187.pdf",
+      "pdf_sha256": "efd98e2cf1eb25a058f0bb37a9c01e998f7daa23037e8013f1d57f14e2430198"
     },
     {
-      "case": "comments-with-charts-and-text-boxes",
-      "docx": "with_comments_clean/docx/d4f4f33ca7_ce3c279407c9eb4e94d8e9f4ca9e68b8f882674fc6a1caff.docx",
-      "docx_sha256": "d4f4f33ca7d80e1e3779e2b6492a779db518fc78443e0b4dedd767af59b06ef0",
-      "pdf": "with_comments_clean/pdf/d4f4f33ca7_ce3c279407c9eb4e94d8e9f4ca9e68b8f882674fc6a1caff.pdf",
-      "pdf_sha256": "ce327bd873bb59c37b6978335251cc9b73fa2e3cf0de947a615c659b8b78d738"
+      "case": "hf-english-0018843794",
+      "docx": "clean/docx/0018843794_889f4c3958e28978a0d96a95a8938d9eb0dc100e66f7c483.docx",
+      "docx_sha256": "00188437944693a7c8445b5743e396247b001d8ee22caca62f3698f69e58be7d",
+      "pdf": "clean/pdf/0018843794_889f4c3958e28978a0d96a95a8938d9eb0dc100e66f7c483.pdf",
+      "pdf_sha256": "b2eb812ccd614b98f0fa040d69d82d9ddae497ee8f3025438142f60c1e0d7275"
     },
     {
-      "case": "retained-comments-after-acceptance",
-      "docx": "with_comments_clean/docx/fcd2a42b64_r4_04_accept_tracked.docx",
-      "docx_sha256": "fcd2a42b645b94dcba89c368ceed25617fcd21430db47057c74aedc7db50d174",
-      "pdf": "with_comments_clean/pdf/fcd2a42b64_r4_04_accept_tracked.pdf",
-      "pdf_sha256": "a9bfe9324bc99678481b865a8a599356c95f8d91dfdc5ec1a61d783b3952d406"
+      "case": "hf-source-00f467c010",
+      "docx": "clean/docx/00f467c010_0008753aa70a6a7b929aa1958001da41574c2d407e5b9863.docx",
+      "docx_sha256": "00f467c010bdf71c400d8da6f430483ae4942c51ececc1fdf2c03b241655fbde",
+      "pdf": "clean/pdf/00f467c010_0008753aa70a6a7b929aa1958001da41574c2d407e5b9863.pdf",
+      "pdf_sha256": "a452a446f6c09b3a64a69ef9dce09e2fd3d14607929f20bbb832bc907a6f9094"
     },
     {
-      "case": "word-comments-and-edits",
-      "docx": "with_comments_tracking/docx/f782ae23ec_super_editor__wordoriginatedcomments_c146be65.docx",
-      "docx_sha256": "f782ae23ecb0e21ba464df954db5f861774a2089c6682347071c1f56e104a4bf",
-      "pdf": "with_comments_tracking/pdf/f782ae23ec_super_editor__wordoriginatedcomments_c146be65.pdf",
-      "pdf_sha256": "892477654f1ebfcc743fca4d4194ff58d30e37636727f1ea911a042b12f85e1a"
+      "case": "text-then-image",
+      "docx": "clean/docx/0e08fd6d80_super_editor__diff_before19_97e0f4e6.docx",
+      "docx_sha256": "0e08fd6d802fbc1c938a1b13e07e0131be9e0d4766bc9479d8eb5bca76f93230",
+      "pdf": "clean/pdf/0e08fd6d80_super_editor__diff_before19_97e0f4e6.pdf",
+      "pdf_sha256": "c10714c7de9de6694335ab5255dc758cbf93214e0ccaf31fef711b9b9a9e07de"
     },
     {
-      "case": "threaded-comments-across-paragraphs",
-      "docx": "with_comments_tracking/docx/43dfd99137_multiple_comments_multiple_pars_threaded.docx",
-      "docx_sha256": "43dfd99137cdeac65f0b35e1e3a1d8973cca9fa9c554f1945202b77a64fe26eb",
-      "pdf": "with_comments_tracking/pdf/43dfd99137_multiple_comments_multiple_pars_threaded.pdf",
-      "pdf_sha256": "bc0c2c29bdd9ec209467f7a5af2cf7dabc5d012304c9f03e72de8b25553063ad"
+      "case": "hf-source-010cd893de",
+      "docx": "clean/docx/010cd893de_003c49178daa9062e84e769e1d6ab945d773ead75ca6da68.docx",
+      "docx_sha256": "010cd893dedaf79e47c17ecdbbad32467d31cf35def2b72ce0457a7088ce8528",
+      "pdf": "clean/pdf/010cd893de_003c49178daa9062e84e769e1d6ab945d773ead75ca6da68.pdf",
+      "pdf_sha256": "49ebd46c01622e0a637df08a96ecffccd7eedab2e03f3b45b3901fee58609536"
     },
     {
-      "case": "comments-with-notes-and-fields",
-      "docx": "with_comments_tracking/docx/756fb54224_potpourritest.docx",
-      "docx_sha256": "756fb54224f599f7b9d8b38696e24c5cea1dff137be13e6dd72c769a6c1a9bda",
-      "pdf": "with_comments_tracking/pdf/756fb54224_potpourritest.pdf",
-      "pdf_sha256": "77fe4c9f05cdc656b39a050f7de425b48681ca450a0d2a6e23570839c4fedf0f"
+      "case": "header-without-relationships",
+      "docx": "clean/docx/c5763a90ce_header_no_rels.docx",
+      "docx_sha256": "c5763a90ceb7fff40387ee8b0af5c1f52b829fbaf252eadd4e28c4cd607d6be6",
+      "pdf": "clean/pdf/c5763a90ce_header_no_rels.pdf",
+      "pdf_sha256": "ab5946c6a02d5cb69dddf870cb3c0e90aad51fd4a384077e72e5ca7fd3aaf01e"
     },
     {
-      "case": "comment-balloons-and-tracked-edits",
-      "docx": "with_comments_tracking/docx/4f1aae5eda_ab2_d_word_with_jub_settings.docx",
-      "docx_sha256": "4f1aae5edac60d824ac5e3cea5bd78eff4bb1c0be2c44b9cecc45397ef627f92",
-      "pdf": "with_comments_tracking/pdf/4f1aae5eda_ab2_d_word_with_jub_settings.pdf",
-      "pdf_sha256": "d99f513354ded8c2c2c05ba172717c540296b4ba49f7d2c42b9ab53b446b780d"
+      "case": "hf-source-1482f2ea38",
+      "docx": "clean/docx/1482f2ea38_002c541075d4fbb73daa93da91d6e2bd59b8deb25485bc22.docx",
+      "docx_sha256": "1482f2ea38b609dc6ad755f7079a81c1a61251170019c8f7f9651e8494811c88",
+      "pdf": "clean/pdf/1482f2ea38_002c541075d4fbb73daa93da91d6e2bd59b8deb25485bc22.pdf",
+      "pdf_sha256": "df514ca2344e9ee4d560a60a484c2f7e408e135360d274425a6bd8f18e701347"
     },
     {
-      "case": "tracked-edits-in-multipage-document",
-      "docx": "with_comments_tracking/docx/8b0e267362_sample_document_word_repair_of_our_output_iter2.docx",
-      "docx_sha256": "8b0e26736285d636beda15c50f98b77ad0538409a8c3b777fabe60775c63590c",
-      "pdf": "with_comments_tracking/pdf/8b0e267362_sample_document_word_repair_of_our_output_iter2.pdf",
-      "pdf_sha256": "7cb299906b9105caca6555998acddb4f5670e00b48d97d2215479e572b12e6b8"
+      "case": "word-vs-google-docs-brief",
+      "docx": "clean/docx/d0e7f278b8_i_am_sharing_microsoft_word_vs_google_docs_compr.docx",
+      "docx_sha256": "d0e7f278b86cc901f9eafa4d34161c5c918a460dc79e8a42b4f8af7d58e6be7d",
+      "pdf": "clean/pdf/d0e7f278b8_i_am_sharing_microsoft_word_vs_google_docs_compr.pdf",
+      "pdf_sha256": "25f78b35239c9c5f751c3c46c58cded6027ed5038c85be1eed467260e27aa431"
     },
     {
       "case": "hf-korean-table",
@@ -318,11 +318,11 @@
       "pdf_sha256": "7b008e8c4d26f4b149e91e8b476dc5e1cbd62eb7d375f5dcee15574f93d48737"
     },
     {
-      "case": "hf-thai-with-images",
-      "docx": "clean/docx/de4654ccf5_012128d35a5384d4f42fca511cb32ea92be240d6957b3258.docx",
-      "docx_sha256": "de4654ccf5e25083497e3cb942ab189e73430c68fbe2752781ad64508016d7b9",
-      "pdf": "clean/pdf/de4654ccf5_012128d35a5384d4f42fca511cb32ea92be240d6957b3258.pdf",
-      "pdf_sha256": "383ddb97fb96f4f56bbcde1e4b635174ca19dc9022e0651d6ad07b16a1e1538e"
+      "case": "hf-source-014f5b166b",
+      "docx": "clean/docx/014f5b166b_0085209e9b3ab0868bc2f0148f1d27f12a95fa9a49727438.docx",
+      "docx_sha256": "014f5b166b7cdca238c637b6129c0b19557af8921c49096500b281fd4672b970",
+      "pdf": "clean/pdf/014f5b166b_0085209e9b3ab0868bc2f0148f1d27f12a95fa9a49727438.pdf",
+      "pdf_sha256": "3c8843f7cb6c9d0dc109931f47a4f31053fc5126a3095073eca6416757e969d1"
     },
     {
       "case": "hf-japanese-text-boxes",
@@ -353,18 +353,18 @@
       "pdf_sha256": "737f8f9f57dc7790b72ce0d8c9179db45a7c16f836caf94b97bd520b37f4ca0d"
     },
     {
-      "case": "hf-indic-text-with-images",
-      "docx": "clean/docx/521bb53c59_7b5f7cc03ca143f21962fb74754cd58d9bf6d5d0ce6746fc.docx",
-      "docx_sha256": "521bb53c59976edd870a4ce8514c20ce8495289a131fdec41eaa536ece31dfc0",
-      "pdf": "clean/pdf/521bb53c59_7b5f7cc03ca143f21962fb74754cd58d9bf6d5d0ce6746fc.pdf",
-      "pdf_sha256": "04fbcda136f1422e8019e25c26ba9edca3e375bed9b812075208396543284a1a"
+      "case": "hf-english-0184ed196b",
+      "docx": "clean/docx/0184ed196b_d1e39fbd150188925826317aa801105b2fd447d47d007d25.docx",
+      "docx_sha256": "0184ed196b344b671d87859bdb724c052e0fe8a68b2668cffd783e40566cbe8e",
+      "pdf": "clean/pdf/0184ed196b_d1e39fbd150188925826317aa801105b2fd447d47d007d25.pdf",
+      "pdf_sha256": "fb5dfcd8fdfd4796d303917ba0cc119b68a51e799f5184e22f689b3184555e8f"
     },
     {
-      "case": "hf-indic-text-with-nested-tables",
-      "docx": "clean/docx/e3d87c5d40_57d3e8f2af09e8376ceb1fb6068ba542964c0cdc936c7995.docx",
-      "docx_sha256": "e3d87c5d4092c2521f25908e717bc46f8fcde401c30a90f107ca11fd2a6a4433",
-      "pdf": "clean/pdf/e3d87c5d40_57d3e8f2af09e8376ceb1fb6068ba542964c0cdc936c7995.pdf",
-      "pdf_sha256": "e917071963a5df88a1962493a1115fce263d2f3bf4052e113bc897af98e1e655"
+      "case": "hf-english-02865fc175",
+      "docx": "clean/docx/02865fc175_008f896473aec097e4bd8ff58f95b0930242cd2cae9c5146.docx",
+      "docx_sha256": "02865fc1755d6bdf71b48d82aef5ba62a393b289c89d3e317313b4e94500ff8f",
+      "pdf": "clean/pdf/02865fc175_008f896473aec097e4bd8ff58f95b0930242cd2cae9c5146.pdf",
+      "pdf_sha256": "965a5aaa6f802117af018d54e533231aa339dd15ea9f909784118cb8595e4d99"
     },
     {
       "case": "hf-diagrams-and-fields",

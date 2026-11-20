@@ -46,6 +46,26 @@ export function imageSize(d: Uint8Array): { width: number; height: number } | nu
   return null;
 }
 
+/**
+ * An image drawn with each colour component c (0–1) as slope·c + offset, which PDF clips to the
+ * colour space's range: through the Decode array for device colour, by recolouring the palette of
+ * an indexed image. CMYK images are left as they are.
+ */
+export function adjustImage(img: PdfImage, { slope, offset }: { slope: number; offset: number }): PdfImage {
+  if (img.colorSpace === '/DeviceRGB' || img.colorSpace === '/DeviceGray') {
+    const range = [offset, Math.round((slope + offset) * 10000) / 10000];
+    return { ...img, decode: img.colorSpace === '/DeviceRGB' ? [...range, ...range, ...range] : range };
+  }
+  const indexed = /^\[\/Indexed \/DeviceRGB (\d+) <([0-9a-f]*)>\]$/.exec(img.colorSpace);
+  if (!indexed) return img;
+  let hex = '';
+  for (let i = 0; i < indexed[2].length; i += 2) {
+    const c = slope * (parseInt(indexed[2].slice(i, i + 2), 16) / 255) + offset;
+    hex += Math.round(Math.min(1, Math.max(0, c)) * 255).toString(16).padStart(2, '0');
+  }
+  return { ...img, colorSpace: `[/Indexed /DeviceRGB ${indexed[1]} <${hex}>]` };
+}
+
 export async function toPdfImage(
   d: Uint8Array, compression: Compression, budget = new ImageBudget(), quality?: number | false,
 ): Promise<PdfImage | null> {

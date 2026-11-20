@@ -70,6 +70,22 @@ describe('convertDocx (node)', () => {
     expect(pdfText(preview.pdf).match(/\/Subtype \/Image\b/g)).toHaveLength(1);
   });
 
+  it('washes out and recontrasts pictures as Word does, embedding each setting once', async () => {
+    // Washout, in DrawingML (brightness 70%, contrast -70%) or VML (gain 0.3, blacklevel 0.35),
+    // draws each colour component c as 0.3c + 0.805; VML gain 2 alone draws 2c - 0.5. Word's PDFs
+    // agree. A cropped picture keeps its crop.
+    const washed = inlineImage('red', 96, 64).replace('<a:blip r:embed="red"/>',
+      '<a:blip r:embed="red"><a:lum bright="70000" contrast="-70000"/></a:blip><a:srcRect l="25000"/>');
+    const vml = (attrs: string) => `<w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml" style="width:72pt;height:48pt"><v:imagedata r:id="red" ${attrs}/></v:shape></w:pict></w:r>`;
+    const { pdf } = await convertDocx(makeDocx({
+      body: `<w:p>${inlineImage('red', 96, 64)}${washed}${vml('gain="19661f" blacklevel="22938f"')}${vml('gain="2"')}</w:p>`,
+      media: { red: { name: 'red.png', data: redPng() } },
+    }), { compress: false });
+    const images = pdfText(pdf).match(/\/Subtype \/Image\b[^]*?stream/g) ?? [];
+    expect(images.map((d) => /\/Decode \[([^\]]*)\]/.exec(d)?.[1] ?? 'none').sort())
+      .toEqual(['-0.5 1.5 -0.5 1.5 -0.5 1.5', '0.805 1.105 0.805 1.105 0.805 1.105', 'none']);
+  });
+
   it('produces a well-formed PDF with embedded subset fonts, images and links', async () => {
     const result = await convertDocx(sampleDocx());
     expect(result.pageCount).toBe(2);

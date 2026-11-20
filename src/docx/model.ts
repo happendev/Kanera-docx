@@ -219,6 +219,45 @@ export interface RenderedBreakInline {
   type: 'renderedPageBreak';
 }
 
+/**
+ * Office Math (OMML) structure. Text keeps its run formatting; the other nodes carry the
+ * formatting of their own characters (operators, delimiters, accents) in `props`.
+ */
+export type MathNode =
+  | {
+      k: 'text';
+      text: string;
+      props: RunProps;
+      /** Letters stay upright (m:sty p or b, function names) instead of math italic. */
+      upright?: boolean;
+      /** Ordinary text (m:nor, or a w:r inside math): no math italics or operator spacing. */
+      plain?: boolean;
+    }
+  | { k: 'row'; items: MathNode[] }
+  | { k: 'frac'; type: 'bar' | 'skw' | 'lin' | 'noBar'; num: MathNode; den: MathNode; props: RunProps }
+  | { k: 'script'; base: MathNode; sub?: MathNode; sup?: MathNode; pre?: boolean }
+  | { k: 'rad'; deg?: MathNode; e: MathNode; props: RunProps }
+  | { k: 'nary'; chr: string; under: boolean; sub?: MathNode; sup?: MathNode; e: MathNode; props: RunProps }
+  | { k: 'delim'; beg: string; end: string; sep: string; items: MathNode[]; props: RunProps }
+  | { k: 'func'; name: MathNode; e: MathNode }
+  | { k: 'limit'; e: MathNode; lim: MathNode; over: boolean }
+  | { k: 'accent'; chr: string; e: MathNode; props: RunProps }
+  | { k: 'bar'; over: boolean; e: MathNode; props: RunProps }
+  | { k: 'group'; chr: string; over: boolean; e: MathNode; props: RunProps }
+  | { k: 'matrix'; rows: MathNode[][]; props: RunProps; /** An equation array (m:eqArr): rows aligned at their & marks. */ eqArr?: boolean }
+  | { k: 'box'; e: MathNode; border: boolean; props: RunProps }
+  | { k: 'phantom'; e: MathNode; show: boolean; zeroW: boolean; zeroAsc: boolean; zeroDesc: boolean };
+
+/** An equation: inline (m:oMath in running text) or displayed on a line of its own (m:oMathPara). */
+export interface MathInline {
+  type: 'math';
+  math: MathNode;
+  display: boolean;
+  /** A displayed equation's alignment, which overrides the paragraph's. */
+  align?: 'left' | 'center' | 'right';
+  props: RunProps;
+}
+
 export type Inline =
   | TextInline
   | TabInline
@@ -230,7 +269,8 @@ export type Inline =
   | NoteNumberInline
   | BookmarkInline
   | SeparatorInline
-  | RenderedBreakInline;
+  | RenderedBreakInline
+  | MathInline;
 
 export interface Paragraph {
   type: 'paragraph';
@@ -380,6 +420,8 @@ export interface Section {
   footnoteRestart: 'continuous' | 'eachSect' | 'eachPage';
   footnoteStart: number;
   footnoteFormat: string;
+  /** Text runs down the page in lines that follow one another leftwards (w:textDirection tbRl), as vertical Japanese is set. */
+  vertical?: boolean;
 }
 
 export interface ImageRef {
@@ -387,6 +429,8 @@ export interface ImageRef {
   data: Uint8Array;
   contentType?: string;
   svg?: ImageRef;
+  /** Brightness and contrast (Word's picture corrections and Washout): each colour component c (0–1) is drawn as slope·c + offset, clipped. */
+  adjust?: { slope: number; offset: number };
 }
 
 export interface Fill {
@@ -455,6 +499,10 @@ export interface TextBox {
   vertical?: string;
   /** Draw content past the box edges (floating tables, whose border halves sit outside the grid). */
   unclipped?: boolean;
+  /** The text's area, as distances in from the shape's left, top, right and bottom; text is clipped to it. */
+  rect?: [number, number, number, number];
+  /** The text stays level when the shape turns, as in Word's legacy (VML) shapes. */
+  upright?: boolean;
 }
 
 /** Text style of a chart element; colours are hex RGB. */

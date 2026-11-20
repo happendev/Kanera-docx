@@ -895,6 +895,63 @@ describe('floating objects', () => {
     const img = [...page.behind, ...page.body, ...page.front].find((o) => o.kind === 'image');
     expect(img?.x).toBeCloseTo(595.3 - 72 - 10 - 100, 1);
   });
+
+  it('draws a legacy callout from its shape type, with level text inside the type\'s text area', async () => {
+    // An oval callout (type 63) turned 90°, its tail up and to the right. The shape states no fill
+    // or outline, so it takes VML's white fill and black outline.
+    const type = '<v:shapetype id="_x0000_t63" coordsize="21600,21600" o:spt="63" adj="1350,25920">' +
+      '<v:path textboxrect="3163,3163,18437,18437"/></v:shapetype>';
+    const shape = '<v:shape type="#_x0000_t63" style="width:100pt;height:80pt;rotation:90" adj="20574,-7904">' +
+      `<v:textbox><w:txbxContent>${p(words(40))}</w:txbxContent></v:textbox></v:shape>`;
+    const page = (await layout(makeDocx({ styles: ARIAL_STYLES, body: `<w:p><w:r><w:pict>${type}${shape}</w:pict></w:r></w:p>` }))).pages[0];
+    const ops = [...page.behind, ...page.body, ...page.front];
+    expect(ops.some((o) => o.kind === 'path' && o.stroke === '000000')).toBe(true);
+    // The text is laid out once the rotation ends, clipped to the type's text area.
+    const turn = ops.findIndex((o) => o.kind === 'transform');
+    const end = ops.findIndex((o, i) => i > turn && o.kind === 'restore');
+    const area = ops.find((o, i) => i > end && o.kind === 'clip');
+    expect(turn).toBeGreaterThanOrEqual(0);
+    expect(ops.findIndex((o) => o.kind === 'glyphs')).toBeGreaterThan(end);
+    if (area?.kind !== 'clip') throw new Error('no text area');
+    expect(area.w).toBeCloseTo((100 * (18437 - 3163)) / 21600, 1);
+    // The fill starts at the tail's tip, given in the shape's 21600 units.
+    const fill = ops.find((o): o is PathOp => o.kind === 'path' && o.fill === 'FFFFFF');
+    const [tipX, tipY] = fill!.segs[0].pts;
+    expect(tipX - area.x).toBeCloseTo((100 * (20574 - 3163)) / 21600, 1);
+    expect(tipY - area.y).toBeCloseTo((80 * (-7904 - 3163)) / 21600, 1);
+  });
+});
+
+describe('equations', () => {
+  const mr = (t: string) => `<m:r><m:t xml:space="preserve">${t}</m:t></m:r>`;
+  const display = (math: string) => `<w:p><m:oMathPara><m:oMath>${math}</m:oMath></m:oMathPara></w:p>`;
+
+  it('stacks a displayed fraction on the maths axis, centred on its own line', async () => {
+    const frac = `<m:f><m:num>${mr('a+b')}</m:num><m:den>${mr('2')}</m:den></m:f>`;
+    const page = (await layout(makeDocx({ styles: ARIAL_STYLES, body: display(mr('y=') + frac) }))).pages[0];
+    const ops = glyphOps(page.body);
+    const at = (t: string) => ops.find((o) => o.texts.includes(t))!;
+    const bar = page.body.find((o) => o.kind === 'rect');
+    if (bar?.kind !== 'rect') throw new Error('no fraction bar');
+    // The bar centres on the axis, 0.29em above the baseline, between numerator and denominator.
+    expect(at('y').y - (bar.y + bar.h / 2)).toBeCloseTo(0.29 * 11, 1);
+    expect(at('a').y).toBeLessThan(bar.y);
+    expect(at('2').y).toBeGreaterThan(bar.y + bar.h);
+    // A displayed equation centres: as much room before "y" as after the bar.
+    const left = at('y').x - 72;
+    const right = 595.3 - 72 - (bar.x + bar.w);
+    expect(left).toBeCloseTo(right, 0);
+  });
+
+  it('lines up an equation array at its alignment marks', async () => {
+    const rows = `<m:eqArr><m:e>${mr('x&=1')}</m:e><m:e>${mr('y+z&=22')}</m:e></m:eqArr>`;
+    const page = (await layout(makeDocx({ styles: ARIAL_STYLES, body: display(rows) }))).pages[0];
+    const eqs = glyphOps(page.body).filter((o) => o.texts.join('') === '=');
+    expect(eqs).toHaveLength(2);
+    expect(eqs[0].x + eqs[0].xs[0]).toBeCloseTo(eqs[1].x + eqs[1].xs[0], 2);
+    // Rows of plain text sit a line apart (1.18em).
+    expect(eqs[1].y - eqs[0].y).toBeCloseTo(1.18 * 11, 1);
+  });
 });
 
 describe('fonts', () => {

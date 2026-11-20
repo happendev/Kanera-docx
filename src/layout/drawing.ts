@@ -6,6 +6,7 @@ import { gradientOps } from './gradient.js';
 import { metafileOps } from './metafile.js';
 import { shapeText } from './shaper.js';
 import { translateOps, type DrawOp, type GlyphOp, type PathSeg } from './types.js';
+import { uprightEastAsian } from './vertical.js';
 
 const K = 0.5522847498;
 
@@ -86,6 +87,44 @@ function roundedRect(x: number, y: number, w: number, h: number, r: [number, num
     { op: 'C', pts: [x, y + tl - tl * K, x + tl - tl * K, y, x + tl, y] },
     { op: 'Z', pts: [] },
   ];
+}
+
+/**
+ * A (rounded) rectangle with a wedge out to (dx, dy) from its centre. As in DrawingML's presets,
+ * the wedge leaves the side the tip is furthest past, its base a quarter of that side long and
+ * on the tip's half.
+ */
+function wedgeCallout(x: number, y: number, w: number, h: number, dx: number, dy: number, r: number): PathSeg[] {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  const tip = [x + w / 2 + dx, y + h / 2 + dy];
+  const across = Math.abs((dx * h) / w) > Math.abs((dy * w) / h);
+  const [xa, xb] = (dx > 0 ? [7, 10] : [2, 5]).map((v) => x + (w * v) / 12);
+  const [ya, yb] = (dy > 0 ? [7, 10] : [2, 5]).map((v) => y + (h * v) / 12);
+  const k = r * (1 - K);
+  const segs: PathSeg[] = [{ op: 'M', pts: [x + r, y] }];
+  const to = (px: number, py: number) => segs.push({ op: 'L', pts: [px, py] });
+  const wedge = (ax: number, ay: number, bx: number, by: number) => {
+    to(ax, ay);
+    to(tip[0], tip[1]);
+    to(bx, by);
+  };
+  const corner = (c1x: number, c1y: number, c2x: number, c2y: number, ex: number, ey: number) => {
+    if (r > 0) segs.push({ op: 'C', pts: [c1x, c1y, c2x, c2y, ex, ey] });
+  };
+  if (!across && dy < 0) wedge(xa, y, xb, y);
+  to(x + w - r, y);
+  corner(x + w - k, y, x + w, y + k, x + w, y + r);
+  if (across && dx > 0) wedge(x + w, ya, x + w, yb);
+  to(x + w, y + h - r);
+  corner(x + w, y + h - k, x + w - k, y + h, x + w - r, y + h);
+  if (!across && dy > 0) wedge(xb, y + h, xa, y + h);
+  to(x + r, y + h);
+  corner(x + k, y + h, x, y + h - k, x, y + h - r);
+  if (across && dx <= 0) wedge(x, yb, x, ya);
+  to(x, y + r);
+  corner(x, y + k, x + k, y, x + r, y);
+  segs.push({ op: 'Z', pts: [] });
+  return segs;
 }
 
 const LINE_GEOMETRIES = /^(line|straightConnector1|bentConnector\d|curvedConnector\d|lineInv)$/;
@@ -289,6 +328,24 @@ export function geometryPath(d: Drawing, x: number, y: number, w: number, h: num
       const t = ss * adj('adj', 25000);
       return [...ellipse(x, y, w, h), ...ellipse(x + t, y + t, w - 2 * t, h - 2 * t)];
     }
+    case 'wedgeEllipseCallout': {
+      // The tail leaves the ellipse 11° either side of the direction to its tip.
+      const dx = w * adj('adj1', -20833);
+      const dy = h * adj('adj2', 62500);
+      const cx = x + w / 2, cy = y + h / 2;
+      const pang = Math.atan2(dy * w, dx * h);
+      const edge = (t: number) => [(w / 2) * Math.cos(t), (h / 2) * Math.sin(t)];
+      const [x1, y1] = edge(pang + (11 * Math.PI) / 180);
+      const [x2, y2] = edge(pang - (11 * Math.PI) / 180);
+      const st = (Math.atan2(y1, x1) * 180) / Math.PI;
+      let sweep = (Math.atan2(y2, x2) * 180) / Math.PI - st;
+      if (sweep <= 0) sweep += 360;
+      const a = arc(cx, cy, w / 2, h / 2, st, sweep);
+      return [{ op: 'M', pts: [cx + dx, cy + dy] }, { op: 'L', pts: a.from }, ...a.segs, { op: 'Z', pts: [] }];
+    }
+    case 'wedgeRectCallout':
+    case 'wedgeRoundRectCallout':
+      return wedgeCallout(x, y, w, h, w * adj('adj1', -20833), h * adj('adj2', 62500), g === 'wedgeRoundRectCallout' ? ss * adj('adj3', 16667) : 0);
     default:
       return poly([x, y, x + w, y, x + w, y + h, x, y + h]);
   }
@@ -358,12 +415,17 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
         ops.push({ kind: 'restore' });
       } else ops.push({ kind: 'image', x, y, w, h, image: d.image, crop: d.crop, rotation: 0, flipH: false, flipV: false });
     }
-    if (d.textBox) ops.push(...renderTextBox(d, x, y, w, h, env));
+    const upright = d.textBox?.upright && m;
+    if (d.textBox && !upright) ops.push(...renderTextBox(d, x, y, w, h, env));
     if (d.textPath) ops.push(...renderTextPath(d, x, y, w, h, env));
     const line = d.line;
     if (line?.color && line.width > 0) {
       const segs = d.geometry === 'custom' ? geometryPath(d, x, y, w, h, 'stroke') : path ?? geometryPath(d, x, y, w, h);
       if (segs.length) ops.push({ kind: 'path', segs, fill: null, stroke: line.color, strokeWidth: line.width, strokeAlpha: line.alpha < 1 ? line.alpha : undefined, dash: lineDash(line) });
+    }
+    if (upright) {
+      ops.push({ kind: 'restore' }, ...renderTextBox(d, x, y, w, h, env));
+      return ops;
     }
   }
   if (m) ops.push({ kind: 'restore' });
@@ -375,11 +437,12 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
  * in a rounded rectangle keeps clear of the corners, text in an ellipse stays in its inscribed box.
  */
 function textRectInsets(d: Drawing, w: number, h: number): [number, number, number, number] {
-  if (d.geometry === 'roundRect') {
-    const i = Math.min(w, h) * Math.min(0.5, Math.max(0, (d.adjust?.adj ?? 16667) / 100000)) * 0.29289;
+  if (d.geometry === 'roundRect' || d.geometry === 'wedgeRoundRectCallout') {
+    const a = d.geometry === 'roundRect' ? d.adjust?.adj : d.adjust?.adj3;
+    const i = Math.min(w, h) * Math.min(0.5, Math.max(0, (a ?? 16667) / 100000)) * 0.29289;
     return [i, i, i, i];
   }
-  if (d.geometry === 'ellipse') {
+  if (d.geometry === 'ellipse' || d.geometry === 'wedgeEllipseCallout') {
     const ix = w * (0.5 - Math.SQRT1_2 / 2);
     const iy = h * (0.5 - Math.SQRT1_2 / 2);
     return [ix, iy, ix, iy];
@@ -389,7 +452,8 @@ function textRectInsets(d: Drawing, w: number, h: number): [number, number, numb
 
 function renderTextBox(d: Drawing, x: number, y: number, w: number, h: number, env: BoxEnv): DrawOp[] {
   const vertical = d.textBox!.vertical === 'vert' || d.textBox!.vertical === 'vert270' || d.textBox!.vertical === 'eaVert';
-  const [rl, rt, rr, rb] = vertical ? [0, 0, 0, 0] : textRectInsets(d, w, h);
+  const rect = d.textBox!.rect;
+  const [rl, rt, rr, rb] = vertical ? [0, 0, 0, 0] : rect ?? textRectInsets(d, w, h);
   const tb = { ...d.textBox!, insetL: d.textBox!.insetL + rl, insetT: d.textBox!.insetT + rt, insetR: d.textBox!.insetR + rr, insetB: d.textBox!.insetB + rb };
   // Vertical text boxes lay text out along the box's height, then rotate it into place.
   const innerW = Math.max(1, (vertical ? h : w) - tb.insetL - tb.insetR);
@@ -401,13 +465,16 @@ function renderTextBox(d: Drawing, x: number, y: number, w: number, h: number, e
   const content: DrawOp[] = [];
   for (const it of box.items) content.push(...it.ops);
   const ops: DrawOp[] = [];
-  if (!tb.unclipped) ops.push({ kind: 'clip', x, y, w, h });
+  // A legacy shape's text area also bounds its text; Word cuts off what overflows it.
+  if (!tb.unclipped) ops.push(rect && !vertical ? { kind: 'clip', x: x + rl, y: y + rt, w: w - rl - rr, h: h - rt - rb } : { kind: 'clip', x, y, w, h });
   if (vertical) {
     const ox = x + (w - h) / 2;
     const oy = y + (h - w) / 2;
     const m = boxTransform(ox, oy, h, w, tb.vertical === 'vert270' ? 270 : 90, false, false)!;
     ops.push({ kind: 'transform', matrix: m });
-    ops.push(...resolveBoxFloats(translateOps(content, ox + tb.insetL, oy + tb.insetT + dy), env));
+    const turned = resolveBoxFloats(translateOps(content, ox + tb.insetL, oy + tb.insetT + dy), env);
+    // East Asian vertical text keeps its ideographs and kana upright.
+    ops.push(...(tb.vertical === 'eaVert' ? uprightEastAsian(turned) : turned));
     ops.push({ kind: 'restore' });
   } else ops.push(...resolveBoxFloats(translateOps(content, x + tb.insetL, y + tb.insetT + dy), env));
   if (!tb.unclipped) ops.push({ kind: 'restore' });

@@ -31,6 +31,17 @@ function chars(ops: DrawOp[]): Array<{ t: string; x: number }> {
 const xOf = (cs: Array<{ t: string; x: number }>, t: string) => cs.find((c) => c.t === t)!.x;
 
 describe('East Asian lines', () => {
+  it('switches the primary face across script slots within one long run', async () => {
+    const text = 'Aé中A'.repeat(12);
+    const props = '<w:rFonts w:ascii="Carlito" w:hAnsi="Caladea" w:eastAsia="Noto Sans CJK JP"/>';
+    const doc = makeDocx({ body: p(text, '', props) });
+    const { pages } = await layout(doc);
+    const glyphs = glyphOps(pages[0].body).flatMap((op) => op.texts.map((char) => [char, op.face.familyName]));
+    expect(glyphs.map(([char]) => char).join('')).toBe(text);
+    const families = new Map([['A', 'Carlito'], ['é', 'Caladea'], ['中', 'Noto Sans CJK JP']]);
+    for (const [char, family] of glyphs) expect(family).toBe(families.get(char));
+  });
+
   it("keeps a missing Chinese font's line height on its fallback", async () => {
     // Word gives SimSun a line of 258 + 74 of 256 units, about 1.3em.
     const r = await layout(makeDocx({ styles: simsun(24), body: p('中文') + p('中文') }));
@@ -236,12 +247,37 @@ describe('East Asian list numbers', () => {
   });
 });
 
+describe('vertical text', () => {
+  it('sets a vertical section down the page from the right margin, its kana upright', async () => {
+    // Landscape A4 with 1" margins, its text running top to bottom in lines that move leftwards.
+    const sectPr = '<w:sectPr><w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/><w:textDirection w:val="tbRl"/></w:sectPr>';
+    const page = (await layout(makeDocx({ sectPr, body: p('あいう') }))).pages[0];
+    expect(page.width).toBeCloseTo(841.9, 1);
+    expect(page.body[0]).toEqual({ kind: 'transform', matrix: [0, 1, -1, 0, page.width, 0] });
+    // Each kana is turned back about the centre of its em box; where those centres land on the page:
+    const centres = page.body.flatMap((o) => (o.kind === 'transform' && o.matrix[1] === -1 ? [{ x: page.width - (o.matrix[5] - o.matrix[4]) / 2, y: (o.matrix[4] + o.matrix[5]) / 2 }] : []));
+    expect(centres).toHaveLength(3);
+    // The line runs down from the top margin, just inside the right margin.
+    const size = page.body.find((o) => o.kind === 'glyphs')?.size ?? 0;
+    expect(centres[0].y).toBeCloseTo(72 + size / 2, 1);
+    expect(centres[1].y - centres[0].y).toBeCloseTo(size, 1);
+    expect(centres[0].x).toBeLessThan(page.width - 72);
+    expect(centres[0].x).toBeGreaterThan(page.width - 72 - 20);
+    expect(centres[1].x).toBeCloseTo(centres[0].x, 3);
+  });
+});
+
 describe('right-to-left text', () => {
   const cps = (s: string) => [...s].map((c) => c.codePointAt(0)!);
 
   it('joins Arabic letters, with lam and alef as one ligature', () => {
     // سلام: seen initial, lam-alef final (the alef folds into it), meem isolated after the alef.
     expect(arabicForms(cps('سلام'))).toEqual([0xfeb3, 0xfefc, 0, 0xfee1]);
+  });
+
+  it('joins Persian letters too', () => {
+    // تکمیل: teh initial, keheh and meem medial, farsi yeh medial, lam final.
+    expect(arabicForms(cps('تکمیل'))).toEqual([0xfe97, 0xfb91, 0xfee4, 0xfbff, 0xfede]);
   });
 
   it('orders a right-to-left run after left-to-right text, and keeps numbers left to right', () => {
@@ -253,6 +289,39 @@ describe('right-to-left text', () => {
     const rtl = cps('ابج 123');
     const rl = bidiLevels(rtl.map(bidiClass), rtl.map(() => false), 1);
     expect(visualOrder(rl)).toEqual([4, 5, 6, 3, 2, 1, 0]);
+  });
+
+  it('keeps a decimal number whole in right-to-left text, with its brackets mirrored', async () => {
+    // A lone separator between digits joins them (rule W4); the brackets read right to left and so
+    // face the other way, as Word draws "(0.25)" in a right-to-left table cell.
+    const r = await layout(makeDocx({ body: p('(0.25)', '<w:bidi/>') }));
+    const visual = chars(r.pages[0].body)
+      .sort((a, b) => a.x - b.x)
+      .map((c) => c.t)
+      .join('');
+    expect(visual).toBe('(0.25)');
+  });
+
+  it('draws Arabic that Arial has in a fallback at Arial\'s width, on Arial\'s lines', async () => {
+    const ar = (t: string) => p(t, '<w:bidi/>', '<w:rFonts w:cs="Arial"/><w:rtl/>');
+    const latin = (t: string) => p(t, '', '<w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>');
+    const r = await layout(makeDocx({ body: ar('الرقم الاستدلالي') + ar('للأثمان') + latin('One') + latin('Two') }));
+    const ls = lines(r.pages[0].body);
+    const arabic = ls[0].ops.find((o) => o.texts.some((t) => /[\u0600-\u06ff]/.test(t)))!;
+    expect(arabic.face.familyName).toBe('DejaVu Sans');
+    // DejaVu Sans's Arabic is about 1.3 times as wide as Arial's, so it is drawn narrower.
+    expect(arabic.scaleX).toBeCloseTo(0.766, 2);
+    expect(ls[1].y - ls[0].y).toBeCloseTo(ls[3].y - ls[2].y, 2);
+  });
+
+  it('lays out a right-to-left table from the right margin, its first column on the right', async () => {
+    const cell = (t: string) => `<w:tc><w:tcPr><w:tcW w:w="2000" w:type="dxa"/></w:tcPr>${p(t)}</w:tc>`;
+    const table = `<w:tbl><w:tblPr><w:bidiVisual/><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid><w:tr>${cell('A')}${cell('B')}</w:tr></w:tbl>`;
+    const cs = chars((await layout(makeDocx({ body: table + p(''), sectPr: sect() }))).pages[0].body);
+    // A4's text ends at 523.3pt; the two 100pt columns stand against it, A's on the right.
+    expect(xOf(cs, 'A')).toBeGreaterThan(523.3 - 100 - 0.01);
+    expect(xOf(cs, 'B')).toBeGreaterThan(523.3 - 200 - 0.01);
+    expect(xOf(cs, 'B')).toBeLessThan(523.3 - 100);
   });
 
   it('starts the lines of a right-to-left paragraph at the right margin', async () => {

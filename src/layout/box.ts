@@ -613,6 +613,8 @@ export interface TableLayout {
   colX: number[];
   rows: RowLayout[];
   headerRows: number;
+  /** A right-to-left table (w:bidiVisual): its first column on the right, cells' left and right sides their start and end. */
+  rtl?: boolean;
 }
 
 function gridWidths(table: Table, avail: number): number[] {
@@ -815,6 +817,9 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
   const width = colX[colX.length - 1];
   if (table.props.align === 'center') x = (avail - width) / 2;
   else if (table.props.align === 'right') x = avail - width;
+  // A right-to-left table starts at the right margin, its indent taken from there.
+  const rtl = table.props.bidiVisual;
+  if (rtl && table.props.align !== 'center') x = avail - width - x;
 
   const rows: RowLayout[] = [];
   for (const row of table.rows) {
@@ -930,7 +935,9 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
   let headerRows = 0;
   while (headerRows < table.rows.length && table.rows[headerRows].isHeader) headerRows++;
   if (headerRows === table.rows.length) headerRows = 0;
-  return { x, width, colX, rows, headerRows };
+  // Laid out from the start, a right-to-left table's cells are then mirrored across it.
+  if (rtl) for (const r of rows) for (const c of r.cells) c.x = width - c.x - c.width;
+  return { x, width, colX, rows, headerRows, ...(rtl && { rtl }) };
 }
 
 /** A row (or part of a split row) placed at `y`. */
@@ -1024,9 +1031,11 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
       height -= tl.rows[spanFrom].spaceTop + tl.rows[Math.min(spanEnd, tl.rows.length) - 1].spaceBottom;
       if (cell.cell.shading) back.push({ kind: 'rect', x, y: top, w: cell.width, h: height, fill: cell.cell.shading });
       const m = cell.cell.margins;
+      // A right-to-left table's cells start on the right: their left margin and border are on that side.
+      const side = (o: CellLayout, which: 'left' | 'right'): Border | null => o.cell.borders[!!tl.rtl === (which === 'left') ? 'right' : 'left'];
       // Spaced cells hold their borders inside them, so text starts past the left border.
       const spaced = tl.rows[spanFrom].row.cellSpacing > 0;
-      const innerX = x + m.left + (spaced ? (cell.cell.borders.left?.width ?? 0) : 0);
+      const innerX = x + (tl.rtl ? m.right : m.left) + (spaced ? (side(cell, 'left')?.width ?? 0) : 0);
       const innerH = height - m.top - m.bottom;
       const items = cell.box.items;
       let from = 0;
@@ -1090,8 +1099,10 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
       const own = tl.rows[spanFrom].cells;
       const above = touching && spanFrom > 0 ? tl.rows[spanFrom - 1].cells.find((o) => o.col === cell.col) : undefined;
       const below = touching ? tl.rows[spanEnd]?.cells.find((o) => o.col === cell.col) : undefined;
-      const left = touching ? own.find((o) => o.col + o.cell.gridSpan === cell.col) : undefined;
-      const right = touching ? own.find((o) => o.col === cell.col + cell.cell.gridSpan) : undefined;
+      const before = touching ? own.find((o) => o.col + o.cell.gridSpan === cell.col) : undefined;
+      const after = touching ? own.find((o) => o.col === cell.col + cell.cell.gridSpan) : undefined;
+      const left = tl.rtl ? after : before;
+      const right = tl.rtl ? before : after;
       const bottomB = heavier(bottomCell ? bottomCell.cell.borders.bottom : b.bottom, below?.cell.borders.top);
       const yb = top + height - (lastRow?.borderBottom ?? 0);
       if (spaced) {
@@ -1100,13 +1111,15 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
         const half = (br: Border | null) => (br ? br.width / 2 : 0);
         drawEdge(borders, b.top, x, top + hang(b.top), x + cell.width, top + hang(b.top));
         drawEdge(borders, bottomB, x, top + height - half(bottomB) * 2 + hang(bottomB), x + cell.width, top + height - half(bottomB) * 2 + hang(bottomB));
-        drawEdge(borders, b.left, x + half(b.left), top, x + half(b.left), top + height);
-        drawEdge(borders, b.right, x + cell.width - half(b.right), top, x + cell.width - half(b.right), top + height);
+        const bl = side(cell, 'left');
+        const br = side(cell, 'right');
+        drawEdge(borders, bl, x + half(bl), top, x + half(bl), top + height);
+        drawEdge(borders, br, x + cell.width - half(br), top, x + cell.width - half(br), top + height);
       } else {
         drawEdge(borders, heavier(b.top, above?.cell.borders.bottom), x, top, x + cell.width, top);
         drawEdge(borders, bottomB, x, yb, x + cell.width, yb);
-        drawEdge(borders, heavier(b.left, left?.cell.borders.right), x, top, x, top + height);
-        drawEdge(borders, heavier(b.right, right?.cell.borders.left), x + cell.width, top, x + cell.width, top + height);
+        drawEdge(borders, heavier(side(cell, 'left'), left && side(left, 'right')), x, top, x, top + height);
+        drawEdge(borders, heavier(side(cell, 'right'), right && side(right, 'left')), x + cell.width, top, x + cell.width, top + height);
       }
       drawEdge(borders, b.tl2br, x, top, x + cell.width, top + height);
       drawEdge(borders, b.tr2bl, x + cell.width, top, x, top + height);

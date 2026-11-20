@@ -36,7 +36,26 @@ function loadBlip(ctx: DrawingContext, blip: XmlElement | undefined): ImageRef |
   const fallback = loadImage(ctx, blip?.attrs['r:embed']);
   const svgBlip = children(child(blip, 'a:extLst'), 'a:ext').map((ext) => child(ext, 'asvg:svgBlip')).find(Boolean);
   const svg = loadImage(ctx, svgBlip?.attrs['r:embed']);
-  return svg && fallback ? { ...fallback, svg } : svg ?? fallback;
+  const ref = svg && fallback ? { ...fallback, svg } : svg ?? fallback;
+  // Brightness and contrast in thousandths of a percent, or "70%" in strict documents. Washout is
+  // bright 70% with contrast -70%.
+  const lum = child(blip, 'a:lum');
+  const amount = (v: string | undefined) => (v?.endsWith('%') ? (num(v.slice(0, -1)) ?? 0) / 100 : (num(v) ?? 0) / 100000);
+  const contrast = Math.min(0.99, Math.max(-1, amount(lum?.attrs.contrast)));
+  return adjusted(ref, contrast <= 0 ? 1 + contrast : 1 / (1 - contrast), amount(lum?.attrs.bright));
+}
+
+/**
+ * A picture recoloured by its brightness and contrast settings. Measured against Word's PDFs, each
+ * colour component c (0–1) is drawn as s·(c − ½) + ½ + b·(1 + s)/2, clipped to [0, 1], where s is
+ * the contrast's slope and b the brightness.
+ */
+function adjusted(ref: ImageRef | undefined, slope: number, bright: number): ImageRef | undefined {
+  if (!ref || (Math.abs(slope - 1) < 1e-4 && Math.abs(bright) < 1e-4)) return ref;
+  const r4 = (v: number) => Math.round(v * 10000) / 10000;
+  const adjust = { slope: r4(slope), offset: r4(0.5 - slope / 2 + (bright * (1 + slope)) / 2) };
+  // Its own id: the PDF embeds each id once, and the same picture may also appear unadjusted.
+  return { ...ref, id: `${ref.id}#${adjust.slope},${adjust.offset}`, adjust };
 }
 
 /** Parse a DrawingML colour element (srgbClr, schemeClr, ...) including its transforms. */
@@ -659,11 +678,35 @@ function vmlFraction(v: string | undefined): number {
   return Number(v) || 0;
 }
 
+// A VML shape names its shape type (type="#id") and takes the type's attributes, path and text
+// area. Word writes each type once, before the first shape that uses it, so a document's types are
+// collected as its pictures are read.
+const vmlShapeTypes = new WeakMap<OpcPackage, Map<string, XmlElement>>();
+
+// Shape types (o:spt) drawn as presets; the callouts' adjust values are the tail's tip.
+const VML_PRESETS: Record<number, string> = {
+  1: 'rect', 3: 'ellipse', 4: 'diamond', 6: 'rtTriangle', 20: 'line', 32: 'straightConnector1', 75: 'rect', 202: 'rect',
+  61: 'wedgeRectCallout', 62: 'wedgeRoundRectCallout', 63: 'wedgeEllipseCallout',
+};
+
 /** Parse w:pict / w:object content. */
 export function parseVml(el: XmlElement, ctx: DrawingContext): Drawing | null {
+  let types = vmlShapeTypes.get(ctx.pkg);
+  if (!types) vmlShapeTypes.set(ctx.pkg, (types = new Map()));
+  for (const t of descendants(el, 'v:shapetype')) if (t.attrs.id) types.set(t.attrs.id, t);
   const shape = children(el).find((c) => /^v:(shape|rect|roundrect|oval|line|group|image)$/.test(c.name));
   if (!shape) return null;
   return parseVmlShape(shape, ctx, true);
+}
+
+/** The text area of a VML shape (its path's textboxrect, in the shape's coordinates) in points. */
+function vmlTextRect(shape: XmlElement, type: XmlElement | undefined, width: number, height: number): [number, number, number, number] | undefined {
+  const spec = child(shape, 'v:path')?.attrs.textboxrect ?? child(type, 'v:path')?.attrs.textboxrect;
+  const r = spec?.split(',').map(Number);
+  if (!r || r.length !== 4 || r.some((v) => !Number.isFinite(v))) return undefined;
+  const [cw, ch] = (shape.attrs.coordsize ?? type?.attrs.coordsize ?? '21600,21600').split(',').map(Number);
+  if (!(cw > 0 && ch > 0)) return undefined;
+  return [(r[0] / cw) * width, (r[1] / ch) * height, width - (r[2] / cw) * width, height - (r[3] / ch) * height];
 }
 
 function parseVmlShape(shape: XmlElement, ctx: DrawingContext, top: boolean): Drawing | null {
@@ -673,6 +716,21 @@ function parseVmlShape(shape: XmlElement, ctx: DrawingContext, top: boolean): Dr
   const absolute = css.position === 'absolute';
   const d = baseDrawing('shape', !absolute || !top, width, height);
   d.geometry = shape.name === 'v:oval' ? 'ellipse' : shape.name === 'v:roundrect' ? 'roundRect' : shape.name === 'v:line' ? 'line' : 'rect';
+  const typeId = shape.name === 'v:shape' ? shape.attrs.type?.replace(/^#/, '') : undefined;
+  const type = typeId ? vmlShapeTypes.get(ctx.pkg)?.get(typeId) : undefined;
+  const attr = (name: string): string | undefined => shape.attrs[name] ?? type?.attrs[name];
+  // Word's built-in types carry their number in their ID (_x0000_t63) even where the definition is missing.
+  const spt = Number(type?.attrs['o:spt'] ?? /^_x0000_t(\d+)$/.exec(typeId ?? '')?.[1]);
+  if (VML_PRESETS[spt]) {
+    d.geometry = VML_PRESETS[spt];
+    if (d.geometry.startsWith('wedge')) {
+      const own = (shape.attrs.adj ?? '').split(',');
+      const base = (type?.attrs.adj ?? '').split(',');
+      const tip = (i: number, dflt: number) => Number(own[i]?.trim() || base[i]?.trim() || dflt);
+      // VML puts the tip in the shape's 21600-unit square; DrawingML measures it from the centre.
+      d.adjust = { adj1: ((tip(0, 1350) - 10800) / 21600) * 100000, adj2: ((tip(1, 25920) - 10800) / 21600) * 100000 };
+    }
+  }
   if (css.visibility === 'hidden') d.hidden = true;
   if (shape.attrs['o:hr'] === 't' && top && !absolute) {
     const align = shape.attrs['o:hralign'];
@@ -715,23 +773,29 @@ function parseVmlShape(shape: XmlElement, ctx: DrawingContext, top: boolean): Dr
     d.y = cssLength(css.top) ?? 0;
   }
 
-  const filled = shape.attrs.filled !== 'f' && shape.attrs.filled !== 'false';
+  const off = (v: string | undefined) => v === 'f' || v === 'false';
   const fillEl = child(shape, 'v:fill');
+  const filled = !off(attr('filled')) && !off(fillEl?.attrs.on);
   const opacity = fillEl?.attrs.opacity ? vmlFraction(fillEl.attrs.opacity) || 1 : 1;
-  const fc = vmlColor(shape.attrs.fillcolor);
-  d.fill = filled && shape.attrs.fillcolor !== undefined ? { color: fc ?? 'FFFFFF', alpha: opacity } : null;
-  const stroked = shape.attrs.stroked !== 'f' && shape.attrs.stroked !== 'false';
-  d.line = stroked && (shape.attrs.strokecolor !== undefined || shape.attrs.strokeweight !== undefined) && shape.name !== 'v:shape'
-    ? { color: vmlColor(shape.attrs.strokecolor) ?? '000000', width: cssLength(shape.attrs.strokeweight) ?? 0.75, dash: 'solid', alpha: 1 }
+  const fc = vmlColor(attr('fillcolor'));
+  // A shape of a known type takes VML's defaults, a white fill and a black 0.75pt outline, unless
+  // it or its type turns them off (pictures' type 75 does). Without the type, only what the shape
+  // states is drawn.
+  const typed = type !== undefined && spt !== 75;
+  d.fill = filled && (attr('fillcolor') !== undefined || typed) ? { color: fc ?? 'FFFFFF', alpha: opacity } : null;
+  const stroked = !off(attr('stroked')) && !off(child(shape, 'v:stroke')?.attrs.on);
+  const outlined = attr('strokecolor') !== undefined || (shape.name !== 'v:shape' && attr('strokeweight') !== undefined) || typed;
+  d.line = stroked && outlined
+    ? { color: vmlColor(attr('strokecolor')) ?? '000000', width: cssLength(attr('strokeweight')) ?? 0.75, dash: 'solid', alpha: 1 }
     : null;
-  if (stroked && shape.name === 'v:shape' && shape.attrs.strokecolor) {
-    d.line = { color: vmlColor(shape.attrs.strokecolor) ?? '000000', width: cssLength(shape.attrs.strokeweight) ?? 0.75, dash: 'solid', alpha: 1 };
-  }
 
   const imagedata = child(shape, 'v:imagedata');
   if (imagedata) {
     d.kind = 'image';
-    d.image = loadImage(ctx, imagedata.attrs['r:id'] ?? imagedata.attrs['r:pict']);
+    // VML's gain is the contrast slope and blacklevel half the brightness (Washout is gain 0.3,
+    // blacklevel 0.35).
+    const gain = imagedata.attrs.gain ? vmlFraction(imagedata.attrs.gain) : 1;
+    d.image = adjusted(loadImage(ctx, imagedata.attrs['r:id'] ?? imagedata.attrs['r:pict']), Math.max(0, gain), 2 * vmlFraction(imagedata.attrs.blacklevel));
     const crop = {
       l: vmlFraction(imagedata.attrs.cropleft),
       t: vmlFraction(imagedata.attrs.croptop),
@@ -745,6 +809,7 @@ function parseVmlShape(shape: XmlElement, ctx: DrawingContext, top: boolean): Dr
   const content = child(textbox, 'w:txbxContent');
   if (content) {
     const inset = (textbox?.attrs.inset ?? '').split(',').map((s) => cssLength(s.trim()));
+    const rect = vmlTextRect(shape, type, width, height);
     d.textBox = {
       blocks: ctx.parseBlocks(content),
       insetL: inset[0] ?? 7.2,
@@ -753,6 +818,9 @@ function parseVmlShape(shape: XmlElement, ctx: DrawingContext, top: boolean): Dr
       insetB: inset[3] ?? 3.6,
       vAlign: 'top',
       autoFit: parseCss(textbox?.attrs.style)['mso-fit-shape-to-text'] === 't',
+      // Word keeps the text of a turned legacy shape level, as Word 2003 drew it.
+      upright: true,
+      ...(rect && { rect }),
     };
   }
   const textpath = child(shape, 'v:textpath');

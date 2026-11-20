@@ -51,7 +51,7 @@ export interface TableStyle {
 }
 
 export class StyleSheet {
-  readonly styles = new Map<string, StyleDef>();
+  private readonly styles = new Map<string, { id: string; type: string; name: string; element: XmlElement; parsed?: StyleDef }>();
   defaultsRun: RunDelta = {};
   defaultsPara: ParaDelta = {};
   defaultParagraphStyle?: string;
@@ -62,7 +62,7 @@ export class StyleSheet {
   private charCache = new Map<string, RunDelta>();
   private tableCache = new Map<string, TableStyle>();
 
-  constructor(root: XmlElement | undefined, ctx: PropContext) {
+  constructor(root: XmlElement | undefined, private readonly ctx: PropContext) {
     if (!root) return;
     const dd = child(root, 'w:docDefaults');
     this.defaultsRun = parseRunDelta(child(child(dd, 'w:rPrDefault'), 'w:rPr'), ctx);
@@ -72,32 +72,8 @@ export class StyleSheet {
       const id = s.attrs['w:styleId'] ?? '';
       const type = s.attrs['w:type'] ?? 'paragraph';
       const isDefault = s.attrs['w:default'] === '1' || s.attrs['w:default'] === 'true';
-      const def: StyleDef = {
-        id,
-        type,
-        name: child(s, 'w:name')?.attrs['w:val'] ?? id,
-        basedOn: child(s, 'w:basedOn')?.attrs['w:val'],
-        isDefault,
-        pPr: parseParaDelta(child(s, 'w:pPr'), ctx),
-        rPr: parseRunDelta(child(s, 'w:rPr'), ctx),
-        tbl: parseTblDelta(child(s, 'w:tblPr'), ctx),
-        tr: parseTrDelta(child(s, 'w:trPr')),
-        tc: parseTcDelta(child(s, 'w:tcPr'), ctx),
-        cond: new Map(),
-      };
-      // A style's own pStyle/rStyle references are meaningless; drop them.
-      delete def.pPr.styleId;
-      delete def.rPr.styleId;
-      for (const c of children(s, 'w:tblStylePr')) {
-        def.cond.set(c.attrs['w:type'] ?? '', {
-          pPr: parseParaDelta(child(c, 'w:pPr'), ctx),
-          rPr: parseRunDelta(child(c, 'w:rPr'), ctx),
-          tbl: parseTblDelta(child(c, 'w:tblPr'), ctx),
-          tr: parseTrDelta(child(c, 'w:trPr')),
-          tc: parseTcDelta(child(c, 'w:tcPr'), ctx),
-        });
-      }
-      this.styles.set(id, def);
+      const name = child(s, 'w:name')?.attrs['w:val'] ?? id;
+      this.styles.set(id, { id, type, name, element: s });
       if (isDefault && type === 'paragraph' && !this.defaultParagraphStyle) this.defaultParagraphStyle = id;
       if (isDefault && type === 'character' && !this.defaultCharacterStyle) this.defaultCharacterStyle = id;
       if (isDefault && type === 'table' && !this.defaultTableStyle) this.defaultTableStyle = id;
@@ -115,12 +91,42 @@ export class StyleSheet {
   /** The style with this name: built-in styles keep their English names whatever their ids. */
   byName(name: string): StyleDef | undefined {
     const n = name.toLowerCase();
-    for (const d of this.styles.values()) if (d.name.toLowerCase() === n) return d;
+    for (const d of this.styles.values()) if (d.name.toLowerCase() === n) return this.get(d.id);
     return undefined;
   }
 
   get(id: string | undefined): StyleDef | undefined {
-    return id === undefined ? undefined : this.styles.get(id);
+    const entry = id === undefined ? undefined : this.styles.get(id);
+    if (!entry || entry.parsed) return entry?.parsed;
+    const { element: s, name, type } = entry;
+    const ctx = this.ctx;
+    const def: StyleDef = {
+      id: entry.id,
+      type,
+      name,
+      basedOn: child(s, 'w:basedOn')?.attrs['w:val'],
+      isDefault: s.attrs['w:default'] === '1' || s.attrs['w:default'] === 'true',
+      pPr: parseParaDelta(child(s, 'w:pPr'), ctx),
+      rPr: parseRunDelta(child(s, 'w:rPr'), ctx),
+      tbl: parseTblDelta(child(s, 'w:tblPr'), ctx),
+      tr: parseTrDelta(child(s, 'w:trPr')),
+      tc: parseTcDelta(child(s, 'w:tcPr'), ctx),
+      cond: new Map(),
+    };
+    // A style's own pStyle/rStyle references are meaningless; drop them.
+    delete def.pPr.styleId;
+    delete def.rPr.styleId;
+    for (const c of children(s, 'w:tblStylePr')) {
+      def.cond.set(c.attrs['w:type'] ?? '', {
+        pPr: parseParaDelta(child(c, 'w:pPr'), ctx),
+        rPr: parseRunDelta(child(c, 'w:rPr'), ctx),
+        tbl: parseTblDelta(child(c, 'w:tblPr'), ctx),
+        tr: parseTrDelta(child(c, 'w:trPr')),
+        tc: parseTcDelta(child(c, 'w:tcPr'), ctx),
+      });
+    }
+    entry.parsed = def;
+    return def;
   }
 
   /** Style chain from the root ancestor down to `id` (cycles and missing parents are cut). */
