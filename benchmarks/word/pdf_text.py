@@ -36,11 +36,16 @@ def extract(pdf):
         return None
     if result.returncode:
         return None
-    data = json.loads(result.stdout)
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
     return [[tuple(word) for word in page] for page in data['pages']], data['text']
 
 
 if __name__ == '__main__':
+    # Keep recoverable PDF diagnostics away from the JSON response.
+    pymupdf.set_messages(stream=sys.stderr)
     with pymupdf.open(sys.argv[1]) as document:
         text = ''.join(page.get_text() for page in document).lower()
         print(json.dumps({'pages': words(document), 'text': text}))

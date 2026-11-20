@@ -15,6 +15,7 @@ from libreoffice_warm import batch_times
 
 GNU_TIME = '/usr/bin/time'
 OFFICE2PDF = OUTPUT / 'office2pdf-bin' / 'office2pdf'
+MINIPDF = OUTPUT / 'minipdf-bin' / 'MiniPdfBenchmark.dll'
 # A failed or timed-out conversion is recorded as a zero-score case instead of stopping the run.
 TIMEOUT_S = 300
 
@@ -45,16 +46,17 @@ def office2pdf_command(workspace, output, sources):
     return [OFFICE2PDF, '-j', '1', '--outdir', output, *sources]
 
 
-def convert_case(fixture, work, node_worker, workers, *, kanera_only=False):
+def convert_case(fixture, work, node_worker, workers, output, *, kanera_only=False, minipdf_only=False):
     name = fixture['case']
     input_path = OUTPUT / 'cases' / name / 'input.docx'
     verify(input_path, fixture['docx_sha256'])
-    output = OUTPUT / 'kanera-only' if kanera_only else OUTPUT
     directory = output / 'cases' / name
     directory.mkdir(parents=True, exist_ok=True)
 
-    commands = {'ours': ['node', node_worker, 'ours', input_path, directory / 'ours.pdf']}
-    if not kanera_only:
+    commands = {}
+    if not minipdf_only:
+        commands['ours'] = ['node', node_worker, 'ours', input_path, directory / 'ours.pdf']
+    if not (kanera_only or minipdf_only):
         # Each LibreOffice invocation uses a separate profile and output directory.
         lo = work / name
         lo.mkdir()
@@ -158,14 +160,20 @@ def measure_warm(results, workspace, workers):
             jobs_file.write_text(json.dumps(jobs))
             worker = workers.get(engine) or ['node', HERE / 'convert.mjs', engine]
             times = read_batch([*worker, '--batch', jobs_file])
-        if len(times) != len(jobs) or any(not math.isfinite(t) or t <= 0 for t in times):
+        if (len(times) != len(jobs) or times[0] is None or
+                any(engine != 'minipdf' if t is None else not math.isfinite(t) or t <= 0 for t in times)):
             raise ValueError(f'Invalid warm timings for {engine}')
-        for _, target in jobs:
+        for (_, target), ms in zip(jobs, times, strict=True):
+            if ms is None:
+                continue
             with Path(target).open('rb') as pdf:
                 if pdf.read(5) != b'%PDF-':
                     raise ValueError(f'Invalid warm conversion output for {engine}')
         for name, ms in zip(cases, times[1:], strict=True):
-            by_case[engine, name]['warm_ms'] = ms
+            if ms is None:
+                by_case[engine, name]['warm_error'] = 'Warm conversion failed'
+            else:
+                by_case[engine, name]['warm_ms'] = ms
 
 
 def renderer_digest():
@@ -209,19 +217,26 @@ def write_log(path, work, data):
 
 
 def run_conversions(args, versions, workers):
-    output = OUTPUT / 'kanera-only' if args.kanera_only else OUTPUT
+    directory = 'minipdf-only' if args.minipdf_only else 'kanera-only' if args.kanera_only else ''
+    output = OUTPUT / directory
     output.mkdir(parents=True, exist_ok=True)
     log = output / 'conversion.json'
     checkpoint = output / 'conversion-cold.json'
+    if args.minipdf_only:
+        with MINIPDF.open('rb') as file:
+            build = file_digest(file, 'sha256').hexdigest()
+    else:
+        build = renderer_digest()
     settings = {
         'versions': versions,
         'inputs': {fixture['case']: fixture['docx_sha256'] for fixture in BENCHMARK_FIXTURES},
-        'renderer_build': renderer_digest(),
+        'renderer_build': build,
     }
     with TemporaryDirectory(prefix='convert-', dir=output) as temporary:
         work = Path(temporary)
         if not args.fresh and not log.exists() and checkpoint.exists():
-            engines = ('ours',) if args.kanera_only else ('ours', 'eigenpal', 'libreoffice', *workers)
+            base_engines = () if args.minipdf_only else ('ours',) if args.kanera_only else ('ours', 'eigenpal', 'libreoffice')
+            engines = (*base_engines, *workers)
             try:
                 results = load_cold_checkpoint(checkpoint, output, settings, engines)
             except (KeyError, OSError, TypeError, ValueError) as error:
@@ -234,8 +249,8 @@ def run_conversions(args, versions, workers):
             log.unlink(missing_ok=True)
             results = []
             for fixture in BENCHMARK_FIXTURES:
-                results.extend(convert_case(fixture, work, HERE / 'convert.mjs', workers,
-                                            kanera_only=args.kanera_only))
+                results.extend(convert_case(fixture, work, HERE / 'convert.mjs', workers, output,
+                                            kanera_only=args.kanera_only, minipdf_only=args.minipdf_only))
             write_log(checkpoint, work, dict(settings, results=results))
 
         try:
@@ -253,23 +268,29 @@ def run_conversions(args, versions, workers):
 
 def main():
     parser = ArgumentParser(description='Run cold and warm conversions on the pinned DOCX fixtures.')
-    parser.add_argument('--kanera-only', action='store_true', help='Run Kanera alone on all benchmark fixtures.')
+    standalone = parser.add_mutually_exclusive_group()
+    standalone.add_argument('--kanera-only', action='store_true', help='Run Kanera alone on all benchmark fixtures.')
+    standalone.add_argument('--minipdf-only', action='store_true', help='Run MiniPdf alone on all benchmark fixtures.')
+    parser.add_argument('--minipdf', action='store_true', help='Include MiniPdf in the full comparison.')
     parser.add_argument('--aspose', action='store_true', help='Include the licensed Aspose .NET runner.')
     parser.add_argument('--syncfusion', action='store_true', help='Include the licensed Syncfusion DocIO .NET runner.')
     parser.add_argument('--rust', action='store_true', help='Include the Rust engines dxpdf, rdocx and office2pdf.')
     parser.add_argument('--fresh', action='store_true', help='Start cold conversions even if a warm pass is pending.')
     args = parser.parse_args()
-    if args.kanera_only and (args.aspose or args.syncfusion or args.rust):
-        parser.error('--kanera-only cannot be combined with --aspose, --syncfusion or --rust')
-    versions = {
-        'node': version(['node', '--version']),
-        'ours': json.loads((HERE.parents[1] / 'package.json').read_text())['version'],
-        'time': version([GNU_TIME, '--version']).splitlines()[0],
-    }
-    if not args.kanera_only:
+    if (args.kanera_only or args.minipdf_only) and (args.aspose or args.syncfusion or args.rust or args.minipdf):
+        parser.error('Standalone modes cannot be combined with full-comparison engine flags')
+    versions = {'time': version([GNU_TIME, '--version']).splitlines()[0]}
+    if not args.minipdf_only:
+        versions['node'] = version(['node', '--version'])
+        versions['ours'] = json.loads((HERE.parents[1] / 'package.json').read_text())['version']
+    if not (args.kanera_only or args.minipdf_only):
         versions['eigenpal'] = json.loads((HERE / 'node_modules/@docx-editor.dev/docx-to-pdf/package.json').read_text())['version']
         versions['libreoffice'] = version(['soffice', '--version'])
     dotnet_workers = {}
+    if args.minipdf or args.minipdf_only:
+        if not MINIPDF.is_file():
+            parser.error('Build the MiniPdf runner under out/benchmark-word/minipdf-bin.')
+        dotnet_workers['minipdf'] = ['dotnet', MINIPDF]
     if args.aspose:
         license_path = os.environ.get('ASPOSE_WORDS_LICENSE')
         if not license_path or not Path(license_path).is_file():

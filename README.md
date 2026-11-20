@@ -24,6 +24,7 @@ Stable and in production use: it converts Word documents in [Kanera](https://git
 | Syncfusion DocIO (.NET) | 56.1% | 246/278 | 568.8 ms | 60.0 ms | 121.8 MiB |
 | Aspose.Words (.NET) | 52.1% | 250/278 | 1018.2 ms | 36.2 ms | 105.9 MiB |
 | office2pdf (Rust) | 49.1% | 240/278 | 321.4 ms | 107.5 ms | **42.5 MiB** |
+| MiniPdf (.NET) | 43.8% | 247/278 | 344.4 ms | 162.9 ms | 137.2 MiB |
 | rdocx (Rust) | 40.5% | 214/278 | 179.5 ms | 24.0 ms | 146.2 MiB |
 | dxpdf (Rust) | 36.4% | 236/278 | 1024.3 ms | 949.4 ms | 258.3 MiB |
 
@@ -463,6 +464,7 @@ The [benchmark](benchmarks/word/README.md) compares converters on 278 documents 
 | Syncfusion DocIO (.NET) 28.2.4.0 | 56.1% | 246/278 | 1/278 | 568.8 ms | 60.0 ms | 2507.9 ms | 1.2 | 121.8 MiB | 1128.7 MiB | 18.91 MiB |
 | Aspose.Words (.NET) 26.11.0.0 | 52.1% | 250/278 | **0/278** | 1018.2 ms | 36.2 ms | 356.7 ms | 11.3 | 105.9 MiB | 243.2 MiB | 19.84 MiB |
 | office2pdf (Rust) 0.11.0 | 49.1% | 240/278 | 1/278 | 321.4 ms | 107.5 ms | 242.6 ms | 8.1 | **42.5 MiB** | 250.0 MiB | 30.30 MiB |
+| MiniPdf (.NET) 0.43.2 | 43.8% | 247/278 | **0/278** | 344.4 ms | 162.9 ms | 193.8 ms | 6.3 | 137.2 MiB | 211.8 MiB | 2532.58 MiB |
 | rdocx (Rust) 0.17.0 | 40.5% | 214/278 | 44/278 | 179.5 ms | 24.0 ms | 227.9 ms | 14.8 | 146.2 MiB | 466.3 MiB | 24.12 MiB |
 | dxpdf (Rust) 0.8.1 | 36.4% | 236/278 | 9/278 | 1024.3 ms | 949.4 ms | 1271.7 ms | 1.0 | 258.3 MiB | 341.4 MiB | 15.80 MiB |
 

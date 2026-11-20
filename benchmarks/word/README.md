@@ -138,6 +138,23 @@ SYNCFUSION_LICENSE_KEY="your-v28-key" \
 out/benchmark-word/venv/bin/python benchmarks/word/score.py --syncfusion
 ```
 
+### Include MiniPdf (.NET)
+
+The runner uses [MiniPdf 0.43.2](https://www.nuget.org/packages/MiniPdf/0.43.2) on .NET 10,
+with host fonts and PDF content-stream compression enabled.
+
+```sh
+dotnet build benchmarks/word/minipdf/MiniPdfBenchmark.csproj -c Release \
+  -p:RestoreLockedMode=true --artifacts-path out/benchmark-word/dotnet \
+  -o out/benchmark-word/minipdf-bin
+
+out/benchmark-word/venv/bin/python benchmarks/word/convert.py --minipdf
+out/benchmark-word/venv/bin/python benchmarks/word/score.py --minipdf
+```
+
+Use `--minipdf-only` on both commands to run it on its own and refresh its README results.
+Standalone results are saved under `out/benchmark-word/minipdf-only/`.
+
 ### Include the Rust engines
 
 Three open-source Rust converters can join the run:
@@ -160,7 +177,7 @@ out/benchmark-word/venv/bin/python benchmarks/word/convert.py --rust
 out/benchmark-word/venv/bin/python benchmarks/word/score.py --rust
 ```
 
-`--rust` combines with `--aspose` and `--syncfusion`.
+`--rust`, `--aspose`, `--syncfusion`, and `--minipdf` can be combined.
 
 For every engine, a failed conversion, or one that runs longer than five minutes, does not stop
 the run. The failure is recorded in `conversion.json`, and that document scores zero. A PDF that
@@ -172,17 +189,17 @@ only.
 
 ## Latest results
 
-Ink overlap by suite from the [last full comparison](../../README.md#benchmark).
+Ink overlap by suite for the [benchmark comparison](../../README.md#benchmark).
 
 <!-- benchmark-breakdown:start -->
 **Last full benchmark run** 2026-11-20 (UTC), 278 documents.
 
-| Cases | Reference | @kanera/docx2pdf | EigenPal | LibreOffice | Aspose.Words (.NET) | Syncfusion DocIO (.NET) | dxpdf (Rust) | rdocx (Rust) | office2pdf (Rust) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 150 classic | Microsoft 365 Word page images | **99.1%** | 74.0% | 91.2% | 51.0% | 58.4% | 36.9% | 44.8% | 57.1% |
-| 100 Hugging Face | Word for Mac PDFs | **83.2%** | 66.9% | 70.3% | 54.4% | 54.2% | 37.7% | 39.4% | 40.9% |
-| 20 issues | Microsoft 365 Word PDFs | **90.5%** | 71.1% | 53.7% | 49.8% | 51.9% | 31.2% | 18.7% | 32.3% |
-| 8 issues | LibreOffice PDFs | 58.6% | 62.9% | **68.1%** | 49.4% | 48.6% | 24.7% | 26.8% | 42.4% |
+| Cases | Reference | @kanera/docx2pdf | EigenPal | LibreOffice | Aspose.Words (.NET) | Syncfusion DocIO (.NET) | dxpdf (Rust) | rdocx (Rust) | office2pdf (Rust) | MiniPdf (.NET) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 150 classic | Microsoft 365 Word page images | **99.1%** | 74.0% | 91.2% | 51.0% | 58.4% | 36.9% | 44.8% | 57.1% | 55.9% |
+| 100 Hugging Face | Word for Mac PDFs | **83.2%** | 66.9% | 70.3% | 54.4% | 54.2% | 37.7% | 39.4% | 40.9% | 28.8% |
+| 20 issues | Microsoft 365 Word PDFs | **90.5%** | 71.1% | 53.7% | 49.8% | 51.9% | 31.2% | 18.7% | 32.3% | 31.4% |
+| 8 issues | LibreOffice PDFs | 58.6% | 62.9% | **68.1%** | 49.4% | 48.6% | 24.7% | 26.8% | 42.4% | 36.7% |
 
 Per-document ink overlap differences under half a percentage point count as ties.
 
@@ -195,6 +212,9 @@ Per-document ink overlap differences under half a percentage point count as ties
 | dxpdf (Rust) | 269 | 6 | 3 |
 | rdocx (Rust) | 242 | 3 | 33 |
 | office2pdf (Rust) | 270 | 5 | 3 |
+| MiniPdf (.NET) | 270 | 5 | 3 |
+
+MiniPdf results come from a standalone run.
 <!-- benchmark-breakdown:end -->
 
 On 2026-11-20, LibreOffice ran as a Flatpak on the host, launched from a container. The timings

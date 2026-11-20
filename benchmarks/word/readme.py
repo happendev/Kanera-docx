@@ -17,6 +17,12 @@ HEADLINE_METRICS = {
     'Reused process': 'Median warm time',
     'Median peak memory': 'Median cold peak RSS',
 }
+SUITES = (
+    ('classic', 'classic', 'Microsoft 365 Word page images'),
+    ('sample', 'Hugging Face', 'Word for Mac PDFs'),
+    ('word_issues', 'issues', 'Microsoft 365 Word PDFs'),
+    ('office_issues', 'issues', 'LibreOffice PDFs'),
+)
 
 
 def markdown_table(headers, rows):
@@ -79,47 +85,104 @@ def edit_main_readme(root, transform):
                     staged.unlink(missing_ok=True)
 
 
-def refresh_kanera_table(text, section, values, name, count):
+def read_table(lines, start):
+    end = next((i for i in range(start, len(lines)) if not lines[i].startswith('|')), len(lines))
+    headers, _, *rows = [[cell.strip().strip('*') for cell in line.strip('|').split('|')]
+                         for line in lines[start:end]]
+    return headers, rows, end
+
+
+def refresh_engine_table(text, section, values, name, count):
     before, body, after = section_parts(text, section)
     lines = body.splitlines()
     table_start = next(i for i, line in enumerate(lines) if line.startswith('|'))
-    table_end = next((i for i in range(table_start, len(lines)) if not lines[i].startswith('|')), len(lines))
-    headers, _, *rows = [[cell.strip().strip('*') for cell in line.strip('|').split('|')]
-                         for line in lines[table_start:table_end]]
+    headers, rows, table_end = read_table(lines, table_start)
     displayed = {row[0]: dict(zip(headers[1:], row[1:], strict=True)) for row in rows}
-    [kanera] = [label for label in displayed if label.split()[0] == name.split()[0]]
-    displayed[kanera] = {header: values[HEADLINE_METRICS.get(header, header)] for header in headers[1:]}
+    existing = next((label for label in displayed if label.split()[0] == name.split()[0]), None)
+    current = existing or name
+    displayed[current] = {header: values[HEADLINE_METRICS.get(header, header)] for header in headers[1:]}
 
     # Recompute the highlights against the recorded results for the same document count.
     page_count_column = 'Page counts matched' if 'Page counts matched' in headers else 'Matching page count'
     comparison_count = next(result[page_count_column].split('/')[1] for engine, result in displayed.items()
-                            if engine != kanera)
-    compared = tuple(engine for engine in displayed if engine != kanera or str(count) == comparison_count)
+                            if engine != current)
+    compared = tuple(engine for engine in displayed if engine != current or str(count) == comparison_count)
     metrics = {engine: {HEADLINE_METRICS.get(column, column): value for column, value in result.items()}
                for engine, result in displayed.items()}
     for header in headers[1:]:
         key = HEADLINE_METRICS.get(header, header)
         for engine, value in zip(compared, metric_cells(metrics, compared, key), strict=True):
             displayed[engine][header] = value
-    published = [(name if engine == kanera else engine, *(result[header] for header in headers[1:]))
-                 for engine, result in displayed.items()]
+    ordered = displayed if existing else sorted(
+        displayed, key=lambda engine: -float(metrics[engine]['Mean ink overlap'].rstrip('%')))
+    published = [(name if engine == current else engine, *(displayed[engine][header] for header in headers[1:]))
+                 for engine in ordered]
     intro = '\n'.join(lines[:table_start]).strip('\n')
     tail = '\n'.join(lines[table_end:]).strip('\n')
     body = '\n\n'.join(part for part in (intro, markdown_table(headers, published), tail) if part)
     return before + '\n' + body + '\n' + after
 
 
-def update_kanera_readme(root, table, versions, count):
+def update_single_engine_readme(root, table, versions, count, engine):
     values = dict(zip(table[0], table[1], strict=True))
     converter = values['Converter']
-    if versions.get('ours'):
-        converter += ' ' + versions['ours'].split()[0]
+    if versions.get(engine):
+        converter += ' ' + versions[engine].split()[0]
 
     def transform(text):
-        text = refresh_kanera_table(text, 'benchmark-summary', values, 'Kanera', count)
-        return refresh_kanera_table(text, 'benchmark-results', values, converter, count)
+        name = 'Kanera' if engine == 'ours' else values['Converter']
+        text = refresh_engine_table(text, 'benchmark-summary', values, name, count)
+        return refresh_engine_table(text, 'benchmark-results', values, converter, count)
 
     edit_main_readme(root, transform)
+
+
+def fixture_suite(row):
+    if row['suite'] == 'issue':
+        return 'office_issues' if row['reference_application'].startswith('LibreOffice') else 'word_issues'
+    return row['suite']
+
+
+def comparison_counts(baseline, candidate):
+    differences = [round(value - candidate[case], 2) for case, value in baseline.items()]
+    higher = sum(value >= 0.5 for value in differences)
+    lower = sum(value <= -0.5 for value in differences)
+    return str(higher), str(lower), str(len(differences) - higher - lower)
+
+
+def update_mini_pdf_breakdown(root, rows, label, kanera_scores):
+    benchmark = root / 'benchmarks/word/README.md'
+    original = benchmark.read_text(encoding='utf-8')
+    before, body, after = section_parts(original, 'benchmark-breakdown')
+    note = 'MiniPdf results come from a standalone run.'
+    lines = [line for line in body.strip('\n').splitlines() if line != note]
+    start = next(i for i, line in enumerate(lines) if line.startswith('|'))
+    headers, previous, end = read_table(lines, start)
+    groups = defaultdict(list)
+    for row in rows:
+        groups[fixture_suite(row)].append(row['ink_f1'])
+    averages = {(f'{len(groups[suite])} {name}', reference): f'{mean(groups[suite]):.1f}%'
+                for suite, name, reference in SUITES if groups[suite]}
+    if label in headers:
+        column = headers.index(label)
+    else:
+        column = len(headers)
+        headers.append(label)
+    for row in previous:
+        row[column:column + 1] = [averages.get(tuple(row[:2]), '–')]
+        row[2:] = highlight_best(row[2:], higher_is_better=True)
+
+    comparison_start = next(i for i in range(end, len(lines)) if lines[i].startswith('|'))
+    comparison_headers, counts, comparison_end = read_table(lines, comparison_start)
+    candidate = {row['case']: row['ink_f1'] for row in rows}
+    recorded = [row for row in counts if row[0] != label]
+    if candidate.keys() == kanera_scores.keys():
+        recorded.append((label, *comparison_counts(kanera_scores, candidate)))
+    lines[comparison_start:comparison_end] = markdown_table(comparison_headers, recorded).splitlines()
+    lines[start:end] = markdown_table(headers, previous).splitlines()
+    updated = before + '\n' + '\n'.join(lines).rstrip() + '\n\n' + note + '\n' + after
+    if updated != original:
+        benchmark.write_text(updated, encoding='utf-8')
 
 
 def update_accuracy_readme(root, report, run_date):
@@ -182,19 +245,12 @@ def update_readmes(root, rows, table, engines, versions, run_date):
     suites = defaultdict(lambda: defaultdict(list))
     per_case = defaultdict(dict)
     for row in rows:
-        suite = row['suite']
-        if suite == 'issue':
-            suite = 'office_issues' if row['reference_application'].startswith('LibreOffice') else 'word_issues'
+        suite = fixture_suite(row)
         suites[suite][row['engine']].append(row['ink_f1'])
         per_case[row['engine']][row['case']] = row['ink_f1']
 
     breakdown = []
-    for suite, label, reference in (
-        ('classic', 'classic', 'Microsoft 365 Word page images'),
-        ('sample', 'Hugging Face', 'Word for Mac PDFs'),
-        ('word_issues', 'issues', 'Microsoft 365 Word PDFs'),
-        ('office_issues', 'issues', 'LibreOffice PDFs'),
-    ):
+    for suite, label, reference in SUITES:
         scores = suites.get(suite)
         if scores:
             averages = [f'{mean(scores[engine]):.1f}%' for engine in engines]
@@ -205,10 +261,7 @@ def update_readmes(root, rows, table, engines, versions, run_date):
     for engine in engines:
         if engine == 'ours':
             continue
-        differences = [round(value - per_case[engine][case], 2) for case, value in per_case['ours'].items()]
-        better = sum(value >= 0.5 for value in differences)
-        worse = sum(value <= -0.5 for value in differences)
-        counts.append((results[engine]['Converter'], str(better), str(worse), str(count - better - worse)))
+        counts.append((results[engine]['Converter'], *comparison_counts(per_case['ours'], per_case[engine])))
     details = '\n\n'.join([
         date_line,
         markdown_table(columns, breakdown),
