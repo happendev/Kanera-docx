@@ -19,7 +19,12 @@ export class OpcPackage {
     this.zip = new ZipArchive(data, inflateRaw, limits);
   }
 
+  private partName(part: string): string {
+    return this.zip.canonicalName(part) ?? part;
+  }
+
   xml(part: string): XmlElement | undefined {
+    part = this.partName(part);
     if (this.xmlCache.has(part)) return this.xmlCache.get(part) ?? undefined;
     const text = this.zip.readText(part);
     let el: XmlElement | null = null;
@@ -36,11 +41,12 @@ export class OpcPackage {
 
   contentType(part: string): string | undefined {
     const root = this.xml('[Content_Types].xml');
+    part = this.partName(part);
     const ext = part.split('.').pop()?.toLowerCase();
     // The XML reader preserves unprefixed names in the OPC content-types namespace.
     const declarations = children(root);
     const local = (name: string) => name.split(':').pop();
-    const override = declarations.find((e) => local(e.name) === 'Override' && e.attrs.PartName === '/' + part);
+    const override = declarations.find((e) => local(e.name) === 'Override' && e.attrs.PartName?.startsWith('/') && this.partName(e.attrs.PartName.slice(1)) === part);
     const fallback = declarations.find((e) => local(e.name) === 'Default' && e.attrs.Extension?.toLowerCase() === ext);
     return (override ?? fallback)?.attrs.ContentType?.split(';')[0].trim().toLowerCase();
   }
@@ -51,6 +57,7 @@ export class OpcPackage {
 
   /** Relationships of a part, with targets resolved to absolute part names. */
   rels(part: string): Map<string, Relationship> {
+    part = this.partName(part);
     let map = this.relsCache.get(part);
     if (map) return map;
     map = new Map();
@@ -65,7 +72,7 @@ export class OpcPackage {
       map.set(r.attrs.Id ?? '', {
         id: r.attrs.Id ?? '',
         type: r.attrs.Type ?? '',
-        target: external ? target : resolvePartName(dir, target),
+        target: external ? target : this.partName(resolvePartName(dir, target)),
         external,
       });
     }

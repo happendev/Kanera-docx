@@ -8,6 +8,10 @@ function pixelLimit(value: number): number {
   return value;
 }
 
+function supported(width: number, height: number): boolean {
+  return Number.isInteger(width) && Number.isInteger(height) && width >= 1 && height >= 1 && Math.max(width, height) <= 32768;
+}
+
 /** One reservation per source raster, before allocating scanlines or pixel buffers. */
 export class ImageBudget {
   private readonly maxImagePixels: number;
@@ -19,10 +23,15 @@ export class ImageBudget {
   }
 
   reserve(width: number, height: number): void {
-    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || Math.max(width, height) > 32768)
-      throw new Error('Image dimensions outside supported range');
+    if (!supported(width, height)) throw new Error('Image dimensions outside supported range');
+    if (!this.tryReserve(width, height)) throw new Error('Image pixel limit exceeded');
+  }
+
+  /** Reserve when the image fits, or return false for callers that can skip the decode instead. */
+  tryReserve(width: number, height: number): boolean {
     const pixels = width * height;
-    if (pixels > this.maxImagePixels || pixels > this.remaining) throw new Error('Image pixel limit exceeded');
+    if (!supported(width, height) || pixels > this.maxImagePixels || pixels > this.remaining) return false;
     this.remaining -= pixels;
+    return true;
   }
 }

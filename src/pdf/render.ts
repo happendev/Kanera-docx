@@ -274,7 +274,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
   pdf.set(pagesNum, `<< /Type /Pages /Kids [${pageNums.map((n) => `${n} 0 R`).join(' ')}] /Count ${pages.length} >>`);
   pdf.set(catalog, `<< /Type /Catalog /Pages ${pagesNum} 0 R >>`);
   const info = opts.info ?? {};
-  const entries = [`/Producer ${textString(opts.producer ?? '@happendev/docx2pdf')}`];
+  const entries = [`/Producer ${textString(opts.producer ?? '@kanera/docx2pdf')}`];
   if (info.title) entries.push(`/Title ${textString(info.title)}`);
   if (info.creator) entries.push(`/Author ${textString(info.creator)}`);
   if (info.subject) entries.push(`/Subject ${textString(info.subject)}`);
@@ -284,14 +284,14 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
 }
 
 function linkAction(link: Link, anchors: Map<string, { page: number; x: number; y: number }>, pageNums: number[], schemes: ReadonlySet<string>): string | null {
-  const bookmark = link.anchor || (link.url?.startsWith('#') ? link.url.slice(1) : undefined);
+  const bookmark = link.url ? (link.url.startsWith('#') ? link.url.slice(1) : undefined) : link.anchor;
   if (bookmark) {
     const a = anchors.get(bookmark);
     if (a) return `/Dest [${pageNums[a.page]} 0 R /XYZ ${num(a.x)} ${num(a.y)} 0]`;
   }
   if (link.url) {
     let url = link.url;
-    if (link.anchor && !anchors.has(link.anchor)) url += '#' + link.anchor;
+    if (link.anchor) url += '#' + link.anchor;
     const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1].toLowerCase();
     if (!scheme || !schemes.has(scheme) || /[\x00-\x1f\x7f]/.test(url)) return null;
     const ascii = url.replace(/[^\x20-\x7e]/gu, (c) => encodeURIComponent(c)).replace(/[\\()]/g, (c) => '\\' + c);

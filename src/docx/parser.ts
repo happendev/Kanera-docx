@@ -2,11 +2,12 @@ import { MAX_FONT_FACES } from '../fonts/sfnt.js';
 import { fontFor } from '../fonts/script.js';
 import { deobfuscateFont } from '../fonts/odttf.js';
 import { attr, child, children, decodeEntities, descendant, descendants, elements, parseXml, path, resolveAlternateContent, textContent, type XmlElement } from '../util/xml.js';
-import { chartTexts } from './chart.js';
+import { ChartPointBudget, chartTexts } from './chart.js';
 import { parseDrawing, parseVml, loadImage, type DrawingContext } from './drawing.js';
 import type {
   Block,
   Border,
+  Chart,
   CellBorders,
   CellMargins,
   Columns,
@@ -107,7 +108,11 @@ class DocxParser {
   private styles: StyleSheet;
   private numbering: Numbering;
   private settings: DocSettings;
+  private defaultNoteProps?: XmlElement;
   private fieldStack: FieldFrame[] = [];
+  // Each parser has one theme and color mapping for all drawing parts.
+  private charts = new Map<string, Chart | undefined>();
+  private chartBudget = new ChartPointBudget();
   private images = new Map<string, ImageRef>();
   private fontRequests = new Map<string, FontRequest>();
   private warnings: string[] = [];
@@ -133,6 +138,7 @@ class DocxParser {
       }
     }
     this.ctx = { theme: this.theme, colorMapping };
+    this.defaultNoteProps = child(settingsXml, 'w:footnotePr');
     this.settings = this.parseSettings(settingsXml);
     const stylesRel = this.pkg.relByType(this.main, '/styles');
     // Without a styles part Word falls back to its built-in defaults: Aptos 12 pt, 8 pt after and
@@ -612,7 +618,7 @@ class DocxParser {
     const binding = child(sdtPr, 'w:dataBinding');
     if (!binding || child(sdtPr, 'w:date') || child(sdtPr, 'w:picture')) return null;
     const store = this.dataStore(binding.attrs['w:storeItemID'] ?? '');
-    const node = store && selectXPath(store, binding.attrs['w:xpath'] ?? '');
+    const node = store && selectXPath(store, binding.attrs['w:xpath'] ?? '', binding.attrs['w:prefixMappings'] ?? '');
     if (!node) return null;
     let value = textContent(node);
     const list = child(sdtPr, 'w:dropDownList') ?? child(sdtPr, 'w:comboBox');
@@ -860,6 +866,8 @@ class DocxParser {
       theme: this.theme,
       colorMapping: this.ctx.colorMapping,
       images: this.images,
+      chartBudget: this.chartBudget,
+      charts: this.charts,
       parseBlocks: (container) => {
         // Text box content is a separate story: field state must not leak in or out.
         const saved = this.fieldStack;
@@ -908,7 +916,9 @@ class DocxParser {
       const out: XmlElement[] = [];
       const walk = (el: XmlElement) => {
         for (const c of children(el)) {
-          if (c.name === 'w:tc') out.push(c);
+          if (c.name === 'w:tc') {
+            if (!child(child(c, 'w:tcPr'), 'w:cellDel')) out.push(c);
+          }
           else if (c.name === 'w:sdt') walk(child(c, 'w:sdtContent') ?? c);
           else if (c.name === 'w:customXml') walk(c);
         }
@@ -1125,7 +1135,8 @@ class DocxParser {
     const headers: HeaderFooterRefs = { ...this.prevHeaders };
     const footers: HeaderFooterRefs = { ...this.prevFooters };
     for (const ref of children(sectPr, 'w:headerReference').concat(children(sectPr, 'w:footerReference'))) {
-      const type = (ref.attrs['w:type'] ?? 'default') as keyof HeaderFooterRefs;
+      const type = ref.attrs['w:type'] ?? 'default';
+      if (type !== 'default' && type !== 'first' && type !== 'even') continue;
       const rel = this.pkg.rels(pctx.part).get(ref.attrs['r:id'] ?? '');
       if (!rel) continue;
       const blocks = this.headerFooter(rel.target, ref.name === 'w:headerReference' ? 'w:hdr' : 'w:ftr');
@@ -1136,9 +1147,13 @@ class DocxParser {
     this.prevFooters = footers;
 
     const typeVal = attr(child(sectPr, 'w:type'), 'w:val');
+    const type = (['nextPage', 'continuous', 'evenPage', 'oddPage', 'nextColumn'] as const).find((type) => type === typeVal) ?? 'nextPage';
     const pgNum = child(sectPr, 'w:pgNumType');
+    const vAlign = attr(child(sectPr, 'w:vAlign'), 'w:val');
     const grid = child(sectPr, 'w:docGrid');
     const fnPr = child(sectPr, 'w:footnotePr');
+    const noteValue = (tag: string) => attr(child(fnPr, tag) ?? child(this.defaultNoteProps, tag), 'w:val');
+    const restart = noteValue('w:numRestart');
     return {
       pageWidth,
       pageHeight,
@@ -1152,20 +1167,20 @@ class DocxParser {
       footer: t(pgMar, 'w:footer', DEFAULT_SECTION_TWIPS.footer),
       gutter: t(pgMar, 'w:gutter', 0),
       columns,
-      type: (['nextPage', 'continuous', 'evenPage', 'oddPage', 'nextColumn'].includes(typeVal ?? '') ? typeVal : 'nextPage') as Section['type'],
+      type,
       titlePage: !!onOff(child(sectPr, 'w:titlePg')),
       headers,
       footers,
       pageNumberStart: num(attr(pgNum, 'w:start')) ?? null,
       pageNumberFormat: attr(pgNum, 'w:fmt') ?? 'decimal',
-      vAlign: (attr(child(sectPr, 'w:vAlign'), 'w:val') ?? 'top') as Section['vAlign'],
+      vAlign: vAlign === 'center' || vAlign === 'both' || vAlign === 'bottom' ? vAlign : 'top',
       gridType: attr(grid, 'w:type') ?? 'default',
       gridLinePitch: twip(num(attr(grid, 'w:linePitch')) ?? 360),
       gridCharSpace: (num(attr(grid, 'w:charSpace')) ?? 0) / 4096,
       pageBorders: this.parsePageBorders(child(sectPr, 'w:pgBorders')),
-      footnoteRestart: (attr(child(fnPr, 'w:numRestart'), 'w:val') ?? 'continuous') as Section['footnoteRestart'],
-      footnoteStart: num(attr(child(fnPr, 'w:numStart'), 'w:val')) ?? 1,
-      footnoteFormat: attr(child(fnPr, 'w:numFmt'), 'w:val') ?? 'decimal',
+      footnoteRestart: restart === 'eachSect' || restart === 'eachPage' ? restart : 'continuous',
+      footnoteStart: num(noteValue('w:numStart')) ?? 1,
+      footnoteFormat: noteValue('w:numFmt') ?? 'decimal',
     };
   }
 
@@ -1173,13 +1188,14 @@ class DocxParser {
     if (!el) return null;
     const tc = themeColorFn(this.ctx);
     const side = (n: string) => parseBorder(child(el, n), tc) ?? null;
+    const display = el.attrs['w:display'];
     const pb: PageBorders = {
       top: side('w:top'),
       bottom: side('w:bottom'),
       left: side('w:left'),
       right: side('w:right'),
       offsetFrom: el.attrs['w:offsetFrom'] === 'page' ? 'page' : 'text',
-      display: (el.attrs['w:display'] ?? 'allPages') as PageBorders['display'],
+      display: display === 'firstPage' || display === 'notFirstPage' ? display : 'allPages',
       zOrder: el.attrs['w:zOrder'] === 'back' ? 'back' : 'front',
     };
     if (!pb.top && !pb.bottom && !pb.left && !pb.right) return null;
@@ -1199,21 +1215,28 @@ class DocxParser {
   }
 }
 
-/**
- * The node a content control's binding points at. Word writes simple paths of named, indexed
- * steps (/ns0:root[1]/ns0:Company[1]); they are matched by local name, as the prefixes are the
- * binding's own. Anything else does not resolve.
- */
-function selectXPath(root: XmlElement, xpath: string): XmlElement | undefined {
+/** Resolve the simple, indexed element paths used by Word's content controls. */
+function selectXPath(root: XmlElement, xpath: string, prefixMappings: string): XmlElement | undefined {
+  const namespaces = new Map<string, string>();
+  const declaration = /\s*xmlns(?::([\w.-]+))?\s*=\s*(["'])(.*?)\2\s*/gy;
+  const mappings = prefixMappings.trim();
+  for (let i = 0; i < mappings.length; i = declaration.lastIndex) {
+    const match = declaration.exec(mappings);
+    if (!match || namespaces.has(match[1] ?? '')) return undefined;
+    namespaces.set(match[1] ?? '', match[3]);
+  }
   const steps = xpath.split('/');
   if (steps.shift() !== '' || !steps.length) return undefined;
   let node: XmlElement | undefined;
   for (const step of steps) {
-    const m = /^(?:[\w.-]+:)?([\w.-]+)(?:\[(\d+)\])?$/.exec(step);
+    const m = /^(?:([\w.-]+):)?([\w.-]+)(?:\[(\d+)\])?$/.exec(step);
     if (!m) return undefined;
-    const local = (el: XmlElement) => el.name.slice(el.name.indexOf(':') + 1) === m[1];
-    const matches = node ? elements(node).filter(local) : [root].filter(local);
-    node = matches[Number(m[2] ?? 1) - 1];
+    const [, prefix, local, index] = m;
+    const uri = prefix ? namespaces.get(prefix) : '';
+    if (uri === undefined) return undefined;
+    const matches = (node ? elements(node) : [root]).filter((e) =>
+      (e.namespaceURI ?? '') === uri && e.name.slice(e.name.indexOf(':') + 1) === local);
+    node = matches[Number(index ?? 1) - 1];
     if (!node) return undefined;
   }
   return node;

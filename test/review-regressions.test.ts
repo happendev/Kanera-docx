@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { convertDocx } from '../src/node.js';
 import { convertDocx as browserConvert } from '../src/browser.js';
 import { convertDocx as coreConvert } from '../src/index.js';
+import { parseDocx } from '../src/docx/parser.js';
 import { deobfuscateFont } from '../src/fonts/odttf.js';
 import { FontRegistry } from '../src/fonts/registry.js';
 import { SfntFont } from '../src/fonts/sfnt.js';
@@ -22,6 +23,24 @@ const row = (body: string, pr = '') => '<w:tr><w:trPr>' + pr + '</w:trPr><w:tc>'
 const table = (rows: string) => '<w:tbl><w:tblGrid><w:gridCol w:w="5400"/></w:tblGrid>' + rows + '</w:tbl>';
 
 describe('document content and pagination', () => {
+  it('uses defaults for invalid Word property values', () => {
+    const body = p('Text', '<w:tabs><w:tab w:val="bogus" w:leader="bogus" w:pos="720"/>' +
+      '<w:tab w:val="end" w:leader="dot" w:pos="1440"/></w:tabs>');
+    const sectPr = '<w:sectPr><w:headerReference w:type="bogus" r:id="header"/>' +
+      '<w:type w:val="bogus"/><w:vAlign w:val="bogus"/>' +
+      '<w:footnotePr><w:numRestart w:val="bogus"/></w:footnotePr>' +
+      '<w:pgBorders w:display="bogus"><w:top w:val="single" w:sz="8"/></w:pgBorders></w:sectPr>';
+    const docx = makeDocx({ body, sectPr, headers: { header: p('Header') } });
+    const doc = parseDocx(docx, nodeCompression.inflateRaw);
+    const para = doc.body[0];
+    expect(para?.type === 'paragraph' && para.props.tabs).toEqual([
+      { type: 'left', leader: 'none', pos: 36 },
+      { type: 'right', leader: 'dot', pos: 72 },
+    ]);
+    expect(doc.finalSection).toMatchObject({ type: 'nextPage', vAlign: 'top', footnoteRestart: 'continuous', pageBorders: { display: 'allPages' } });
+    expect(doc.finalSection.headers).toEqual({});
+  });
+
   it('imports HTML text in order and reports unsupported imported parts', async () => {
     const doc = makeDocx({
       body: p('Before') + '<w:altChunk r:id="html"/><w:altChunk r:id="rtf"/>' + p('After'),
@@ -41,6 +60,66 @@ describe('document content and pagination', () => {
     expect(result.warnings.some((w) => w.includes('Skipped unsupported content block'))).toBe(true);
   });
 
+  it('omits a tracked-deleted cell from the final document', async () => {
+    const cells = '<w:tc>' + p('Current') + '</w:tc><w:tc><w:tcPr><w:cellDel w:id="1" w:author="Editor"/></w:tcPr>' + p('Withdrawn') + '</w:tc>';
+    const doc = makeDocx({ body: table('<w:tr>' + cells + '</w:tr>') });
+    expect(pageText((await layout(doc)).pages[0])).toBe('Current');
+    if (ghostscript) expect(pdfPagesText((await convertDocx(doc)).pdf)[0].trim()).toBe('Current');
+  });
+
+  it('resolves bound values by namespace URI and preserves cached text for unknown prefixes', async () => {
+    const store = '{A1B2C3D4-0000-0000-0000-000000000001}';
+    const control = (prefix: string) => '<w:p><w:sdt><w:sdtPr><w:dataBinding w:prefixMappings="xmlns:b=\'urn:billing\'" w:xpath="/root[1]/' +
+      prefix + ':name[1]" w:storeItemID="' + store + '"/></w:sdtPr><w:sdtContent><w:r><w:t>Saved</w:t></w:r></w:sdtContent></w:sdt></w:p>';
+    const doc = makeDocx({ body: control('b') + control('unknown'), customXml: {
+      [store]: '<root xmlns:a="urn:shipping"><a:name>Shipping</a:name><name xmlns="urn:billing">Billing</name></root>',
+    } });
+    expect(pageText((await layout(doc)).pages[0])).toBe('Billing\nSaved');
+  });
+
+  it('continues independent lists that share an abstract numbering definition', async () => {
+    const instance = (id: number, start: number) => '<w:num w:numId="' + id + '"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="' + start + '"/></w:lvlOverride></w:num>';
+    const para = (id: number) => p('Item', '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="' + id + '"/></w:numPr>');
+    const numbering = '<w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>' +
+      instance(1, 1) + instance(2, 10);
+    const doc = makeDocx({ body: [1, 2, 1, 2].map(para).join(''), numbering });
+    expect(pageText((await layout(doc)).pages[0]).match(/\d+\./g)).toEqual(['1.', '10.', '2.', '11.']);
+  });
+
+  it('rewraps just the remaining cell content as columns narrow and widen', async () => {
+    const words = Array.from({ length: 120 }, (_, i) => 'Word' + String(i + 1).padStart(3, '0'));
+    const sectPr = '<w:sectPr><w:pgSz w:w="9000" w:h="4300"/><w:pgMar w:top="900" w:bottom="900" w:left="600" w:right="600"/>' +
+      '<w:cols w:num="2" w:equalWidth="0"><w:col w:w="1800" w:space="300"/><w:col w:w="5700"/></w:cols></w:sectPr>';
+    const content = p(words.slice(0, 65).join(' ')) + p(words.slice(65).join(' '));
+    const body = table(row(content)).replace('<w:tbl>', '<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/></w:tblPr>');
+    const { pages } = await layout(makeDocx({ body, sectPr }));
+    expect(pages.length).toBeGreaterThan(1);
+    const glyphs = pages.flatMap((page) => page.body.filter((op) => op.kind === 'glyphs'));
+    expect(glyphs.map((op) => op.texts.join('')).join('').match(/Word\d{3}/g)).toEqual(words);
+    expect(glyphs.some((op) => op.x >= 135 && (op.texts.join('').match(/Word/g)?.length ?? 0) > 2)).toBe(true);
+  });
+
+  it('restarts footnotes at the section start and inherits page restarts from document settings', async () => {
+    const mark = (id: number) => '<w:p><w:r><w:t>Body</w:t><w:footnoteReference w:id="' + id + '"/></w:r></w:p>';
+    const note = (id: number) => '<w:footnote w:id="' + id + '"><w:p><w:r><w:footnoteRef/><w:t>Note</w:t></w:r></w:p></w:footnote>';
+    const sect = (props: string) => '<w:sectPr><w:footnotePr>' + props + '</w:footnotePr></w:sectPr>';
+    const first = sect('<w:numStart w:val="3"/><w:numRestart w:val="eachSect"/>');
+    const pageBreak = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+    const doc = makeDocx({ body: mark(1) + p('', first) + mark(2) + mark(3) + pageBreak + mark(4),
+      sectPr: sect(''), settings: '<w:footnotePr><w:numStart w:val="5"/><w:numRestart w:val="eachPage"/></w:footnotePr>',
+      footnotes: [1, 2, 3, 4].map(note).join('') });
+    const { pages, warnings } = await layout(doc);
+    expect(warnings).toEqual([]);
+    expect(pages.map((pg) => pageText(pg).match(/Body\d+|\d+Note/g))).toEqual([
+      ['Body3', '3Note'], ['Body5', 'Body6', '5Note', '6Note'], ['Body5', '5Note'],
+    ]);
+    const continuous = await layout(makeDocx({
+      body: mark(1) + p('', '<w:sectPr/>') + mark(2), sectPr: '<w:sectPr><w:type w:val="continuous"/></w:sectPr>',
+      settings: '<w:footnotePr><w:numRestart w:val="eachPage"/></w:footnotePr>', footnotes: note(1) + note(2),
+    }));
+    expect(continuous.pages.map(pageText)).toEqual(['Body1\nBody2\n1Note\n2Note']);
+  });
+
   it('draws the prohibition symbol with two cutouts and a diagonal bar', async () => {
     const body = '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="635000"/><a:graphic><a:graphicData>' +
       '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr>' +
@@ -49,6 +128,23 @@ describe('document content and pagination', () => {
     const result = await layout(makeDocx({ body }));
     const path = result.pages[0].body.find((op) => op.kind === 'path' && op.fill === '0077AA');
     expect(path?.kind === 'path' && path.segs.filter((s) => s.op === 'Z')).toHaveLength(3);
+  });
+
+  it('leaves unfilled custom subpaths out of the fill and unstroked ones out of the outline', async () => {
+    const square = (attrs: string) => `<a:path w="10" h="10"${attrs}><a:moveTo><a:pt x="0" y="0"/></a:moveTo><a:lnTo><a:pt x="10" y="0"/></a:lnTo>` +
+      '<a:lnTo><a:pt x="10" y="10"/></a:lnTo><a:close/></a:path>';
+    const body = '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="1270000"/><a:graphic><a:graphicData>' +
+      '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr>' +
+      `<a:custGeom><a:pathLst>${square('')}${square(' fill="none"')}${square(' stroke="0"')}</a:pathLst></a:custGeom>` +
+      '<a:solidFill><a:srgbClr val="0077AA"/></a:solidFill><a:ln w="12700"><a:solidFill><a:srgbClr val="AA0000"/></a:solidFill></a:ln>' +
+      '</wps:spPr></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>';
+    const ops = (await layout(makeDocx({ body }))).pages[0].body;
+    const subpaths = (fill: string | null, stroke: string | null) => {
+      const op = ops.find((o) => o.kind === 'path' && o.fill === fill && o.stroke === stroke);
+      return op?.kind === 'path' ? op.segs.filter((s) => s.op === 'M').length : 0;
+    };
+    expect(subpaths('0077AA', null)).toBe(2);
+    expect(subpaths(null, 'AA0000')).toBe(2);
   });
 
   it('excludes deleted rows before determining table layout', async () => {
@@ -103,6 +199,16 @@ describe('document content and pagination', () => {
 });
 
 describe('PDF fonts, links and public inputs', () => {
+  it('warns and falls back when a user font loader rejects with null', async () => {
+    const family = 'Unavailable Font';
+    const body = p('Fallback text', '', `<w:rFonts w:ascii="${family}" w:hAnsi="${family}"/>`);
+    const { pdf, warnings } = await convertDocx(makeDocx({ body }), {
+      fonts: [{ family, load: () => Promise.reject(null) }],
+    });
+    expect(warnings).toContain('Could not load font unavailable font: null');
+    if (ghostscript) expect(pdfPagesText(pdf)[0]).toContain('Fallback text');
+  });
+
   it('preserves caller-owned Node buffers on repeated conversions', async () => {
     const data = font('Caladea-Regular.ttf');
     const original = Buffer.from(data);
@@ -173,6 +279,28 @@ describe('PDF fonts, links and public inputs', () => {
     expect(mapping!.charCodeAt(plain * 2 + 1)).toBe(1);
     expect(mapping!.charCodeAt(composite * 2 + 1)).toBe(2);
     if (ghostscript) expect(pdfPagesText(result.pdf)[0]).toContain(text);
+  });
+
+  it('keeps external links external when a local bookmark has the same name', async () => {
+    const body = '<w:p><w:bookmarkStart w:id="0" w:name="Intro"/><w:r><w:t>Local</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p>' +
+      '<w:p><w:hyperlink r:id="external" w:anchor="Intro"><w:r><w:t>Remote intro</w:t></w:r></w:hyperlink></w:p>';
+    const { pdf } = await convertDocx(makeDocx({ body, links: { external: 'https://example.org/manual' } }));
+    expect(pdfText(pdf)).toContain('/URI (https://example.org/manual#Intro)');
+  });
+
+  it('treats font URLs as directories and shares downloads only within one fetch provider', async () => {
+    const doc = makeDocx({ body: p('Test'), styles: arial });
+    const urls: string[] = [];
+    const provider = (): typeof fetch => async (input) => {
+      urls.push(String(input));
+      return new Response(new Uint8Array(font('LiberationSans-Regular.ttf')));
+    };
+    const fontBaseUrl = 'https://font-test.invalid/assets/fonts';
+    const first = provider();
+    await browserConvert(doc, { fontBaseUrl, fetch: first });
+    await browserConvert(doc, { fontBaseUrl: fontBaseUrl + '/', fetch: first });
+    await browserConvert(doc, { fontBaseUrl, fetch: provider() });
+    expect(urls).toEqual(Array(2).fill(fontBaseUrl + '/LiberationSans-Regular.ttf'));
   });
 
   it('encodes supplementary Unicode characters in hyperlinks', async () => {

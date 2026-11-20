@@ -187,11 +187,11 @@ describe.each(codecs)('$name PNG decoding', ({ codec }) => {
     await expect(toPdfImage(png(1, 1, colorType, [Array(channels + 1).fill(0)]), codec)).rejects.toThrow(/limit/);
   });
 
-  it('reduces large transparent PNGs in chunks, including the final partial band', async () => {
+  it('preserves source resolution and individual mask pixels in a large streamed PNG', async () => {
     const width = 4096;
     const height = 2049;
     const scanlines = new Uint8Array((1 + width / 8) * height);
-    scanlines[scanlines.length - 1] = 0xff;
+    scanlines[scanlines.length - 1] = 0x55;
     const input = png(width, height, 0, scanlines, [['tRNS', [0, 0]]], 1);
     let chunks = 0;
     const image = await toPdfImage(input, {
@@ -205,10 +205,10 @@ describe.each(codecs)('$name PNG decoding', ({ codec }) => {
       },
     });
     expect(chunks).toBeGreaterThan(1);
-    expect(image).toMatchObject({ width: 2048, height: 1025 });
+    expect(image).toMatchObject({ width, height });
     const alpha = inflateSync(image!.smask!);
-    expect(alpha.length).toBe(2048 * 1025);
-    expect([...alpha.subarray(-5)]).toEqual([0, 255, 255, 255, 255]);
+    expect(alpha.length).toBe(width * height);
+    expect([...alpha.subarray(-5)]).toEqual([255, 0, 255, 0, 255]);
   });
 
   it('checks the length of each nonempty Adam7 pass', async () => {

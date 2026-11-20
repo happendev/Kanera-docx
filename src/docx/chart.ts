@@ -8,6 +8,7 @@ type ColorOf = (el: XmlElement | undefined) => { color: string; alpha: number } 
 
 interface ChartContext {
   theme: Theme;
+  budget: ChartPointBudget;
   color: ColorOf;
   /** Default series colour scheme from the chart style (c:style 1-48). */
   scheme: number;
@@ -123,13 +124,29 @@ function autoColor(i: number, ctx: ChartContext): string {
   return ctx.color(scheme(`accent${(i % 6) + 1}`, mods))?.color ?? '4472C4';
 }
 
+/** Count dense cache slots, including gaps in sparse series, across one DOCX. */
+export class ChartPointBudget {
+  private remaining = 262144;
+
+  reserve(count: number): void {
+    if (count > 32768 || count > this.remaining) throw new Error('Chart point limit exceeded');
+    this.remaining -= count;
+  }
+}
+
+function pointNumber(raw: string | undefined): number {
+  const value = Number(raw ?? 0);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('Invalid chart point count or index');
+  return value;
+}
+
 interface Cache {
   values: Array<string | null>;
   format?: string;
 }
 
 /** Cached values of a c:cat / c:val / c:tx / c:xVal reference or literal. */
-function cache(e: XmlElement | undefined): Cache {
+function cache(e: XmlElement | undefined, ctx: ChartContext): Cache {
   if (!e) return { values: [] };
   const ref = child(e, 'c:strRef') ?? child(e, 'c:numRef') ?? child(e, 'c:multiLvlStrRef');
   let c = ref ? (child(ref, 'c:strCache') ?? child(ref, 'c:numCache') ?? child(ref, 'c:multiLvlStrCache')) : (child(e, 'c:strLit') ?? child(e, 'c:numLit'));
@@ -137,17 +154,16 @@ function cache(e: XmlElement | undefined): Cache {
   if (c && child(c, 'c:lvl')) c = { ...child(c, 'c:lvl')!, children: [...children(c, 'c:ptCount'), ...children(child(c, 'c:lvl'), 'c:pt')] };
   if (!c) {
     const v = child(e, 'c:v');
-    return v ? { values: [v.children.join('')] } : { values: [] };
+    if (!v) return { values: [] };
+    ctx.budget.reserve(1);
+    return { values: [v.children.join('')] };
   }
-  const n = Number(child(c, 'c:ptCount')?.attrs.val) || 0;
-  const values: Array<string | null> = new Array(n).fill(null);
-  for (const pt of children(c, 'c:pt')) {
-    const i = Number(pt.attrs.idx) || 0;
-    const v = child(pt, 'c:v')?.children.join('') ?? '';
-    if (i >= values.length) values.length = i + 1;
-    values[i] = v;
-  }
-  for (let i = 0; i < values.length; i++) if (values[i] === undefined) values[i] = null;
+  let count = pointNumber(child(c, 'c:ptCount')?.attrs.val);
+  const points = children(c, 'c:pt');
+  for (const pt of points) count = Math.max(count, pointNumber(pt.attrs.idx) + 1);
+  ctx.budget.reserve(count);
+  const values: Array<string | null> = new Array(count).fill(null);
+  for (const pt of points) values[pointNumber(pt.attrs.idx)] = child(pt, 'c:v')?.children.join('') ?? '';
   const format = child(c, 'c:formatCode')?.children.join('');
   return { values, ...(format && { format }) };
 }
@@ -213,7 +229,7 @@ function title(e: XmlElement | undefined, base: ChartTextStyle, ctx: ChartContex
       paragraphs.push(runs);
     }
   } else {
-    const text = cache(path(e, 'c:tx')).values.join('') || auto;
+    const text = cache(path(e, 'c:tx'), ctx).values.join('') || auto;
     if (text) paragraphs.push([{ text, style }]);
   }
   while (paragraphs.length && !paragraphs[paragraphs.length - 1].length) paragraphs.pop();
@@ -289,10 +305,10 @@ function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx:
     const isLine = type === 'line' || (type === 'scatter' && p.lines) || (type === 'radar' && !filled);
     // Without their own formatting, lines are 2.25pt in the series colour; bars and areas fill with it.
     const dflt: ChartShape = isLine ? { fill: null, line: { color, width: 2.25 } } : type === 'pie' || type === 'doughnut' ? { fill: { color, alpha: 1 }, line: { color: 'FFFFFF', width: 0.75 } } : { fill: { color, alpha: 1 }, line: null };
-    const cat = cache(child(s, 'c:cat') ?? child(s, 'c:xVal'));
-    const vals = cache(child(s, 'c:val') ?? child(s, 'c:yVal'));
+    const cat = cache(child(s, 'c:cat') ?? child(s, 'c:xVal'), ctx);
+    const vals = cache(child(s, 'c:val') ?? child(s, 'c:yVal'), ctx);
     const ser: ChartSeries = {
-      name: cache(child(s, 'c:tx')).values.join(' ') || `Series ${idx + 1}`,
+      name: cache(child(s, 'c:tx'), ctx).values.join(' ') || `Series ${idx + 1}`,
       categories: cat.values.map((v) => v ?? ''),
       values: numbers(vals),
       format: vals.format ?? 'General',
@@ -343,7 +359,7 @@ function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx:
     const bars = children(s, 'c:errBars').map((eb): ChartErrorBars => {
       const valType = val(child(eb, 'c:errValType'));
       const barType = val(child(eb, 'c:errBarType'));
-      const custom = (name: string) => (child(eb, name) ? numbers(cache(child(eb, name))) : undefined);
+      const custom = (name: string) => (child(eb, name) ? numbers(cache(child(eb, name), ctx)) : undefined);
       const plus = custom('c:plus');
       const minus = custom('c:minus');
       return {
@@ -427,12 +443,12 @@ function axis(e: XmlElement, text: ChartTextStyle, ctx: ChartContext, defaultLin
  * their own formatting take the chart style's defaults: style 2 (Office's default) draws text 10pt
  * in the text colour, axes and gridlines in a 75% tint of it, and series in the accent colours.
  */
-export function parseChart(space: XmlElement, theme: Theme, color: ColorOf): Chart | undefined {
+export function parseChart(space: XmlElement, theme: Theme, color: ColorOf, budget: ChartPointBudget): Chart | undefined {
   const chartEl = child(space, 'c:chart');
   const plotArea = child(chartEl, 'c:plotArea');
   if (!chartEl || !plotArea) return undefined;
   const style = numVal(descendant(space, 'c:style')) ?? 2;
-  const ctx: ChartContext = { theme, color, scheme: ((((style - 1) % 8) + 8) % 8) + 1 };
+  const ctx: ChartContext = { theme, color, budget, scheme: ((((style - 1) % 8) + 8) % 8) + 1 };
   const ink = color(scheme('tx1'))?.color ?? '000000';
   const text = textStyle(child(space, 'c:txPr'), { font: theme.minorLatin || 'Calibri', size: 10, bold: false, italic: false, color: ink }, ctx);
   delete text.rotation;

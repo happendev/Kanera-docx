@@ -16,7 +16,7 @@ export interface ConvertOptions {
   archiveLimits?: import('./util/zip.js').ArchiveLimits;
   /** Maximum pixels per raster image and across distinct images rendered. */
   imageLimits?: import('./image/budget.js').ImageLimits;
-  /** JPEG quality from 1 to 100. Omit for automatic quality 80, or use false to disable lossy recompression. */
+  /** JPEG quality from 1 to 100. Omit to select JPEGs by quantization table and encode them at quality 80, or use false to disable lossy recompression. */
   imageQuality?: number | false;
   /** Additional URI schemes to enable for PDF links, such as ['tel']. */
   additionalLinkSchemes?: readonly string[];

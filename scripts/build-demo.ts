@@ -8,6 +8,7 @@ import { context, type BuildOptions } from 'esbuild';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Sample } from '../demo/samples.js';
 import { FULL_FONTS } from '../src/fonts/bundled.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -36,15 +37,6 @@ interface Fixture {
   pdf?: string;
   reference_application: string;
   reference_images?: { path: string }[];
-}
-
-export interface Sample {
-  id: string;
-  title: string;
-  suite: 'classic' | 'issue';
-  featured: boolean;
-  docx: string;
-  reference: { kind: 'pdf' | 'png'; app: string; files: string[] };
 }
 
 function title(id: string): string {
@@ -87,7 +79,17 @@ async function copySamples(): Promise<void> {
 async function copyStatic(): Promise<void> {
   await cp(join(root, 'demo', 'index.html'), join(out, 'index.html'));
   await cp(join(root, 'demo', 'style.css'), join(out, 'style.css'));
-  await cp(join(root, 'demo', 'favicon.svg'), join(out, 'favicon.svg'));
+  for (const f of ['kanera-logo.svg', 'kanera-icon.svg']) await cp(join(root, 'demo', f), join(out, f));
+  // Kanera's typefaces (OFL), self-hosted so the page loads nothing from third parties.
+  const faces = [
+    ['geist-sans', 'geist-sans-latin-400-normal.woff2'],
+    ['geist-sans', 'geist-sans-latin-500-normal.woff2'],
+    ['geist-sans', 'geist-sans-latin-600-normal.woff2'],
+    ['instrument-serif', 'instrument-serif-latin-400-normal.woff2'],
+    ['instrument-serif', 'instrument-serif-latin-400-italic.woff2'],
+    ['jetbrains-mono', 'jetbrains-mono-latin-500-normal.woff2'],
+  ];
+  for (const [pkg, file] of faces) await cp(join(root, 'node_modules', '@fontsource', pkg, 'files', file), join(out, 'ui-fonts', file));
   await writeFile(join(out, '.nojekyll'), '');
 }
 

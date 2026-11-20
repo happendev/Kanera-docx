@@ -8,6 +8,7 @@
 
 export interface XmlElement {
   name: string;
+  namespaceURI?: string;
   attrs: Record<string, string>;
   children: XmlNode[];
   parent?: XmlElement;
@@ -218,7 +219,9 @@ export function parseXml(src: string): XmlElement {
         .join(' ');
     }
     const parent = stack[stack.length - 1];
-    const el: XmlElement = { name, attrs, children: [], parent };
+    const prefixEnd = rawName.indexOf(':');
+    const namespaceURI = scope[prefixEnd < 0 ? '' : rawName.slice(0, prefixEnd)];
+    const el: XmlElement = { name, namespaceURI, attrs, children: [], parent };
     parent.children.push(el);
     if (!selfClose) {
       stack.push(el);

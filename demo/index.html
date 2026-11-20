@@ -4,23 +4,38 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Kanera DOCX to PDF</title>
-    <meta name="description" content="Convert Word documents to PDF in your browser with @happendev/docx2pdf, and compare the result page by page with Microsoft Word's own output." />
-    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <meta name="description" content="Convert Word documents to PDF in your browser with @kanera/docx2pdf, and compare the result page by page with Microsoft Word's own output." />
+    <link rel="icon" href="kanera-icon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#0D1520" />
     <link rel="stylesheet" href="style.css" />
     <script type="module" src="assets/main.js"></script>
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="./">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><use href="favicon.svg#mark" /></svg>
-        <span>Kanera <b>DOCX&nbsp;→&nbsp;PDF</b></span>
-      </a>
-      <p class="tagline">Word documents to PDF, in the browser, laid out the way Word lays them out.</p>
-      <a class="gh" href="https://github.com/happendev/kanera-docx">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-        GitHub
-      </a>
+      <div class="nav-inner">
+        <a class="brand" href="https://www.kanera.app/" aria-label="Kanera">
+          <img src="kanera-logo.svg" alt="Kanera" width="128" height="30" />
+        </a>
+        <span class="product-badge">DOCX&nbsp;→&nbsp;PDF</span>
+        <nav class="nav-links" aria-label="Links">
+          <a class="nav-link" href="https://www.kanera.app/">Kanera ↗</a>
+          <a class="nav-link gh" aria-label="GitHub" href="https://github.com/happendev/kanera-docx">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            <span class="label">GitHub</span>
+          </a>
+        </nav>
+      </div>
     </header>
+
+    <section class="hero">
+      <p class="eyebrow">Open source · v1.0 · Used in <a href="https://www.kanera.app/">Kanera</a></p>
+      <h1>Word documents to PDF, <em>laid out the way Word does.</em></h1>
+      <p class="lead">
+        The DOCX renderer behind <a href="https://www.kanera.app/">Kanera</a>, in TypeScript for Node and the browser:
+        no LibreOffice, no native binaries. Convert your own file or open a benchmark document and compare it page by
+        page with Microsoft Word's own output.
+      </p>
+    </section>
 
     <div class="layout">
       <aside class="sidebar">
@@ -70,12 +85,12 @@
       <main class="viewer">
         <div class="viewer-head">
           <div class="doc-title">
-            <h1 id="doc-name">Loading…</h1>
+            <h2 id="doc-name">Loading…</h2>
             <p id="doc-meta" class="muted small"></p>
           </div>
           <div class="actions">
-            <a id="download" class="button primary" aria-disabled="true" href="#">Download PDF</a>
-            <a id="open" class="button" aria-disabled="true" href="#" target="_blank" rel="noopener">Open</a>
+            <a id="download" class="btn btn-primary" aria-disabled="true" href="#">Download PDF</a>
+            <a id="open" class="btn btn-ghost" aria-disabled="true" href="#" target="_blank" rel="noopener">Open</a>
           </div>
         </div>
         <ul id="stats" class="stats" aria-label="Conversion statistics"></ul>
@@ -108,8 +123,8 @@
     </div>
 
     <footer class="site-footer">
-      <code>npm install github:happendev/kanera-docx</code>
-      <span>Apache 2.0 · Bundled fonts keep their own licenses · Sample documents and Word references from the vendored <a href="https://github.com/happendev/kanera-docx/tree/main/benchmarks/word">benchmark</a></span>
+      <span>After the first npm release, <code>npm install @kanera/docx2pdf</code></span>
+      <span>Built by <a href="https://www.kanera.app/">Kanera</a> · Apache 2.0 · Bundled fonts keep their own licenses · Sample documents and Word references from the vendored <a href="https://github.com/happendev/kanera-docx/tree/main/benchmarks/word">benchmark</a></span>
     </footer>
   </body>
 </html>

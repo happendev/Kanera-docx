@@ -1,7 +1,7 @@
 import { child, children, descendant, descendants, path, resolveAlternateContent, type XmlElement } from '../util/xml.js';
-import { parseChart } from './chart.js';
+import { parseChart, type ChartPointBudget } from './chart.js';
 import { parseGradient } from './gradient.js';
-import type { AnchorProps, Block, Color, Drawing, Fill, ImageRef, LineStyle, PositionSpec, TextBox } from './model.js';
+import type { AnchorProps, Block, Chart, Color, Drawing, Fill, ImageRef, LineStyle, PositionSpec, TextBox } from './model.js';
 import type { OpcPackage } from './package.js';
 import { themeColorValue, type Theme } from './theme.js';
 import { applyColorMods, emu, hexColor, measure, num } from './values.js';
@@ -13,6 +13,8 @@ export interface DrawingContext {
   colorMapping?: Record<string, string>;
   parseBlocks(container: XmlElement): Block[];
   images: Map<string, ImageRef>;
+  chartBudget: ChartPointBudget;
+  charts: Map<string, Chart | undefined>;
 }
 
 const PRESET_COLORS: Record<string, string> = { black: '000000', white: 'FFFFFF', red: 'FF0000', green: '008000', blue: '0000FF', yellow: 'FFFF00', gray: '808080' };
@@ -212,19 +214,19 @@ function applyGeometry(d: Drawing, spPr: XmlElement | undefined): void {
     for (const p of children(child(cust, 'a:pathLst'), 'a:path')) {
       const w = Number(p.attrs.w ?? 0) || Number(ext?.attrs.cx ?? 0) || 1;
       const h = Number(p.attrs.h ?? 0) || Number(ext?.attrs.cy ?? 0) || 1;
-      const sub: Array<{ op: 'M' | 'L' | 'C' | 'Z'; pts: number[] }> = [];
+      const segs: Array<{ op: 'M' | 'L' | 'C' | 'Z'; pts: number[] }> = [];
       const pts = (el: XmlElement) => children(el, 'a:pt').flatMap((pt) => [(Number(pt.attrs.x) || 0) / w, (Number(pt.attrs.y) || 0) / h]);
       for (const cmd of children(p)) {
-        if (cmd.name === 'a:moveTo') sub.push({ op: 'M', pts: pts(cmd) });
-        else if (cmd.name === 'a:lnTo') sub.push({ op: 'L', pts: pts(cmd) });
-        else if (cmd.name === 'a:cubicBezTo') sub.push({ op: 'C', pts: pts(cmd) });
+        if (cmd.name === 'a:moveTo') segs.push({ op: 'M', pts: pts(cmd) });
+        else if (cmd.name === 'a:lnTo') segs.push({ op: 'L', pts: pts(cmd) });
+        else if (cmd.name === 'a:cubicBezTo') segs.push({ op: 'C', pts: pts(cmd) });
         else if (cmd.name === 'a:quadBezTo') {
           const q = pts(cmd);
-          sub.push({ op: 'C', pts: [q[0], q[1], q[0], q[1], q[2], q[3]] });
-        } else if (cmd.name === 'a:close') sub.push({ op: 'Z', pts: [] });
+          segs.push({ op: 'C', pts: [q[0], q[1], q[0], q[1], q[2], q[3]] });
+        } else if (cmd.name === 'a:close') segs.push({ op: 'Z', pts: [] });
       }
-      if (p.attrs.fill === 'none') (sub as unknown as { noFill: boolean }).noFill = true;
-      d.path.push(sub);
+      // A shape can fill one subpath and only outline another (an open arc beside a closed body).
+      d.path.push({ fill: p.attrs.fill !== 'none', stroke: p.attrs.stroke !== '0' && p.attrs.stroke !== 'false', segs });
     }
   }
 }
@@ -395,10 +397,13 @@ export function parseDrawing(el: XmlElement, ctx: DrawingContext): Drawing | nul
   } else if (content.name === 'c:chart') {
     // Word keeps no picture of a chart, only its data: draw it from the chart part's cached values.
     const rel = ctx.pkg.rels(ctx.part).get(content.attrs['r:id'] ?? '');
-    const root = rel && !rel.external ? ctx.pkg.xml(rel.target) : undefined;
-    const space = root?.name === 'c:chartSpace' ? root : descendant(root, 'c:chartSpace');
-    const sub: DrawingContext = rel ? { ...ctx, part: rel.target } : ctx;
-    const chart = space ? parseChart(space, ctx.theme, (e) => parseColor(e, sub)) : undefined;
+    if (!rel || rel.external) return d;
+    if (!ctx.charts.has(rel.target)) {
+      const root = ctx.pkg.xml(rel.target);
+      const space = root?.name === 'c:chartSpace' ? root : descendant(root, 'c:chartSpace');
+      ctx.charts.set(rel.target, space && parseChart(space, ctx.theme, (e) => parseColor(e, ctx), ctx.chartBudget));
+    }
+    const chart = ctx.charts.get(rel.target);
     if (chart) {
       d.kind = 'shape';
       d.chart = chart;

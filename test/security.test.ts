@@ -1,7 +1,11 @@
 import { nodeCompression } from '../src/util/node-compression.js';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { encode } from 'jpeg-js';
 import { convertDocx } from '../src/node.js';
+import { ChartPointBudget, parseChart } from '../src/docx/chart.js';
+import { DEFAULT_THEME } from '../src/docx/theme.js';
+import { parseXml } from '../src/util/xml.js';
 import { parseDocx } from '../src/docx/parser.js';
 import { collectionSize, FontBudget, MAX_FONT_FACES, SfntFont } from '../src/fonts/sfnt.js';
 import { ImageBudget } from '../src/image/budget.js';
@@ -11,6 +15,24 @@ import { inlineImage, redPng } from './helpers/sample.js';
 import { pdfText } from './helpers/pdf.js';
 
 describe('conversion limits', () => {
+  it('validates chart cache lengths and charges sparse positions to the document budget', () => {
+    const budget = new ChartPointBudget();
+    const parse = (count: number, index: number) => {
+      const series = '<c:ser><c:val><c:numLit><c:ptCount val="' + count + '"/><c:pt idx="' + index + '"><c:v>1</c:v></c:pt></c:numLit></c:val></c:ser>';
+      const chart = parseXml('<c:chartSpace><c:chart><c:plotArea><c:barChart>' + series + '</c:barChart></c:plotArea></c:chart></c:chartSpace>');
+      return parseChart(chart, DEFAULT_THEME, () => undefined, budget);
+    };
+    expect(() => parse(-1, 0)).toThrow(/Invalid chart point/);
+    expect(() => parse(1, 1.5)).toThrow(/Invalid chart point/);
+    expect(() => parse(32769, 0)).toThrow(/Chart point limit/);
+    expect(() => parse(1, 32768)).toThrow(/Chart point limit/);
+    // Leave room for three slots across the remaining charts.
+    for (let i = 0; i < 7; i++) budget.reserve(32768);
+    budget.reserve(32765);
+    expect(parse(1, 2)?.plots[0].series[0].values).toEqual([null, null, 1]);
+    expect(() => parse(1, 0)).toThrow(/Chart point limit/);
+  });
+
   it('counts source image pixels once per part and resets the budget for each document', async () => {
     const media = { a: { name: 'a.png', data: redPng() }, b: { name: 'b.png', data: redPng() } };
     const doc = (ids: string[]) => makeDocx({ body: '<w:p>' + ids.map((id) => inlineImage(id, 8, 8)).join('') + '</w:p>', media });
@@ -19,6 +41,47 @@ describe('conversion limits', () => {
     await expect(convertDocx(doc(['a', 'b']), options)).rejects.toThrow(/pixel limit/);
     await expect(convertDocx(doc(['b']), options)).resolves.toHaveProperty('pageCount', 1);
     await expect(convertDocx(doc(['a']), { imageLimits: { maxImagePixels: 7 } })).rejects.toThrow(/pixel limit/);
+  });
+
+  it('embeds JPEGs beyond the pixel budget unchanged instead of decoding them', async () => {
+    const width = 64, height = 48;
+    const pixels = new Uint8Array(width * height * 4).map((_, i) => (i % 4 === 3 ? 255 : (i * 37) % 251));
+    const jpeg = encode({ width, height, data: pixels }, 100).data;
+    const budget = new ImageBudget({ maxImagePixels: width * height - 1 });
+    const image = await toPdfImage(jpeg, nodeCompression, budget);
+    expect(image).toMatchObject({ width, height, filter: 'DCTDecode' });
+    expect(Buffer.from(image!.data).equals(Buffer.from(jpeg))).toBe(true);
+    // Recompression still spends the budget when the image fits.
+    const fitting = new ImageBudget({ maxImagePixels: width * height, maxTotalPixels: width * height });
+    await toPdfImage(jpeg, nodeCompression, fitting);
+    expect(fitting.tryReserve(1, 1)).toBe(false);
+  });
+
+  it('charges JPEG pixels only when 8-bit table zero meets the automatic cutoff', async () => {
+    const jpeg = Buffer.from(encode({ width: 8, height: 8, data: Buffer.alloc(8 * 8 * 4, 85) }, 100).data);
+    const start = jpeg.indexOf(Buffer.from([0xff, 0xdb]));
+    const end = start + 2 + jpeg.readUInt16BE(start + 2);
+    const table = (sum: number) => [0, ...Array.from({ length: 64 }, (_, i) => Math.floor(sum / 64) + Number(i < sum % 64))];
+    const other = [1, ...Array(64).fill(1)];
+    const segment = (...tables: number[][]) => {
+      const payload = Buffer.from(tables.flat());
+      const header = Buffer.from([0xff, 0xdb, 0, 0]);
+      header.writeUInt16BE(payload.length + 2, 2);
+      return Buffer.concat([header, payload]);
+    };
+    for (const [replacement, selected] of [
+      [segment(other, table(750)), true],
+      [segment(table(751), other), false],
+      [segment(other), false],
+      [segment(table(750), [0x10, ...Array(128).fill(1)]), false],
+      [Buffer.concat([segment(table(750)), segment(table(751), other)]), false],
+    ] as const) {
+      const bytes = Buffer.concat([jpeg.subarray(0, start), replacement, jpeg.subarray(end)]);
+      const budget = new ImageBudget({ maxTotalPixels: 64 });
+      const image = await toPdfImage(bytes, nodeCompression, budget);
+      expect(budget.tryReserve(8, 8)).toBe(!selected);
+      if (!selected) expect(image?.data).toBe(bytes);
+    }
   });
 
   it('applies the raster budget to both GIF and BMP dimensions', async () => {

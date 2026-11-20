@@ -4,7 +4,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { encode } from 'jpeg-js';
+import { decode, encode } from 'jpeg-js';
 import { convertDocx as convertInBrowser } from '../src/browser.js';
 import { convertDocx as convertCore } from '../src/index.js';
 import { convertDocx, docxToPdf } from '../src/node.js';
@@ -31,6 +31,21 @@ describe('convertDocx (node)', () => {
     expect(automatic.length).toBeLessThan(original.length);
     expect(smaller.length).toBeLessThan(automatic.length);
     await expect(docxToPdf(docx, { imageQuality: 101 })).rejects.toThrow(/image quality/i);
+  });
+
+  it('preserves a coarsely quantized JPEG by default and honors explicit quality even when output grows', async () => {
+    const width = 16, height = 16;
+    const data = Uint8Array.from({ length: width * height * 4 }, (_, i) => i % 4 === 3 ? 255 : (i * 37) % 251);
+    const jpeg = encode({ width, height, data }, 15).data;
+    expect(jpeg.length).toBeLessThan(1024);
+    const pixels = decode(jpeg);
+    const doc = makeDocx({ body: `<w:p>${inlineImage('img', 16, 16)}</w:p>`, media: { img: { name: 'small.jpg', data: jpeg } } });
+    expect(Buffer.from(await docxToPdf(doc)).includes(jpeg)).toBe(true);
+    for (const quality of [80, 100]) {
+      const expected = encode(pixels, quality).data;
+      expect(expected.length).toBeGreaterThan(jpeg.length);
+      expect(Buffer.from(await docxToPdf(doc, { imageQuality: quality })).includes(expected)).toBe(true);
+    }
   });
 
   it('writes supported Word SVGs as reusable PDF forms and uses the preview for unsupported features', async () => {

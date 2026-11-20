@@ -1,152 +1,109 @@
 # Kanera DOCX to PDF
 
-`@happendev/docx2pdf` converts Word documents (`.docx`) to PDF, aiming to put every line, page break,
+[![Monthly npm downloads](https://img.shields.io/npm/dm/@kanera/docx2pdf)](https://www.npmjs.com/package/@kanera/docx2pdf)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![Browser demo on GitHub Pages](https://img.shields.io/badge/demo-GitHub%20Pages-2ea44f)](https://happendev.github.io/kanera-docx/)
+
+`@kanera/docx2pdf` converts Word documents (`.docx`) to PDF, aiming to put every line, page break,
 image and border where Word puts it. The TypeScript renderer uses Node’s built-in zlib for compression.
 The browser and runtime-neutral core use pako, bundled with the package. Conversion runs without
 LibreOffice, native add-ons or WebAssembly.
 
-The library is used in [Kanera](https://github.com/happendev/Kanera).
+Stable and in production use: it converts Word documents in [Kanera](https://github.com/happendev/Kanera).
 
-```ts
-import { docxToPdf } from '@happendev/docx2pdf';
+<!-- benchmark-summary:start -->
+### Benchmark at a glance
 
-const pdf = await docxToPdf('contract.docx'); // Uint8Array
-```
+208 DOCX documents · Last full run 2026-11-20 (UTC) · [Full comparison](#benchmark)
 
-**[Try the demo](https://happendev.github.io/kanera-docx/)**: convert your own `.docx` in the browser (nothing is
-uploaded), or open any of the benchmark documents and compare the result with Word's own output side by side or
-overlaid.
+| Converter | Visual match | Page counts matched | Fresh process | Reused process |
+| --- | ---: | ---: | ---: | ---: |
+| Kanera | **95.7%** | **205/208** | **92.3 ms** | **8.4 ms** |
+| LibreOffice | 85.0% | 199/208 | 774.8 ms | 57.6 ms |
+| EigenPal | 73.4% | 200/208 | 753.1 ms | 257.4 ms |
+| Syncfusion DocIO (.NET) | 56.9% | 195/208 | 532.7 ms | 54.7 ms |
+| office2pdf (Rust) | 52.4% | 195/208 | 316.0 ms | 106.6 ms |
+| Aspose.Words (.NET) | 51.4% | 195/208 | 981.5 ms | 56.7 ms |
+| rdocx (Rust) | 41.9% | 177/208 | 205.0 ms | 23.4 ms |
+| dxpdf (Rust) | 35.5% | 189/208 | 1004.4 ms | 964.5 ms |
 
-## How it gets close to Word
+Visual match measures how closely text and graphics line up with the reference pages. Conversion times are medians and include file I/O.
+<!-- benchmark-summary:end -->
 
-Matching Word means reproducing its layout rules, not only its formatting:
+## Quick start
 
-- **Fonts that measure like Office fonts.** When a document uses Calibri, Cambria, Arial, Times New
-  Roman, Courier New, Georgia, Segoe UI or Aptos and the font isn't available, the library
-  uses a bundled open font whose glyph widths measure the same (see [Fonts](#fonts)), so lines
-  wrap at the same words. Fonts embedded in the `.docx` are used first.
-- **Word's line model.** Line heights use the Windows (GDI) font metrics Word uses; "multiple" line
-  spacing adds its extra space below the text, and that space may hang into the bottom margin;
-  spacing before a paragraph is dropped at the top of a page only after a natural page break.
-  Superscripts and subscripts are sized in whole half-points as Word does and don't change the line
-  height. Spaces and tabs never make a line taller (a line of nothing else takes its paragraph
-  mark's height). A list bullet raises its line only by what its ascent exceeds the text's ascent
-  and line gap, never deeper, and a missing Symbol or Wingdings font keeps its own line metrics.
-  Automatic (HTML) paragraph spacing is dropped at the top of the document, a header, a cell or a
-  text box, and at the bottom of a cell.
-- **Word's line breaking.** Justified lines in Word 2013+ documents, a paragraph's last line
-  included, shrink their spaces by up to a quarter to keep one more word, as Word does, but only
-  when that changes the spaces less than half as much as stretching them without the word would
-  (fitted to about 3,500 line breaks in Word's PDFs); older documents only stretch, and
-  WordPerfect-style justification compresses the whole line slightly. Ordinary spaces hang past
-  the right margin, while en, em and other fixed-width spaces wrap like text.
-- **Word's pagination.** Widow/orphan control (on by default, as in Word), keep-with-next chains,
-  keep-lines-together, page-break-before, table rows that can't split, repeated header rows,
-  footnotes reserved at the page bottom, header and footer heights pushing the body down.
-- **Word's table geometry.** Border widths add to row heights, Word 2013+ vs. older table
-  indentation (a package without a settings part counts as older), vertically merged cells, exact
-  and minimum row heights, cell spacing. A floating object laid out in its cell positions from the
-  cell and makes the row tall enough to hold it. A nested table stays inside its cell's text area,
-  shrinking to fit, and the empty paragraph that closes a cell after it takes no room.
-- **Word's text wrap.** Text wraps around every floating object on the page, including one
-  positioned against the page or margin that belongs to a paragraph further down, and a first line
-  pushed aside by an object keeps its first-line indent from the object's edge.
-- **Word's East Asian layout.** A document grid snaps lines to its pitch and centres the text in
-  the grid lines it takes, and a character grid widens every character. With punctuation
-  compression on, full-width punctuation gives up part of its blank half to keep a character on an
-  overfull line. East Asian text sits a quarter em from Latin letters and digits (autospacing),
-  and justification widens that space first. A missing SimSun, MS Mincho, PMingLiU, Batang or
-  other common East Asian font keeps its own line height on the Noto fallback, and an empty theme
-  East Asian font takes the theme's font for the document's language.
+### Install
 
-Accuracy is measured against real documents: against PDFs Word exported from them, word by word,
-and against where Word last broke pages (`w:lastRenderedPageBreak`) and how many pages it rendered
-(`docProps/app.xml`). `pnpm corpus` runs the second comparison for a folder of `.docx` files (see
-[Development](#development)).
-
-## Benchmark
-
-The [benchmark](benchmarks/word/README.md) runs 208 cases:
-[30 pinned Hugging Face cases](benchmarks/word/fixtures.json) with Word for Mac PDFs and
-[178 vendored cases](benchmarks/word/upstream/fixtures.json) with Microsoft 365 Word page images
-and Word or LibreOffice PDFs.
-
-| Converter | Median cold time | Median warm time | Median cold peak RSS | Max cold peak RSS | Matched the reference page count | Accuracy (mean ink overlap) | Total PDF size |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `@happendev/docx2pdf` 0.1.0 | 84.2 ms | 9.0 ms | 79.6 MiB | 213.7 MiB | 206/208 | **95.6%** | 7.28 MiB |
-| EigenPal 2.39.0 | 713.1 ms | 236.1 ms | 279.1 MiB | 570.4 MiB | 200/208 | 73.4% | 9.28 MiB |
-| LibreOffice 26.8.3 | 733.1 ms | 47.2 ms | n/a | n/a | 199/208 | 85.0% | 24.06 MiB |
-| Aspose.Words for .NET 26.11.0 | 902.7 ms | 49.9 ms | 104.1 MiB | 154.6 MiB | 195/208 | 51.4% | 9.27 MiB |
-| Syncfusion DocIO 28.2.4 | 490.1 ms | 49.4 ms | 119.8 MiB | 974.0 MiB | 195/208 | 56.9% | 6.52 MiB |
-
-Accuracy by reference:
-
-| Cases | Reference | Ours | EigenPal | LibreOffice | Aspose | Syncfusion |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 150 classic | Microsoft 365 Word page images | **99.1%** | 74.0% | 91.2% | 51.0% | 58.4% |
-| 30 Hugging Face | Word for Mac PDFs | **93.4%** | 74.9% | 79.5% | 55.3% | 54.7% |
-| 20 issues | Microsoft 365 Word PDFs | **87.7%** | 71.1% | 53.7% | 49.8% | 51.9% |
-| 8 issues | LibreOffice PDFs | 58.6% | 62.9% | **68.1%** | 49.4% | 48.7% |
-
-Document by document, ours scores higher than EigenPal on 178 cases and lower on 9, higher than
-LibreOffice on 117 and lower on 14 (77 ties), higher than Aspose on 196 and lower on 6, and higher
-than Syncfusion on 201 and lower on 3.
-
-Cold timings include a fresh process launch and file I/O. Warm timings reuse one process per
-engine after an unmeasured conversion, with file I/O still included. GNU time records peak
-resident memory (RSS) for the cold runs. The JavaScript engines ran on Node 24, and licensed
-Aspose.Words and Syncfusion DocIO ran on .NET 10. EigenPal used best-effort mode. Kanera DOCX used
-the full font pack. PDF sizes sum the cold-run files for each converter.
-
-LibreOffice ran as a Flatpak on the host, launched from a container: its times include that
-launch, and GNU time couldn't see its memory. It also used the host's fonts, which include
-Microsoft's Arial, Aptos and Times New Roman, where the other converters draw stand-ins; Aspose and
-Syncfusion fell back to Liberation and DejaVu. In an earlier run where every converter used the
-same open fonts, LibreOffice and Syncfusion each scored 84.4% against our 93.9%. Eight of the issue
-references were made by LibreOffice, so they favour it.
-
-For fidelity, we rasterized each PDF at 96 DPI and compared corresponding pages. Ink overlap
-combines how much of the reference's ink the converter reproduced with how much of the converter's
-ink matched the reference, allowing a one-pixel shift. Unmatched pages score zero. We averaged page
-scores within each document, then gave each document equal weight. The metric measures placement
-and visible content, including missing images, and ignores colour differences. The [benchmark
-instructions](benchmarks/word/README.md) explain how to reproduce the results and generate the
-side-by-side screenshot gallery.
-
-## Install
-
-Install `@happendev/docx2pdf` from the GitHub repository with npm (installing from git with pnpm 11
-can hang):
+While the package is private, install it from GitHub with an account that has repository access.
+Use npm for this command because pnpm 11 can hang on the Git install.
 
 ```bash
 npm install github:happendev/kanera-docx
 ```
 
-Node 20 or later. In the browser, any engine with ES2022, `fetch` and `TextDecoder`.
+After the first public release, install it from npm.
 
-The package includes the full font pack. Node, the CLI and the browser load individual faces on
-demand.
+```bash
+npm install @kanera/docx2pdf
+```
 
-## Use
+Use Node.js 20 or later. Browser conversion requires ES2022, `fetch` and `TextDecoder`.
 
 ### Node
 
 ```ts
 import { writeFile } from 'node:fs/promises';
-import { docxToPdf } from '@happendev/docx2pdf'; // or '@happendev/docx2pdf/node'
+import { docxToPdf } from '@kanera/docx2pdf'; // or '@kanera/docx2pdf/node'
 
 const pdf = await docxToPdf('in.docx'); // a path, Uint8Array, Buffer or ArrayBuffer
 await writeFile('out.pdf', pdf);
 ```
 
-`convertDocx` returns the page count and warnings with the PDF, and takes the same options:
+### CLI
+
+Run the CLI from a project where the package is installed. This writes `in.pdf` next to `in.docx`.
+
+```bash
+npx --no-install docx2pdf in.docx
+```
+
+After the public release, you can also run it directly from npm.
+
+```bash
+npx @kanera/docx2pdf in.docx
+```
+
+Pass an output path or options as needed.
+
+```bash
+npx --no-install docx2pdf in.docx out.pdf --font BrandSans.ttf --system-fonts
+```
+
+### Page count and warnings
+
+Use `convertDocx` to get conversion warnings along with the PDF and page count.
+
+```ts
+import { convertDocx } from '@kanera/docx2pdf';
+
+const { pdf, pageCount, warnings } = await convertDocx('in.docx');
+```
+
+Tracked changes render as final text, with insertions shown and deletions hidden. The PDF omits
+Word comments.
+
+## Use
+
+### Node options
+
+`convertDocx` also accepts [options](#options) for fonts and PDF metadata.
 
 ```ts
 import { readFile } from 'node:fs/promises';
-import { convertDocx } from '@happendev/docx2pdf';
+import { convertDocx } from '@kanera/docx2pdf';
 
 const result = await convertDocx('in.docx', {
-  systemFonts: true, // also use fonts installed on this machine (default false)
+  systemFonts: true, // also use installed fonts (off by default, for reproducible output)
   fonts: [{ data: await readFile('BrandSans.ttf') }], // extra fonts, highest priority
   info: { title: 'Contract' }, // override PDF metadata
 });
@@ -155,24 +112,15 @@ result.pageCount;
 result.warnings; // e.g. 'Font "Proxima Nova" not available; using Liberation Sans'
 ```
 
-`systemFonts` is off by default so the output doesn't depend on which machine runs the
-conversion. Pass `true` to scan the usual font folders, or an array of folders to scan.
-
-The package is ES modules only. CommonJS code can `require()` it on Node 20.19+ and 22.12+; on older
-versions, use `await import('@happendev/docx2pdf')`.
-
-Fonts load from the package's `fonts/` folder, found next to its code. If you bundle your server
-(esbuild, webpack and the like), copy that folder into your build output and pass its path as
-`fontDir`.
+The package is ES modules only; CommonJS can `require()` it on Node 20.19+ and 22.12+, or use
+`await import()`. If you bundle your server, copy the package's `fonts/` folder into the build
+output and pass its path as `fontDir`.
 
 #### In a web server
 
-This server takes a `.docx` as the request body and responds with the PDF. It uses only Node's
-built-in `http` module; the same `convertDocx` call works in Express, Fastify or any other framework.
-
 ```ts
 import { createServer } from 'node:http';
-import { convertDocx } from '@happendev/docx2pdf';
+import { convertDocx } from '@kanera/docx2pdf';
 
 const MAX_UPLOAD = 20 * 1024 * 1024;
 
@@ -186,8 +134,7 @@ createServer(async (req, res) => {
     chunks.push(chunk);
   }
   try {
-    const { pdf, warnings } = await convertDocx(Buffer.concat(chunks));
-    if (warnings.length) console.warn(warnings);
+    const { pdf } = await convertDocx(Buffer.concat(chunks));
     res.writeHead(200, { 'content-type': 'application/pdf' }).end(pdf);
   } catch (err) {
     res.writeHead(422, { 'content-type': 'text/plain' }).end(`Could not convert: ${(err as Error).message}`);
@@ -195,63 +142,50 @@ createServer(async (req, res) => {
 }).listen(3000);
 ```
 
-```bash
-curl --data-binary @in.docx -o out.pdf http://localhost:3000/
-```
-
-Conversion is synchronous work on the event loop, so a large document holds up other requests while
-it converts. If the documents come from users, run each conversion in a separate process with a
-memory limit and a deadline; see [Converting untrusted documents](#converting-untrusted-documents).
+Conversion is synchronous, so a large document blocks other requests. For documents from users,
+see [Converting untrusted documents](#converting-untrusted-documents).
 
 ### Browser
 
-The [demo](https://happendev.github.io/kanera-docx/) is a working example of everything below
-([source](demo/)).
+Conversion runs in the browser. Try the [GitHub Pages demo](https://happendev.github.io/kanera-docx/)
+when the deployment is available, or run `pnpm demo:serve` from a checkout with dependencies installed.
+The demo can compare your PDF with Word's output for the included benchmark documents. [Demo source](demo/)
 
-**1. Serve the fonts.** The browser downloads font faces as a document needs them, so the package's
-`fonts/` folder has to be reachable over HTTP. With a bundler such as Vite or webpack, copy it into
-your static assets folder, for example from a `postinstall` script:
+For a bundled app that serves `public/` at the site root, copy the bundled fonts into that folder
+after installing the package.
 
-```json
-{
-  "scripts": {
-    "postinstall": "node -e \"require('fs').cpSync('node_modules/@happendev/docx2pdf/fonts', 'public/docx2pdf-fonts', { recursive: true })\""
-  }
-}
+```bash
+node -e "require('node:fs').cpSync('node_modules/@kanera/docx2pdf/fonts', 'public/docx2pdf-fonts', { recursive: true })"
 ```
 
-Then pass that location as `fontBaseUrl` (a relative URL resolves against the page). Without a
-bundler, when your server serves `node_modules/@happendev/docx2pdf` as-is, the default `fontBaseUrl`
-already points at its `fonts/` folder.
+Pass that directory's public URL as `fontBaseUrl` and supply a `File` from a file input or drop
+handler. The browser fetches individual font faces on demand.
 
-**2. Convert a file.** `docxToPdf` and `convertDocx` take a `File`, `Blob`, `Uint8Array` or
-`ArrayBuffer`.
-
+<!-- browser-conversion-example -->
 ```ts
-import { convertDocx } from '@happendev/docx2pdf'; // resolves to the browser build
+import { convertDocx } from '@kanera/docx2pdf'; // resolves to the browser build
 
-const input = document.querySelector<HTMLInputElement>('input[type=file]')!;
-input.addEventListener('change', async () => {
-  const file = input.files?.[0];
-  if (!file) return;
-  const { pdf, warnings } = await convertDocx(file, { fontBaseUrl: '/docx2pdf-fonts/' });
-  if (warnings.length) console.warn(warnings);
-  const url = URL.createObjectURL(new Blob([pdf], { type: 'application/pdf' }));
-  window.open(url); // or use it as the href of an <a download> or the src of an <iframe>
-});
+const { pdf } = await convertDocx(file, { fontBaseUrl: '/docx2pdf-fonts/' });
+const pdfBlob = new Blob([pdf], { type: 'application/pdf' });
 ```
 
-**3. Optional: convert in a Web Worker.** Conversion runs on the thread that calls it, so a long
-document freezes the page until it finishes. Calling it from a worker keeps the page responsive:
+If you serve the package as-is, the default `fontBaseUrl` resolves to its bundled `fonts/` directory.
+
+A plain Arial document downloads one face (about 400 KB); CJK text can fetch a Noto CJK face of
+over 20 MB. Pass `fetch` to add caching or auth, or `fontBaseUrl: false` to use only embedded and
+supplied fonts. For a smaller asset set, serve only the faces in `commonFontFiles` (exported from
+`@kanera/docx2pdf/browser`) plus `fonts/licenses/`, and pass `fontPack: 'common'`.
+
+Conversion runs on the calling thread. Use a Web Worker to keep the page responsive, and reuse the
+worker across conversions so downloaded font faces stay cached.
 
 ```ts
 // convert.worker.ts
-import { convertDocx } from '@happendev/docx2pdf';
+import { convertDocx } from '@kanera/docx2pdf';
 
 self.onmessage = async (e: MessageEvent<File>) => {
   try {
-    const { pdf, warnings } = await convertDocx(e.data, { fontBaseUrl: '/docx2pdf-fonts/' });
-    self.postMessage({ pdf, warnings });
+    self.postMessage(await convertDocx(e.data, { fontBaseUrl: '/docx2pdf-fonts/' }));
   } catch (err) {
     self.postMessage({ error: String(err) });
   }
@@ -263,45 +197,19 @@ self.onmessage = async (e: MessageEvent<File>) => {
 const worker = new Worker(new URL('./convert.worker.ts', import.meta.url), { type: 'module' });
 worker.onmessage = (e) => {
   if (e.data.error) return console.error(e.data.error);
-  const url = URL.createObjectURL(new Blob([e.data.pdf], { type: 'application/pdf' }));
-  window.open(url);
+  window.open(URL.createObjectURL(new Blob([e.data.pdf], { type: 'application/pdf' })));
 };
 worker.postMessage(file);
 ```
 
-In a worker, a relative `fontBaseUrl` resolves against the worker script's URL, so use a path that
-starts with `/` or a full URL. Downloaded faces stay cached for the worker's lifetime, so reuse one
-worker for several conversions.
-
-The browser fetches only the faces a document uses: a plain Arial document downloads Liberation Sans
-Regular alone (about 400 KB). Chinese, Japanese or Korean text that no smaller face covers fetches
-a Noto CJK face of over 20 MB. Pass `fetch` to add caching or auth. Set `fontBaseUrl: false` to use
-only embedded fonts and faces you supply through `fonts`.
-
-#### Common font pack in the browser
-
-For a smaller static asset set, copy only the faces listed in `commonFontFiles`, exported from
-`@happendev/docx2pdf/browser`, along with `fonts/licenses/`. Pass
-`{ fontPack: 'common', fontBaseUrl: '/assets/docx2pdf-common-fonts/' }`.
-You can supply additional faces through `fonts`. If no available face covers a character, the PDF
-shows a missing glyph and `convertDocx` reports it in `warnings`.
-
 ### Core (any runtime)
 
-`@happendev/docx2pdf/core` has no font loading of its own: give it every font through `fonts`.
+`@kanera/docx2pdf/core` loads no fonts itself; pass every font through `fonts`.
 
 ```ts
-import { convertDocx } from '@happendev/docx2pdf/core';
+import { convertDocx } from '@kanera/docx2pdf/core';
 
 const { pdf } = await convertDocx(bytes, { fonts: [{ data: regular }, { data: bold }] });
-```
-
-### CLI
-
-```bash
-docx2pdf report.docx               # writes report.pdf next to it
-docx2pdf report.docx out.pdf --font BrandSans.ttf --system-fonts
-docx2pdf report.docx out.pdf --image-quality 70
 ```
 
 ## Options
@@ -310,8 +218,8 @@ docx2pdf report.docx out.pdf --image-quality 70
 | --------------- | ------- | -------- | -------------------------------------------------------------------- |
 | `fonts`         | all     | `[]`     | Fonts to use (`{ data }` or `{ family, bold, italic, load }`). Win over bundled and system fonts. |
 | `archiveLimits` | all | 64 MiB per part, 256 MiB total | Maximum uncompressed bytes per ZIP part (`maxPartBytes`) and across distinct parts read (`maxTotalBytes`). Exceeding either limit stops conversion. |
-| `imageLimits` | all | 16,777,216 pixels per image, 67,108,864 total | Set `maxImagePixels` and `maxTotalPixels` to budget source raster pixels. Repeated placements of one image count once. |
-| `imageQuality` | all | automatic 80 | Encoder quality for eligible colour JPEGs. Set an integer from 1 to 100 or use `false` to disable lossy re-encoding. CLI: `--image-quality <1-100\|off>`. |
+| `imageLimits` | all | 16,777,216 pixels per image, 67,108,864 total | Set `maxImagePixels` and `maxTotalPixels` to budget source raster pixels. Repeated placements of one image count once. JPEGs are only decoded for optional recompression, so one that exceeds the budget is embedded unchanged. |
+| `imageQuality` | all | | Encoder quality for eligible colour JPEGs. Set an integer from 1 to 100 or use `false` to disable lossy re-encoding. CLI: `--image-quality <1-100\|off>`. |
 | `additionalLinkSchemes` | all | `[]` | PDF links support HTTP, HTTPS, mailto and internal bookmarks. Pass scheme names such as `['tel']` to enable additional URI actions. Text for other destinations is preserved without a link annotation. |
 | `embeddedFonts` | all     | `true`   | Use fonts embedded in the `.docx` (including obfuscated `.odttf`).   |
 | `info`          | all     | from doc | PDF title, author, subject, keywords, dates.                         |
@@ -327,9 +235,11 @@ Font priority goes from `fonts` to embedded fonts, system fonts, substitutes and
 fallbacks. A font passed in `fonts` under a family name replaces every other font of that name,
 whatever its own name table says.
 
-Automatic image quality uses a quality-80 JPEG only when it saves at least 10% and the decoded
-pixel differences pass a fidelity check. An explicit number uses that quality when the resulting
-stream is smaller. Quality is an encoder setting. Savings vary by image. PNG and supported TIFF
+With `imageQuality` omitted, eligible colour JPEGs are encoded at quality 80 when the 64 entries in their
+8-bit quantization table 0 sum to 750 or less. Other JPEGs keep their original stream,
+including those without that table. An explicit quality encodes every eligible JPEG once,
+even if the result is larger. Set `imageQuality: false` to preserve all original JPEG streams.
+PNG and supported TIFF
 use lossless PDF compression of their decoded pixels. TIFF is decoded directly into a PDF image
 stream. As with other conversions, existing decoder limits apply.
 
@@ -340,6 +250,9 @@ TIFF edge-tile padding counts toward the budget. Each conversion also allows up 
 1,048,576 character mappings, 128 MiB of embedded font references, 256 columns per table and 64
 columns per section. Set `embeddedFonts: false` to skip reading embedded font binaries while
 keeping the font names and substitution hints.
+
+Charts allow 32,768 slots per data cache and 262,144 across a conversion. Empty positions in
+sparse chart data count toward both limits.
 
 For a hosted converter, run each job in a separate process with an OS-enforced memory limit.
 Have the parent enforce a wall-clock deadline and terminate the child when it expires. Conversion
@@ -352,8 +265,7 @@ picture in the document.
 
 ## Fonts
 
-The full pack includes all common faces. The table shows which browser pack each face first
-becomes available in.
+The full pack includes every face below; the last column shows the smallest browser pack that has it.
 
 | Document font                            | Substitute                       | Same glyph widths | Browser pack |
 | ---------------------------------------- | -------------------------------- | ----------------- | ------------ |
@@ -382,59 +294,41 @@ becomes available in.
 | Roboto (Light, Medium)                    | Roboto                           | same font         | Full   |
 | Symbol, Wingdings 1–3, Webdings            | mapped to Unicode                | n/a               | Both   |
 
-"Same glyph widths" means the substitute is designed to match the original's advance widths for
-shared characters. Coverage, kerning and line metrics can still affect layout. Caladea, Gelasio,
-Liberation Sans Narrow and TeX Gyre Adventor use the original fonts' line metrics. A character the substitute lacks can
-come from a font with different widths. Morrow Sans, Morrow Sans Display, Morrow Sans Narrow and
-Morrow Sans Light match the line metrics of their Aptos counterparts. [Morrow Sans font log](https://github.com/open-metric-fonts/open-metric-fonts/blob/d5d565c5056491a20480674e9b1d95394188cfa8/fonts/morrow-sans/FONTLOG.txt)
+"Same glyph widths" means the substitute matches the original's advance widths for shared
+characters; kerning, coverage and line metrics can still differ. Caladea, Gelasio, Liberation Sans
+Narrow, TeX Gyre Adventor and the Morrow Sans family also match the originals' line metrics. More
+families, including optional ones such as Fidela for Constantia, are in the [substitution
+rules](src/fonts/substitutes.ts). An approximate substitute is reported in `warnings`; for the
+original glyphs, supply the original font.
 
-The [substitution rules](src/fonts/substitutes.ts) list more families, including optional compatible
-fonts such as Fidela for Constantia. Supply those through
-`fonts` or `systemFonts`. When the converter uses an approximate substitute, it reports the change
-in `warnings` because glyph shapes, line wrapping or spacing can differ. For the original glyphs,
-use an embeddable copy of the original font.
+- **Symbol fonts.** Symbol, Wingdings 1–3 and Webdings characters map to Unicode, falling back to an
+  older look-alike or a missing glyph (named in `warnings`). Pass the symbol font through `fonts`
+  for the original shapes.
+- **East Asian.** A missing font falls back by style, then region, then the text's language
+  (SimSun to Noto Serif CJK SC, MS Mincho to Noto Serif CJK JP). Kai faces fall back to a sans, as
+  in Word for Mac. The full pack includes Noto Sans CJK JP (20.7 MiB) and Noto Serif CJK SC
+  (23.0 MiB); add other regional Noto CJK fonts through `fonts` or `systemFonts`.
+- **Embedding.** TrueType fonts are subset, with a `ToUnicode` map so text can be copied and
+  searched. CFF fonts and fonts that forbid subsetting are embedded whole; fonts that forbid
+  embedding are skipped with a warning. Missing bold and italic are synthesised as Word does.
+- **Sizes.** The common browser pack is about 16 MiB and the full pack about 73 MiB.
 
-Characters in Symbol, Wingdings, Wingdings 2 and 3 and Webdings are mapped to the Unicode
-characters Unicode 7 encoded them as, and copy as those. When no available font has one, an older
-look-alike stands in (U+27A2 for Wingdings' ➢ arrowhead bullet); otherwise, and for the few codes
-with no Unicode equivalent, the symbol draws as a missing glyph and `warnings` names it. Pass the
-symbol font itself through `fonts` to draw the original shapes.
+The bundled Caladea is the 1.002 release, whose widths match Cambria (later releases changed
+them); it lacks Ș ș Ț ț, some combining accents and superscript four, which come from a fallback.
 
-East Asian text whose font is missing falls back by the font's style, then its region (SimSun to
-Noto Serif CJK SC, MS Mincho to Noto Serif CJK JP, Malgun Gothic to Noto Sans CJK KR), then by the
-text's East Asian language (`w:lang`). Style comes first because a Mincho or Song text reads closer in
-another region's serif than in its own region's sans. Kai (brush) faces fall back to a sans, as Word
-for Mac draws them. The full font pack provides Noto Sans CJK JP and Noto Serif CJK SC in all three
-runtimes. A serif stand-in keeps the sans's line height, so the glyph style never moves the layout.
-Add regional Noto CJK fonts through `fonts` or `systemFonts` for other glyph forms.
-
-TrueType fonts are embedded as subsets with compact glyph IDs. The PDF uses a `ToUnicode` map so
-text can be selected, searched and copied. CFF-based OpenType fonts and fonts that prohibit
-subsetting are embedded whole. Fonts that prohibit outline embedding are skipped with a warning.
-Missing bold or italic faces are synthesised the way Word does.
-
-The bundled Caladea is the original 1.002 release, whose widths match Cambria; later Caladea
-releases changed the widths. It lacks the Romanian comma-below letters (Ș ș Ț ț), some combining
-accents and superscript four, which come from a fallback font.
-
-The common browser font files total about 16 MiB and include the Aptos Narrow and Aptos Light
-substitutes. The full pack is about 73 MiB. A regular Arial document fetches only Liberation Sans
-Regular. The browser can fetch Noto Sans CJK JP (20.7 MiB, Japanese glyph forms) or Noto Serif CJK SC
-(23.0 MiB, Simplified Chinese forms) from the full pack for missing East Asian glyphs. Each is a
-static regular face generated at weight 400 from the upstream variable TrueType font
-([Sans](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/Variable/TTF/NotoSansCJKjp-VF.ttf),
-[Serif](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Serif/Variable/TTF/NotoSerifCJKsc-VF.ttf)).
-The Serif keeps only the glyphs and layout features the converter can reach.
-
-Font licenses are in [`fonts/licenses`](fonts/licenses). The full pack includes Liberation Sans
-Narrow from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception. Its corresponding source is in
-[`fonts/sources/liberation-sans-narrow`](fonts/sources/liberation-sans-narrow).
-Anvil, Gleis, Morrow Mono, Onward and Taper come from the same revision as Morrow Sans.
+**Licenses** are in [`fonts/licenses`](fonts/licenses). Sources:
 [Open Metric Fonts](https://github.com/open-metric-fonts/open-metric-fonts/tree/d5d565c5056491a20480674e9b1d95394188cfa8)
-
-Archivo Black and Comic Neue are from Google Fonts. DejaVu Sans Mono is from DejaVu 2.37. TeX Gyre
-Adventor is the unmodified 2.501 release from GUST under the GUST Font License.
-[Archivo Black](https://github.com/google/fonts/tree/94a7d81318e438525a5285e07ab72c050fdfeb44/ofl/archivoblack) · [Comic Neue](https://github.com/google/fonts/tree/9b83905ab4e7a6034297ff95598d37644fb7d378/ofl/comicneue)
+(Morrow Sans, Morrow Mono, Anvil, Gleis, Onward, Taper;
+[font log](https://github.com/open-metric-fonts/open-metric-fonts/blob/d5d565c5056491a20480674e9b1d95394188cfa8/fonts/morrow-sans/FONTLOG.txt)) ·
+[Archivo Black](https://github.com/google/fonts/tree/94a7d81318e438525a5285e07ab72c050fdfeb44/ofl/archivoblack) ·
+[Comic Neue](https://github.com/google/fonts/tree/9b83905ab4e7a6034297ff95598d37644fb7d378/ofl/comicneue) ·
+DejaVu Sans Mono 2.37 · TeX Gyre Adventor 2.501 (GUST Font License, unmodified) ·
+Noto CJK static weight-400 instances of the variable
+[Sans](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/Variable/TTF/NotoSansCJKjp-VF.ttf) and
+[Serif](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Serif/Variable/TTF/NotoSerifCJKsc-VF.ttf)
+fonts, the Serif reduced to the glyphs and features the converter uses. Liberation Sans Narrow is
+from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception; its source is in
+[`fonts/sources/liberation-sans-narrow`](fonts/sources/liberation-sans-narrow).
 
 ## What is supported
 
@@ -502,6 +396,61 @@ Adventor is the unmodified 2.501 release from GUST under the GUST Font License.
 - Pagination can differ from Word when a document's fonts are missing and have no metric-compatible
   substitute.
 
+## How it gets close to Word
+
+Matching Word means reproducing its layout rules, not only its formatting:
+
+- **Metric-compatible fonts.** Missing Office fonts (Calibri, Cambria, Arial, Times New Roman,
+  Aptos and others) are replaced by bundled open fonts with the same glyph widths, so lines wrap at
+  the same words. Fonts embedded in the `.docx` are used first. See [Fonts](#fonts).
+- **Line model.** Line heights use Word's Windows (GDI) font metrics, including its rules for
+  "multiple" spacing, superscripts, bullets, and spacing at page, cell and text-box tops.
+- **Line breaking.** Justified lines shrink or stretch their spaces the way Word 2013+ does, fitted
+  to about 3,500 line breaks in Word's PDFs; older documents follow the older rules.
+- **Pagination.** Widow/orphan control, keep-with-next and keep-lines-together, unsplittable rows,
+  repeated header rows, footnotes and header/footer heights.
+- **Tables and text wrap.** Word's border, indentation and row-height geometry, floating objects in
+  cells, nested tables, and text wrapping around every floating object on the page.
+- **East Asian layout.** Document and character grids, punctuation compression, autospacing between
+  East Asian and Latin text, and metric-preserving fallbacks for missing CJK fonts.
+- **Word for Mac PDFs.** Set `wordPlatform: 'mac'` or pass `--mac` on the CLI to snap text sizes,
+  baselines and line starts to Word for Mac’s 0.24 pt grid during PDF rendering.
+
+Accuracy is checked against PDFs Word exported, and against the page breaks and page counts Word
+recorded in each file (`pnpm corpus`, see [Development](#development)).
+
+## Benchmark
+
+The [benchmark](benchmarks/word/README.md) compares converters on 278 documents drawn from
+[100 Hugging Face cases](benchmarks/word/fixtures.json) with Word for Mac PDFs and
+[178 vendored cases](benchmarks/word/upstream/fixtures.json) with Microsoft 365 Word and LibreOffice references.
+
+<!-- benchmark-results:start -->
+**Last full benchmark run** 2026-11-20 (UTC), 208 documents.
+
+| Converter | Mean ink overlap | Matching page count | Failed conversions | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Total PDF size |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| @kanera/docx2pdf 0.1.0 | **95.7%** | **205/208** | **0/208** | **92.3 ms** | **8.4 ms** | **41.5 ms** | **74.7** | 7.31 MiB |
+| LibreOffice 26.8.3.1 | 85.0% | 199/208 | **0/208** | 774.8 ms | 57.6 ms | 121.5 ms | 12.0 | 24.06 MiB |
+| EigenPal 2.39.0 | 73.4% | 200/208 | **0/208** | 753.1 ms | 257.4 ms | 334.9 ms | 3.9 | 9.28 MiB |
+| Syncfusion DocIO (.NET) 28.2.4.0 | 56.9% | 195/208 | **0/208** | 532.7 ms | 54.7 ms | 1230.2 ms | 2.8 | **6.52 MiB** |
+| office2pdf (Rust) 0.11.0 | 52.4% | 195/208 | **0/208** | 316.0 ms | 106.6 ms | 164.3 ms | 9.0 | 12.73 MiB |
+| Aspose.Words (.NET) 26.11.0.0 | 51.4% | 195/208 | **0/208** | 981.5 ms | 56.7 ms | 183.5 ms | 13.0 | 9.27 MiB |
+| rdocx (Rust) 0.17.0 | 41.9% | 177/208 | 24/208 | 205.0 ms | 23.4 ms | 97.6 ms | 28.1 | 8.69 MiB |
+| dxpdf (Rust) 0.8.1 | 35.5% | 189/208 | 4/208 | 1004.4 ms | 964.5 ms | 1148.4 ms | 1.0 | 7.98 MiB |
+
+The smallest total PDF size is determined among converters that completed every document.
+<!-- benchmark-results:end -->
+
+Accuracy is measured as mean ink overlap. The benchmark compares pages at 96 DPI, allows a
+one-pixel shift, and gives each document equal weight. Missing pages and failed conversions score
+zero. See the [benchmark README](benchmarks/word/README.md) for the breakdown by reference source,
+measurement details, and reproduction steps.
+
+**Full corpus.** Across all 3,103 documents (2,925 Hugging Face, 178 vendored; 13,426 reference
+pages), ours scores **85.2%** and matches the page count on 2,962. See the [full corpus accuracy
+check](benchmarks/word/README.md#full-corpus-accuracy).
+
 ## Development
 
 ```bash
@@ -519,8 +468,10 @@ pnpm demo:serve    # serve it on http://localhost:8000 and rebuild on change
 `list.txt` holds one `.docx` path per line (relative to `--root`). Set `BREAKS=1` to print where
 each of Word's recorded page breaks landed. Keep private documents out of this repository.
 
-Run the [full corpus accuracy check](benchmarks/word/README.md#full-corpus-accuracy) to measure ink
-overlap and compare changes between runs across 2,925 Hugging Face cases and 178 vendored cases.
+To prepare an npm release, run `pnpm typecheck`, `pnpm test`, and `npm pack --dry-run`.
+Remove `"private": true` from `package.json` when ready to publish. The manifest sets public
+access for `@kanera/docx2pdf`, and npm builds the package during `prepare` when packing or
+publishing.
 
 Code map: `src/docx` reads the package into a document model (styles, numbering, drawing),
 `src/fonts` parses, substitutes and subsets fonts, `src/layout` breaks lines and paginates into

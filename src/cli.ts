@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { readFile, writeFile } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
 import { convertDocx } from './node.js';
 import type { FontSource } from './core.js';
@@ -10,7 +11,7 @@ Options:
   --font <file>      Use this TTF/OTF/TTC font (repeatable)
   --system-fonts     Also use fonts installed on this machine
   --mac              Match Word for Mac's PDFs (text on a 0.24pt grid)
-  --image-quality <1-100|off>  JPEG quality (default: automatic 80)
+  --image-quality <1-100|off>  JPEG quality (default: automatic selection at quality 80)
   --quiet            Do not print warnings
   -h, --help         Show this help`;
 
@@ -50,8 +51,24 @@ async function main(argv: string[]): Promise<number> {
   }
   const input = files[0];
   const output = files[1] ?? join(dirname(input), basename(input, extname(input)) + '.pdf');
-  const result = await convertDocx(input, { fonts, systemFonts, imageQuality, wordPlatform: mac ? 'mac' : 'windows' });
-  await writeFile(output, result.pdf);
+  const source = await open(input, 'r');
+  let result;
+  try {
+    const sourceStat = await source.stat({ bigint: true });
+    result = await convertDocx(await source.readFile(), { fonts, systemFonts, imageQuality, wordPlatform: mac ? 'mac' : 'windows' });
+    // Compare the open files before truncating, including symlinks and hard links.
+    const target = await open(output, constants.O_WRONLY | constants.O_CREAT);
+    try {
+      const targetStat = await target.stat({ bigint: true });
+      if (sourceStat.dev === targetStat.dev && sourceStat.ino === targetStat.ino) throw new Error('Input and output refer to the same file');
+      await target.truncate();
+      await target.writeFile(result.pdf);
+    } finally {
+      await target.close();
+    }
+  } finally {
+    await source.close();
+  }
   if (!quiet) for (const w of result.warnings) console.error(`warning: ${w}`);
   console.log(`${output}: ${result.pageCount} page${result.pageCount === 1 ? '' : 's'}`);
   return 0;

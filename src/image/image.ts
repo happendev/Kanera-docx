@@ -94,6 +94,10 @@ function rgbaToPdf(width: number, height: number, rgba: Uint8Array, compression:
     alpha[i] = a;
     if (a !== 255) hasAlpha = true;
   }
+  return rgbToPdf(width, height, rgb, hasAlpha ? alpha : undefined, compression);
+}
+
+function rgbToPdf(width: number, height: number, rgb: Uint8Array, alpha: Uint8Array | undefined, compression: Compression): PdfImage {
   const plain = compression.deflateZlib(rgb);
   // Smooth images and scans often compress much better as differences between pixels.
   // Compare against the raw stream since a predictor can increase the size of some images.
@@ -108,7 +112,7 @@ function rgbaToPdf(width: number, height: number, rgba: Uint8Array, compression:
     filter: 'FlateDecode',
     data: usePredictor ? predicted : plain,
     decodeParms: usePredictor ? decodeParms : undefined,
-    smask: hasAlpha ? compression.deflateZlib(alpha) : undefined,
+    smask: alpha ? compression.deflateZlib(alpha) : undefined,
   };
 }
 
@@ -234,62 +238,38 @@ async function pngToPdf(d: Uint8Array, compression: Compression, budget: ImageBu
       decodeParms: `<< /Predictor 15 /Colors ${channels} /BitsPerComponent ${bitDepth} /Columns ${width} >>`,
     };
   }
-  if (!interlace && width * height > MAX_DECODED_PIXELS) {
-    const small = await decodePngReduced(info, compression);
-    return rgbaToPdf(small.width, small.height, small.data, compression);
-  }
-  const rgba = decodePngRgba(info, compression);
+  if (!interlace) return decodePngRows(info, compression);
+  const rgba = decodeAdam7(info, compression);
   return rgbaToPdf(width, height, rgba, compression);
 }
 
-/** Larger pictures are reduced while decoding, to keep memory and file size bounded. */
-const MAX_DECODED_PIXELS = 1 << 23;
-
-/**
- * Decode a non-interlaced PNG row by row, averaging k×k blocks (weighted by alpha) so the result
- * stays within MAX_DECODED_PIXELS; the full image is never held in memory.
- */
-async function decodePngReduced(info: PngInfo, compression: Compression): Promise<{ width: number; height: number; data: Uint8Array }> {
+/** Inflate one row at a time into the PDF colour and alpha planes at source resolution. */
+async function decodePngRows(info: PngInfo, compression: Compression): Promise<PdfImage> {
   const { width, height, bitDepth, colorType, palette, trns } = info;
   const channels = colorType === 2 ? 3 : colorType === 0 ? 1 : colorType === 3 ? 1 : colorType === 4 ? 2 : 4;
   const bitsPP = channels * bitDepth;
   const bpp = Math.max(1, bitsPP >> 3);
   const stride = Math.ceil((width * bitsPP) / 8);
-  const k = Math.ceil(Math.sqrt((width * height) / MAX_DECODED_PIXELS));
-  const ow = Math.ceil(width / k);
-  const oh = Math.ceil(height / k);
-  const out = new Uint8Array(ow * oh * 4);
-  const sums = new Float64Array(ow * 5);
-  const rowRgba = new Uint8Array(width * 4);
+  const rgb = new Uint8Array(width * height * 3);
+  const alpha = new Uint8Array(width * height);
+  let hasAlpha = false;
+  const pixel = new Uint8Array(4);
   let line = new Uint8Array(stride);
   let prev = new Uint8Array(stride);
   let filter = -1;
   let fill = 0;
   let y = 0;
-  const flushBand = (oy: number) => {
-    for (let i = 0; i < ow; i++) {
-      const s = i * 5;
-      const n = sums[s + 4];
-      const a = sums[s + 3];
-      const o = (oy * ow + i) * 4;
-      if (a > 0) for (let c = 0; c < 3; c++) out[o + c] = Math.round(sums[s + c] / a);
-      out[o + 3] = n > 0 ? Math.round(a / n) : 0;
-    }
-    sums.fill(0);
-  };
   const finishRow = () => {
     unfilter(filter, line, prev, bpp);
-    for (let x = 0; x < width; x++) writePixel(rowRgba, x * 4, line, x, bitDepth, colorType, palette, trns);
     for (let x = 0; x < width; x++) {
-      const s = Math.floor(x / k) * 5;
-      const a = rowRgba[x * 4 + 3];
-      sums[s] += rowRgba[x * 4] * a;
-      sums[s + 1] += rowRgba[x * 4 + 1] * a;
-      sums[s + 2] += rowRgba[x * 4 + 2] * a;
-      sums[s + 3] += a;
-      sums[s + 4]++;
+      const i = y * width + x;
+      writePixel(pixel, 0, line, x, bitDepth, colorType, palette, trns);
+      rgb[3 * i] = pixel[0];
+      rgb[3 * i + 1] = pixel[1];
+      rgb[3 * i + 2] = pixel[2];
+      alpha[i] = pixel[3];
+      if (alpha[i] !== 255) hasAlpha = true;
     }
-    if (y % k === k - 1 || y === height - 1) flushBand(Math.floor(y / k));
     [prev, line] = [line, prev];
     y++;
     filter = -1;
@@ -313,7 +293,7 @@ async function decodePngReduced(info: PngInfo, compression: Compression): Promis
     },
   );
   if (y !== height) throw new Error('PNG: truncated scanlines');
-  return { width: ow, height: oh, data: out };
+  return rgbToPdf(width, height, rgb, hasAlpha ? alpha : undefined, compression);
 }
 
 const ADAM7 = [
@@ -326,16 +306,15 @@ const ADAM7 = [
   [0, 1, 1, 2],
 ];
 
-function decodePngRgba(info: PngInfo, compression: Compression): Uint8Array {
-  const { width, height, bitDepth, colorType, interlace, palette, trns } = info;
+function decodeAdam7(info: PngInfo, compression: Compression): Uint8Array {
+  const { width, height, bitDepth, colorType, palette, trns } = info;
   const channels = colorType === 2 ? 3 : colorType === 0 ? 1 : colorType === 3 ? 1 : colorType === 4 ? 2 : 4;
   const bitsPP = channels * bitDepth;
   const bpp = Math.max(1, bitsPP >> 3);
   let pos = 0;
 
-  const passes = interlace ? ADAM7 : [[0, 0, 1, 1]];
   let expected = 0;
-  for (const [x0, y0, dx, dy] of passes) {
+  for (const [x0, y0, dx, dy] of ADAM7) {
     const pw = Math.ceil((width - x0) / dx);
     const ph = Math.ceil((height - y0) / dy);
     if (pw > 0 && ph > 0) expected += (1 + Math.ceil(pw * bitsPP / 8)) * ph;
@@ -343,7 +322,7 @@ function decodePngRgba(info: PngInfo, compression: Compression): Uint8Array {
   const raw = compression.inflateZlib(info.idat, expected);
   if (raw.length !== expected) throw new Error('PNG: truncated scanlines');
   const out = new Uint8Array(width * height * 4);
-  for (const [x0, y0, dx, dy] of passes) {
+  for (const [x0, y0, dx, dy] of ADAM7) {
     const pw = Math.ceil((width - x0) / dx);
     const ph = Math.ceil((height - y0) / dy);
     if (pw <= 0 || ph <= 0) continue;
@@ -483,13 +462,36 @@ interface JpegInfo {
   components: number;
   adobeTransform: number | null;
   canReencode: boolean;
+  autoReencode: boolean;
 }
 
-function jpegInfo(d: Uint8Array): JpegInfo | null {
+// A DQT segment can define several tables. Later definitions replace earlier ones.
+function selectJpegFromQuantizationTables(d: Uint8Array, start: number, end: number, selected: boolean): boolean {
+  let pos = start;
+  while (pos < end) {
+    const spec = d[pos++];
+    const precision = spec >> 4;
+    const next = pos + (precision === 0 ? 64 : 128);
+    if (precision > 1 || (spec & 15) > 3 || next > end) return false;
+    if ((spec & 15) === 0) {
+      selected = false;
+      if (precision === 0) {
+        let sum = 0;
+        for (let i = pos; i < next; i++) sum += d[i];
+        selected = sum <= 750;
+      }
+    }
+    pos = next;
+  }
+  return selected;
+}
+
+function jpegInfo(d: Uint8Array, checkQuantization = false): JpegInfo | null {
   let p = 2;
   let adobe: number | null = null;
   let hasColorProfile = false;
-  let frame: Omit<JpegInfo, 'adobeTransform' | 'canReencode'> | undefined;
+  let autoReencode = false;
+  let frame: Pick<JpegInfo, 'width' | 'height' | 'components'> | undefined;
   let supportedFrame = false;
   while (p + 4 <= d.length) {
     if (d[p] !== 0xff) {
@@ -512,6 +514,7 @@ function jpegInfo(d: Uint8Array): JpegInfo | null {
     }
     if (marker === 0xe2 && len >= 14 && new TextDecoder().decode(d.subarray(p + 4, p + 16)) === 'ICC_PROFILE\0')
       hasColorProfile = true;
+    if (checkQuantization && marker === 0xdb) autoReencode = selectJpegFromQuantizationTables(d, p + 4, p + 2 + len, autoReencode);
     const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
     if (isSof) {
       if (len < 8 || len < 8 + 3 * d[p + 9]) return null;
@@ -525,18 +528,20 @@ function jpegInfo(d: Uint8Array): JpegInfo | null {
     if (marker === 0xda) break;
     p += 2 + len;
   }
-  return frame ? { ...frame, adobeTransform: adobe, canReencode: supportedFrame && frame.components === 3 && !hasColorProfile } : null;
+  return frame ? { ...frame, adobeTransform: adobe, autoReencode, canReencode: supportedFrame && frame.components === 3 && !hasColorProfile } : null;
 }
 
 async function jpegToPdf(d: Uint8Array, budget: ImageBudget, quality?: number | false): Promise<PdfImage | null> {
-  const info = jpegInfo(d);
+  const info = jpegInfo(d, quality === undefined);
   if (!info) return null;
-  budget.reserve(info.width, info.height);
   const colorSpace = info.components === 1 ? '/DeviceGray' : info.components === 4 ? '/DeviceCMYK' : '/DeviceRGB';
   let data = d;
-  if (quality !== false && info.canReencode && (quality !== undefined || d.length > 1024)) {
+  // The original stream passes through without decoding, so only the optional recompression
+  // spends the pixel budget. An image too large to decode within it is embedded unchanged.
+  if (quality !== false && info.canReencode && (quality !== undefined || info.autoReencode)
+    && budget.tryReserve(info.width, info.height)) {
     try {
-      data = (await smallerJpeg(d, info.width, info.height, quality)) ?? d;
+      data = await reencodeJpeg(d, info.width, info.height, quality ?? 80);
     } catch {
       // The PDF reader can still handle JPEGs the optional recompressor cannot decode.
     }
@@ -553,7 +558,7 @@ async function jpegToPdf(d: Uint8Array, budget: ImageBudget, quality?: number | 
   };
 }
 
-async function smallerJpeg(data: Uint8Array, width: number, height: number, quality?: number): Promise<Uint8Array | undefined> {
+async function reencodeJpeg(data: Uint8Array, width: number, height: number, quality: number): Promise<Uint8Array> {
   const { encode, decode } = await import('./jpeg-codec.js');
   const decodeOptions = {
     useTArray: true as const,
@@ -562,21 +567,8 @@ async function smallerJpeg(data: Uint8Array, width: number, height: number, qual
     maxMemoryUsageInMB: 256,
   };
   const pixels = decode(data, decodeOptions);
-  if (pixels.width !== width || pixels.height !== height) return undefined;
-  const jpeg = encode(pixels, quality ?? 80).data;
-  if (quality !== undefined) return jpeg.length < data.length ? jpeg : undefined;
-  if (jpeg.length > data.length * 0.9) return undefined;
-  const { data: candidate } = decode(jpeg, decodeOptions);
-  // Guard the default against visible changes even when re-encoding yields a much smaller stream.
-  let squaredError = 0;
-  for (let i = 0; i < candidate.length; i += 4) {
-    for (let c = 0; c < 3; c++) {
-      const error = candidate[i + c] - pixels.data[i + c];
-      if (Math.abs(error) > 32) return undefined;
-      squaredError += error * error;
-    }
-  }
-  return squaredError <= width * height * 3 * 9 ? jpeg : undefined;
+  if (pixels.width !== width || pixels.height !== height) return data;
+  return encode(pixels, quality).data;
 }
 
 // ---------------------------------------------------------------------------------------------

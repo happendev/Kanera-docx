@@ -2,8 +2,16 @@ import type { AnchorProps, Block, Border, Drawing, FrameProps, Paragraph, ParaPr
 import { ParagraphLayout, type Line, type ParagraphEnv } from './paragraph.js';
 import { translateOps, type DrawOp } from './types.js';
 
+/** Start of an unconsumed line or nested table row in the original cell. */
+export interface CellCursor {
+  block: number;
+  line?: ReturnType<ParagraphLayout['snapshot']>;
+  row?: number;
+}
+
 /** A horizontal slice of laid-out content inside a box; pagination may split between items. */
 export interface BoxItem {
+  cursor?: CellCursor;
   y: number;
   height: number;
   ops: DrawOp[];
@@ -378,7 +386,7 @@ export type BoxWrap = (d: Drawing, y: number) => Exclusion | null;
  * Lay out blocks in a box. With `wrap`, text flows around the box's own floating objects; `cell`
  * marks a table cell's content.
  */
-export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: { wrap?: BoxWrap; cell?: boolean } = {}): BoxResult {
+export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: { wrap?: BoxWrap; cell?: boolean; trackCursor?: boolean; start?: CellCursor } = {}): BoxResult {
   const wrap = opts.wrap;
   const items: BoxItem[] = [];
   const exclusions: Exclusion[] = [];
@@ -400,7 +408,7 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
     }
     pendingFrame = null;
   };
-  for (let bi = 0; bi < blocks.length; bi++) {
+  for (let bi = opts.start?.block ?? 0; bi < blocks.length; bi++) {
     const block = blocks[bi];
     if (block.type === 'paragraph' && !opts.cell && isBoxFrame(block)) {
       let end = bi + 1;
@@ -420,10 +428,14 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
       inFlow = true;
       const frame = paraFrame(prevPara, block, next);
       const layout = new ParagraphLayout(block, env);
+      const resume = bi === opts.start?.block ? opts.start.line : undefined;
+      if (resume) layout.restore(resume);
+      const continuing = !!resume && !resume.firstLine;
       const deco = hasDecorations(block.props);
       const lines: Line[] = [];
       let line: Line | null;
-      y += frame.topExtra;
+      if (continuing) y = 0;
+      else y += frame.topExtra;
       // Floats are anchored to the paragraph, so they are positioned from its top.
       const paraY = y;
       placeFrame(paraY);
@@ -438,7 +450,7 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
       }
       let estimate = layout.markRun.ascent + layout.markRun.descent;
       for (;;) {
-        const snap = exclusions.length ? layout.snapshot() : null;
+        const snap = exclusions.length || opts.trackCursor ? layout.snapshot() : null;
         line = layoutNextLine(layout, width);
         if (!line) break;
         // Lines with text flow around the objects; Word leaves an empty line where it is (a logo
@@ -455,7 +467,8 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
         estimate = line.height;
         const ops = layout.renderLine(line, 0, y);
         const item: BoxItem = { y, height: line.height, ops, notes: line.notes.length ? line.notes : undefined };
-        if (lines.length === 0) for (const f of layout.floatDrawings) ops.push({ kind: 'float', drawing: f, x: 0, y: paraY, areaWidth: width });
+        if (opts.trackCursor && snap) item.cursor = { block: bi, line: snap };
+        if (!continuing && lines.length === 0) for (const f of layout.floatDrawings) ops.push({ kind: 'float', drawing: f, x: 0, y: paraY, areaWidth: width });
         lines.push(line);
         items.push(item);
         y += line.height;
@@ -472,7 +485,7 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
         const nextGap = frame.groupedNext && next ? gapBetween(block, next) : { after: 0, before: 0 };
         for (let k = first; k < items.length; k++) {
           const it = items[k];
-          const isFirst = k === first;
+          const isFirst = !continuing && k === first;
           const isLast = k === items.length - 1;
           const top = isFirst ? it.y - frame.topExtra : it.y;
           const bottom = isLast ? it.y + it.height + frame.bottomExtra + nextGap.after + nextGap.before + shadedSpaceAfter(block, frame, next) : it.y + it.height;
@@ -487,7 +500,7 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
       if (prevPara) y += spaceAboveTable(prevPara, block);
       placeFrame(y);
       inFlow = true;
-      const t = layoutTableInBox(block, width, env, y, !!opts.cell);
+      const t = layoutTableInBox(block, width, env, y, !!opts.cell, opts.trackCursor ? bi : undefined, bi === opts.start?.block ? opts.start.row : undefined);
       items.push(...t.items);
       y = t.bottom;
       prevPara = null;
@@ -764,7 +777,7 @@ function gridContradicted(table: Table): boolean {
   });
 }
 
-export function measureTable(table: Table, avail: number, env: BoxEnv, nested = false): TableLayout {
+export function measureTable(table: Table, avail: number, env: BoxEnv, nested = false, starts?: Map<TableCell, CellCursor>): TableLayout {
   // Word snaps lines in table cells to the document grid only when the document asks it to.
   const cellEnv = env.gridPitch && !env.settings.adjustLineHeightInTable ? { ...env, gridPitch: undefined } : env;
   let grid = gridWidths(table, avail);
@@ -845,7 +858,7 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
         const exact = row.heightRule === 'exact' && row.height > 0;
         length = Math.max(1, exact ? row.height - cell.margins.top - cell.margins.bottom : Math.min(MAX_COLUMN, cellContentWidths({ ...cell, content }, cellEnv).hi));
       }
-      let box = empty ? { height: 0, items: [] } : layoutBlocks(content, dir ? length : inner, cellEnv, { cell: true });
+      let box = empty ? { height: 0, items: [] } : layoutBlocks(content, dir ? length : inner, cellEnv, { cell: true, trackCursor: !!starts, start: starts?.get(cell) });
       const floats = dir ? 0 : inCellFloatsBottom(box, cell.margins.top);
       if (floats > box.height) box = { ...box, height: floats };
       cells.push({ cell, col, x: cx, width: cw, box, rowSpan: 1, turned: dir ? { dir, length } : undefined });
@@ -1103,12 +1116,12 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
 }
 
 /** Tables inside boxes: one item per group of rows tied together by vertical merges. */
-function layoutTableInBox(table: Table, width: number, env: BoxEnv, y0: number, nested: boolean): { items: BoxItem[]; bottom: number } {
+function layoutTableInBox(table: Table, width: number, env: BoxEnv, y0: number, nested: boolean, block?: number, firstRow = 0): { items: BoxItem[]; bottom: number } {
   const tl = measureTable(table, width, env, nested);
   const items: BoxItem[] = [];
   const merge: MergeProgress = new Map();
   let y = y0;
-  let r = 0;
+  let r = firstRow;
   while (r < tl.rows.length) {
     let end = r + 1;
     for (let k = r; k < end; k++) for (const c of tl.rows[k].cells) if (c.rowSpan > 1) end = Math.max(end, k + c.rowSpan);
@@ -1119,7 +1132,7 @@ function layoutTableInBox(table: Table, width: number, env: BoxEnv, y0: number, 
       gy += tl.rows[k].height;
     }
     const seg = renderSegment(tl, pieces, 0, merge);
-    items.push({ y, height: gy - y, ops: seg.ops, notes: seg.notes.length ? seg.notes : undefined });
+    items.push({ cursor: block === undefined ? undefined : { block, row: r }, y, height: gy - y, ops: seg.ops, notes: seg.notes.length ? seg.notes : undefined });
     y = gy;
     r = end;
   }

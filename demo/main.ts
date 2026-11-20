@@ -1,15 +1,7 @@
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
 import type { ConvertRequest, ConvertResponse } from './convert.worker.js';
-
-interface Sample {
-  id: string;
-  title: string;
-  suite: 'classic' | 'issue';
-  featured: boolean;
-  docx: string;
-  reference: { kind: 'pdf' | 'png'; app: string; files: string[] };
-}
+import { parseSamples, type Sample } from './samples.js';
 
 type View = 'pages' | 'side' | 'overlay';
 
@@ -144,7 +136,7 @@ async function loadSample(id: string) {
   if (!res.ok) return setStatus(`Couldn't download the sample (HTTP ${res.status}).`, 'error');
   current = { name: sample.docx.slice(sample.docx.lastIndexOf('/') + 1), bytes: await res.arrayBuffer(), sample };
   renderSampleList();
-  if (matchMedia('(max-width: 860px)').matches && samplesReady) document.querySelector('.viewer')?.scrollIntoView({ behavior: 'smooth' });
+  if (matchMedia('(max-width: 900px)').matches && samplesReady) document.querySelector('.viewer')?.scrollIntoView({ behavior: 'smooth' });
   await run();
 }
 
@@ -426,13 +418,19 @@ window.addEventListener('hashchange', routeFromHash);
 
 async function init() {
   try {
-    const saved = localStorage.getItem('docx2pdf-demo-view') as View | null;
+    const saved = localStorage.getItem('docx2pdf-demo-view');
     if (saved === 'pages' || saved === 'side' || saved === 'overlay') view = saved;
   } catch {}
   setView(view, false);
   ui.pages.style.setProperty('--overlay', String(Number(ui.overlay.value) / 100));
-  const res = await fetch('samples/samples.json');
-  samples = await res.json();
+  try {
+    const res = await fetch('samples/samples.json');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    samples = parseSamples(await res.json());
+  } catch {
+    ui.samples.replaceChildren(el('p', 'muted', 'Could not load the sample list.'));
+    return;
+  }
   renderSampleList();
   if (location.hash.startsWith('#sample=')) routeFromHash();
   else if (samples[0]) await loadSample(samples[0].id);

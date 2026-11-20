@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { nodeCompression } from './util/node-compression.js';
 import { convertWithCompression, type ConvertOptions, type ConvertResult, type FontProvider } from './core.js';
 import { FULL_FONTS } from './fonts/bundled.js';
-import type { FontRegistry, FontSource } from './fonts/registry.js';
+import { BundledFontData, type FontRegistry, type FontSource } from './fonts/registry.js';
 import { collectionSize, isFontCollection, MAX_FONT_FACES, SfntFont } from './fonts/sfnt.js';
 import { buildSfnt } from './fonts/subset.js';
 
@@ -22,11 +22,40 @@ export interface NodeConvertOptions extends ConvertOptions {
   fontDir?: string;
 }
 
-function bundledProvider(dir: string): FontProvider {
+// Only the fixed files shipped with this package share parsed tables across conversions.
+const MAX_CACHED_FONTS = 16;
+const packagedFonts = new Map<string, BundledFontData>();
+const loadingFonts = new Map<string, Promise<BundledFontData>>();
+
+async function loadPackagedFont(file: string): Promise<BundledFontData> {
+  const cached = packagedFonts.get(file);
+  if (cached) {
+    packagedFonts.delete(file);
+    packagedFonts.set(file, cached);
+    return cached;
+  }
+  const loading = loadingFonts.get(file);
+  if (loading) return loading;
+  const pending = readFile(join(packageFontDir(), file)).then((data) => {
+    const font = new BundledFontData(data);
+    packagedFonts.set(file, font);
+    if (packagedFonts.size > MAX_CACHED_FONTS) packagedFonts.delete(packagedFonts.keys().next().value!);
+    return font;
+  });
+  loadingFonts.set(file, pending);
+  try {
+    return await pending;
+  } finally {
+    loadingFonts.delete(file);
+  }
+}
+
+function bundledProvider(dir?: string): FontProvider {
   return {
     register(registry: FontRegistry) {
       for (const b of FULL_FONTS) {
-        registry.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load: () => readFile(join(dir, b.file)) }, 'bundled');
+        const load = dir === undefined ? () => loadPackagedFont(b.file) : () => readFile(join(dir, b.file));
+        registry.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load }, 'bundled');
       }
     },
   };
@@ -146,7 +175,7 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | string, opti
       },
     });
   }
-  providers.push(bundledProvider(options.fontDir ?? packageFontDir()));
+  providers.push(bundledProvider(options.fontDir));
   return convertWithCompression(data, options, providers, nodeCompression);
 }
 

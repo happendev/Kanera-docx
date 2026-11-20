@@ -31,6 +31,11 @@ export type ParaDelta = Partial<Omit<ParaProps, 'tabs' | 'borders' | 'spaceBefor
 
 export const TOGGLES = ['bold', 'italic', 'boldCs', 'italicCs', 'caps', 'smallCaps', 'strike', 'dstrike', 'hidden', 'outline', 'emboss', 'imprint', 'shadow'] as const;
 
+const TAB_TYPES: readonly TabOp['type'][] = ['clear', 'left', 'center', 'right', 'decimal', 'bar', 'num'];
+const TAB_LEADERS: readonly TabStop['leader'][] = ['none', 'dot', 'hyphen', 'underscore', 'heavy', 'middleDot'];
+const PARA_BORDER_SIDES: readonly (keyof ParaBorders)[] = ['top', 'bottom', 'left', 'right', 'between', 'bar'];
+const TABLE_BORDER_SIDES: readonly (keyof TableBordersDelta)[] = ['top', 'bottom', 'left', 'right', 'insideH', 'insideV', 'tl2br', 'tr2bl'];
+
 export function themeColorFn(ctx: PropContext): (name: string) => string | undefined {
   return (name) => themeColorValue(ctx.theme, name, ctx.colorMapping);
 }
@@ -307,7 +312,7 @@ export function parseParaDelta(pPr: XmlElement | undefined, ctx: PropContext): P
         if (a['w:beforeAutospacing'] !== undefined) d.spaceBeforeAuto = onOff({ name: '', attrs: { 'w:val': a['w:beforeAutospacing'] }, children: [] });
         if (a['w:afterAutospacing'] !== undefined) d.spaceAfterAuto = onOff({ name: '', attrs: { 'w:val': a['w:afterAutospacing'] }, children: [] });
         if (a['w:line'] !== undefined) {
-          const rule = (a['w:lineRule'] ?? 'auto') as ParaProps['lineRule'];
+          const rule = a['w:lineRule'];
           const raw = num(a['w:line']) ?? 240;
           d.lineRule = rule === 'exact' || rule === 'atLeast' ? rule : 'auto';
           d.line = d.lineRule === 'auto' ? raw / 240 : twip(raw);
@@ -340,10 +345,9 @@ export function parseParaDelta(pPr: XmlElement | undefined, ctx: PropContext): P
       }
       case 'w:tabs': {
         d.tabOps = children(el, 'w:tab').map((t) => {
-          const val = t.attrs['w:val'] ?? 'left';
-          const type = (val === 'start' ? 'left' : val === 'end' ? 'right' : val) as TabOp['type'];
-          const leaderRaw = t.attrs['w:leader'] ?? 'none';
-          const leader = (['dot', 'hyphen', 'underscore', 'heavy', 'middleDot'].includes(leaderRaw) ? leaderRaw : 'none') as TabStop['leader'];
+          const val = t.attrs['w:val'];
+          const type = val === 'start' ? 'left' : val === 'end' ? 'right' : TAB_TYPES.find((type) => type === val) ?? 'left';
+          const leader = TAB_LEADERS.find((leader) => leader === t.attrs['w:leader']) ?? 'none';
           return { pos: twipAttr(t, 'w:pos') ?? 0, type, leader };
         });
         break;
@@ -351,12 +355,10 @@ export function parseParaDelta(pPr: XmlElement | undefined, ctx: PropContext): P
       case 'w:pBdr': {
         const b: Partial<ParaBorders> = {};
         for (const side of children(el)) {
-          const name = side.name.slice(2);
-          const key = name === 'start' ? 'left' : name === 'end' ? 'right' : name;
-          if (['top', 'bottom', 'left', 'right', 'between', 'bar'].includes(key)) {
-            const border = parseBorder(side, tc);
-            if (border !== undefined) (b as Record<string, Border | null>)[key] = border;
-          }
+          const key = borderSide(side, PARA_BORDER_SIDES);
+          if (key === undefined) continue;
+          const border = parseBorder(side, tc);
+          if (border !== undefined) b[key] = border;
         }
         d.borders = b;
         break;
@@ -397,24 +399,23 @@ function parseFrame(el: XmlElement): FrameProps {
 // ---------------------------------------------------------------------------------------------
 // Merging
 
-export function mergeRun(base: RunDelta, over: RunDelta): RunDelta {
-  const out: RunDelta = { ...base };
-  for (const k of Object.keys(over) as Array<keyof RunDelta>) {
-    const v = over[k];
-    if (v !== undefined) (out as Record<string, unknown>)[k] = v;
+function copyDefined<T extends object>(target: T, source: Partial<T>): T {
+  for (const key in source) {
+    if (!Object.hasOwn(source, key)) continue;
+    const value = source[key];
+    if (value !== undefined) target[key] = value;
   }
-  return out;
+  return target;
+}
+
+export function mergeRun(base: RunDelta, over: RunDelta): RunDelta {
+  return copyDefined({ ...base }, over);
 }
 
 export function mergePara(base: ParaDelta, over: ParaDelta): ParaDelta {
-  const out: ParaDelta = { ...base };
-  for (const k of Object.keys(over) as Array<keyof ParaDelta>) {
-    const v = over[k];
-    if (v === undefined) continue;
-    if (k === 'tabOps') out.tabOps = [...(base.tabOps ?? []), ...(v as TabOp[])];
-    else if (k === 'borders') out.borders = { ...(base.borders ?? {}), ...(v as Partial<ParaBorders>) };
-    else (out as Record<string, unknown>)[k] = v;
-  }
+  const out = copyDefined({ ...base }, over);
+  if (over.tabOps !== undefined) out.tabOps = [...(base.tabOps ?? []), ...over.tabOps];
+  if (over.borders !== undefined) out.borders = { ...base.borders, ...over.borders };
   return out;
 }
 
@@ -424,7 +425,7 @@ export function combineStyleRuns(levels: RunDelta[]): RunDelta {
   for (const level of levels) {
     const next = mergeRun(out, level);
     for (const t of TOGGLES) {
-      if (level[t] !== undefined && out[t] !== undefined) next[t] = (out[t] as boolean) !== (level[t] as boolean);
+      if (level[t] !== undefined && out[t] !== undefined) next[t] = out[t] !== level[t];
     }
     out = next;
   }
@@ -467,11 +468,7 @@ export const DEFAULT_RUN: RunProps = {
 };
 
 export function finalizeRun(d: RunDelta): RunProps {
-  const r: RunProps = { ...DEFAULT_RUN };
-  for (const k of Object.keys(d) as Array<keyof RunDelta>) {
-    const v = d[k];
-    if (v !== undefined) (r as unknown as Record<string, unknown>)[k] = v;
-  }
+  const r = copyDefined({ ...DEFAULT_RUN }, d);
   // A font set only for ASCII applies to hAnsi too when hAnsi is unset (Word fills them together).
   if (d.fontAscii && !d.fontHAnsi) r.fontHAnsi = d.fontAscii;
   if (d.size !== undefined && d.sizeCs === undefined) r.sizeCs = d.sizeCs ?? r.sizeCs;
@@ -512,18 +509,13 @@ export const DEFAULT_PARA: ParaProps = {
 
 /** `charSize` is the font size a character-unit indent counts in: the paragraph mark's. */
 export function finalizePara(d: ParaDelta, charSize: number): ParaProps {
-  const p: ParaProps = { ...DEFAULT_PARA, borders: { ...DEFAULT_PARA.borders } };
-  for (const k of Object.keys(d) as Array<keyof ParaDelta>) {
-    const v = d[k];
-    if (v === undefined || k === 'tabOps' || k === 'borders' || k === 'numId' || k === 'ilvl' || k === 'indLeftChars' || k === 'indFirstLineChars' || k === 'spaceBeforeLines' || k === 'spaceAfterLines') continue;
-    (p as unknown as Record<string, unknown>)[k] = v;
-  }
+  const { tabOps, borders, numId, ilvl, indLeftChars, indFirstLineChars, spaceBeforeLines, spaceAfterLines, ...props } = d;
+  const p = copyDefined({ ...DEFAULT_PARA, borders: { ...DEFAULT_PARA.borders, ...borders } }, props);
   // Lines are 12pt until the parser knows the section's grid (resolveLineSpacing).
-  if (d.spaceBeforeLines) [p.spaceBefore, p.spaceBeforeLines] = [d.spaceBeforeLines * 12, d.spaceBeforeLines];
-  if (d.spaceAfterLines) [p.spaceAfter, p.spaceAfterLines] = [d.spaceAfterLines * 12, d.spaceAfterLines];
-  if (d.indLeftChars) p.indLeft = d.indLeftChars * charSize;
-  if (d.indFirstLineChars) p.indFirstLine = d.indFirstLineChars * charSize;
-  if (d.borders) Object.assign(p.borders, d.borders);
+  if (spaceBeforeLines) [p.spaceBefore, p.spaceBeforeLines] = [spaceBeforeLines * 12, spaceBeforeLines];
+  if (spaceAfterLines) [p.spaceAfter, p.spaceAfterLines] = [spaceAfterLines * 12, spaceAfterLines];
+  if (indLeftChars) p.indLeft = indLeftChars * charSize;
+  if (indFirstLineChars) p.indFirstLine = indFirstLineChars * charSize;
   if (p.bidi) {
     // In a right-to-left paragraph "left" and "right" name the start and end sides: its start
     // is on the right.
@@ -533,7 +525,7 @@ export function finalizePara(d: ParaDelta, charSize: number): ParaProps {
   }
   // Tab stops: later definitions replace earlier ones at the same position; "clear" removes.
   const stops = new Map<number, TabStop>();
-  for (const op of d.tabOps ?? []) {
+  for (const op of tabOps ?? []) {
     const key = Math.round(op.pos * 20);
     if (op.type === 'clear') stops.delete(key);
     else stops.set(key, { pos: op.pos, type: op.type, leader: op.leader });
@@ -611,7 +603,7 @@ export interface TrDelta {
 
 export function parseWidth(el: XmlElement | undefined): TableWidth | undefined {
   if (!el) return undefined;
-  const type = (el.attrs['w:type'] ?? 'dxa') as TableWidth['type'];
+  const type = el.attrs['w:type'];
   const raw = el.attrs['w:w'] ?? '0';
   if (type === 'pct') {
     // Either fiftieths of a percent ("5000") or an explicit percentage ("100%").
@@ -622,16 +614,22 @@ export function parseWidth(el: XmlElement | undefined): TableWidth | undefined {
   return { type: 'dxa', value: measure(raw) ?? 0 };
 }
 
+function borderSide<T extends string>(side: XmlElement, sides: readonly T[]): T | undefined {
+  if (!side.name.startsWith('w:')) return undefined;
+  const name = side.name.slice(2);
+  const key = name === 'start' ? 'left' : name === 'end' ? 'right' : name;
+  return sides.find((side) => side === key);
+}
+
 export function parseTableBorders(el: XmlElement | undefined, ctx: PropContext): TableBordersDelta | undefined {
   if (!el) return undefined;
   const tc = themeColorFn(ctx);
   const out: TableBordersDelta = {};
   for (const side of children(el)) {
-    let key = side.name.slice(2);
-    if (key === 'start') key = 'left';
-    if (key === 'end') key = 'right';
+    const key = borderSide(side, TABLE_BORDER_SIDES);
+    if (key === undefined) continue;
     const b = parseBorder(side, tc);
-    if (b !== undefined) (out as Record<string, Border | null>)[key] = b;
+    if (b !== undefined) out[key] = b;
   }
   return out;
 }
@@ -813,31 +811,21 @@ export function parseTrDelta(trPr: XmlElement | undefined): TrDelta {
 }
 
 export function mergeTbl(a: TblDelta, b: TblDelta): TblDelta {
-  const out: TblDelta = { ...a };
-  for (const k of Object.keys(b) as Array<keyof TblDelta>) {
-    const v = b[k];
-    if (v === undefined) continue;
-    if (k === 'borders') out.borders = { ...(a.borders ?? {}), ...(v as TableBordersDelta) };
-    else if (k === 'cellMargins') out.cellMargins = { ...(a.cellMargins ?? {}), ...(v as Partial<CellMargins>) };
-    else (out as Record<string, unknown>)[k] = v;
-  }
+  const out = copyDefined({ ...a }, b);
+  if (b.borders !== undefined) out.borders = { ...a.borders, ...b.borders };
+  if (b.cellMargins !== undefined) out.cellMargins = { ...a.cellMargins, ...b.cellMargins };
   return out;
 }
 
 export function mergeTc(a: TcDelta, b: TcDelta): TcDelta {
-  const out: TcDelta = { ...a };
-  for (const k of Object.keys(b) as Array<keyof TcDelta>) {
-    const v = b[k];
-    if (v === undefined) continue;
-    if (k === 'borders') out.borders = { ...(a.borders ?? {}), ...(v as TableBordersDelta) };
-    else if (k === 'margins') out.margins = { ...(a.margins ?? {}), ...(v as Partial<CellMargins>) };
-    else (out as Record<string, unknown>)[k] = v;
-  }
+  const out = copyDefined({ ...a }, b);
+  if (b.borders !== undefined) out.borders = { ...a.borders, ...b.borders };
+  if (b.margins !== undefined) out.margins = { ...a.margins, ...b.margins };
   return out;
 }
 
 export function mergeTr(a: TrDelta, b: TrDelta): TrDelta {
-  return { ...a, ...Object.fromEntries(Object.entries(b).filter(([, v]) => v !== undefined)) };
+  return copyDefined({ ...a }, b);
 }
 
 export type { CellBorders };

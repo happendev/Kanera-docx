@@ -90,14 +90,17 @@ function roundedRect(x: number, y: number, w: number, h: number, r: [number, num
 
 const LINE_GEOMETRIES = /^(line|straightConnector1|bentConnector\d|curvedConnector\d|lineInv)$/;
 
-/** Outline of a preset or custom geometry inside the box (x, y, w, h). */
-export function geometryPath(d: Drawing, x: number, y: number, w: number, h: number): PathSeg[] {
+/**
+ * Outline of a preset or custom geometry inside the box (x, y, w, h). A custom geometry gives the
+ * subpaths its fill draws, or with `part` 'stroke' the ones its outline draws.
+ */
+export function geometryPath(d: Drawing, x: number, y: number, w: number, h: number, part: 'fill' | 'stroke' = 'fill'): PathSeg[] {
   const adj = (name: string, dflt: number) => (d.adjust?.[name] ?? dflt) / 100000;
   const ss = Math.min(w, h);
   const g = d.geometry;
   if (g === 'custom' && d.path) {
     const segs: PathSeg[] = [];
-    for (const sub of d.path) for (const s of sub) segs.push({ op: s.op, pts: s.pts.map((v, i) => (i % 2 === 0 ? x + v * w : y + v * h)) });
+    for (const sub of d.path) if (sub[part]) for (const s of sub.segs) segs.push({ op: s.op, pts: s.pts.map((v, i) => (i % 2 === 0 ? x + v * w : y + v * h)) });
     return segs;
   }
   if (LINE_GEOMETRIES.test(g)) return [{ op: 'M', pts: [x, y] }, { op: 'L', pts: [x + w, y + h] }];
@@ -336,7 +339,9 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
   } else if (d.chart) {
     ops.push(...renderChart(d.chart, x, y, w, h, env));
   } else {
-    const path = d.kind === 'image' && d.geometry === 'rect' ? null : geometryPath(d, x, y, w, h);
+    const shape = d.kind === 'image' && d.geometry === 'rect' ? null : geometryPath(d, x, y, w, h);
+    // A custom shape whose subpaths are all unfilled has nothing to fill or clip to.
+    const path = shape?.length ? shape : null;
     const fill = isLine ? null : d.fill;
     if (fill?.gradient && path) ops.push(...gradientOps(path, fill.gradient, fill.alpha));
     else if (fill?.color && path) ops.push({ kind: 'path', segs: path, fill: fill.color, fillAlpha: fill.alpha < 1 ? fill.alpha : undefined, stroke: null });
@@ -357,8 +362,8 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
     if (d.textPath) ops.push(...renderTextPath(d, x, y, w, h, env));
     const line = d.line;
     if (line?.color && line.width > 0) {
-      const segs = path ?? geometryPath(d, x, y, w, h);
-      ops.push({ kind: 'path', segs, fill: null, stroke: line.color, strokeWidth: line.width, strokeAlpha: line.alpha < 1 ? line.alpha : undefined, dash: lineDash(line) });
+      const segs = d.geometry === 'custom' ? geometryPath(d, x, y, w, h, 'stroke') : path ?? geometryPath(d, x, y, w, h);
+      if (segs.length) ops.push({ kind: 'path', segs, fill: null, stroke: line.color, strokeWidth: line.width, strokeAlpha: line.alpha < 1 ? line.alpha : undefined, dash: lineDash(line) });
     }
   }
   if (m) ops.push({ kind: 'restore' });

@@ -125,7 +125,7 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
     // Pair kerning applies when w:kern is set and the font is at least that size.
     if (props.kern > 0 && size >= props.kern && cur.glyphs.length > 0 && !half && full === undefined) {
       const prev = cur.glyphs[cur.glyphs.length - 1];
-      if (prev.gid > 0 && gid > 0) prev.advance += (font.kerning(prev.gid, gid) / font.unitsPerEm) * glyphSize * scale;
+      if (prev.gid > 0 && gid > 0) prev.advance += (resolved.face.kerning(prev.gid, gid) / font.unitsPerEm) * glyphSize * scale;
     }
     // Symbol-font characters (Wingdings, Symbol PUA codes) copy as the Unicode they were mapped to.
     const text = mapped !== cp && !resolved.char && (mapped < 0xe000 || mapped > 0xf8ff) ? String.fromCodePoint(mapped) : display;

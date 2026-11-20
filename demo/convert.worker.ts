@@ -3,6 +3,8 @@
 // this worker for the page's lifetime, so later conversions only download faces they haven't seen.
 import { convertDocx, type BrowserConvertOptions } from '../src/browser.js';
 
+declare const self: DedicatedWorkerGlobalScope;
+
 export interface ConvertRequest {
   id: number;
   docx: ArrayBuffer;
@@ -55,9 +57,9 @@ self.onmessage = async (e: MessageEvent<ConvertRequest>) => {
       ms,
       fonts: downloaded,
     };
-    (self as unknown as DedicatedWorkerGlobalScope).postMessage(msg, [pdf]);
+    self.postMessage(msg, [pdf]);
   } catch (err) {
     const msg: ConvertResponse = { id, ok: false, error: err instanceof Error ? err.message : String(err) };
-    (self as unknown as DedicatedWorkerGlobalScope).postMessage(msg);
+    self.postMessage(msg);
   }
 };

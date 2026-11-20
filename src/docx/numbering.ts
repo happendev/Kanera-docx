@@ -55,9 +55,8 @@ export class Numbering {
   private nums = new Map<string, NumInstance>();
   /** Picture bullets: id -> relationship id of the image. */
   readonly picBullets = new Map<string, string>();
-  // Counter state per abstract numbering definition (lists sharing a definition continue).
+  // Each concrete list advances independently of the abstract definition it uses.
   private counters = new Map<string, Array<number | undefined>>();
-  private startedNums = new Set<string>();
 
   constructor(
     root: XmlElement | undefined,
@@ -132,14 +131,8 @@ export class Numbering {
     const inst = this.nums.get(numId);
     const abs = this.abstractFor(numId);
     if (!inst || !abs) return null;
-    const key = abs.id;
-    let counters = this.counters.get(key);
-    if (!counters) this.counters.set(key, (counters = new Array(9).fill(undefined)));
-    if (!this.startedNums.has(numId)) {
-      // A num with start overrides restarts those levels the first time it is used.
-      this.startedNums.add(numId);
-      for (const [l, o] of inst.overrides) if (o.start !== undefined) counters[l] = undefined;
-    }
+    let counters = this.counters.get(numId);
+    if (!counters) this.counters.set(numId, (counters = new Array(9).fill(undefined)));
     const lvl = this.level(numId, ilvl);
     if (!lvl) return null;
     const startFor = (l: number) => inst.overrides.get(l)?.start ?? this.level(numId, l)?.start ?? 0;

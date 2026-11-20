@@ -37,6 +37,8 @@ export interface ParagraphEnv {
   fonts: FontRegistry;
   settings: DocSettings;
   fieldText(field: FieldInline): string;
+  /** Repeated note stories resolve a field independently for each placement. */
+  placedField?(field: FieldInline): FieldInline;
   noteRefText(noteType: 'footnote' | 'endnote', id: string): string;
   /** Number shown by w:footnoteRef inside the note currently being laid out. */
   noteNumberText?: string;
@@ -193,11 +195,12 @@ export class ParagraphLayout {
           break;
         }
         case 'field': {
-          const text = env.fieldText(inl);
+          const field = env.placedField?.(inl) ?? inl;
+          const text = env.fieldText(field);
           let first = true;
           for (const run of shapeText(text, inl.props, fonts)) {
             for (let gi = 0; gi < run.glyphs.length; gi++) {
-              this.pushGlyph(run, gi, first ? inl : undefined);
+              this.pushGlyph(run, gi, first ? field : undefined);
               first = false;
             }
           }
@@ -483,8 +486,10 @@ export class ParagraphLayout {
       }
       if (a.k === 'tab' || a.k === 'ptab') {
         const t: { width: number; leader: TabStop['leader']; overflow: boolean; reach?: number } = a.k === 'tab' ? this.resolveTab(i, x, first, areaWidth, a.label === true) : this.resolvePTab(i, x, a, areaWidth);
-        // A line of nothing but tabs keeps them all, past the margin.
-        if (t.overflow && hasContent && right - left > 1 && !this.blank(start, i)) {
+        // Before Word 2013 a line of nothing but tabs keeps them all, past the margin; from Word
+        // 2013 an overflowing tab wraps there too, as it does after text.
+        const keepTabs = this.env.settings.compatibilityMode < 15 && this.blank(start, i);
+        if (t.overflow && hasContent && right - left > 1 && !keepTabs) {
           end = candidate > start ? candidate : i;
           break;
         }
@@ -1240,7 +1245,10 @@ export function lineHeight(
   if (gridPitch && p.snapToGrid && p.lineRule === 'auto' && gridPitch > 0) {
     // The grid lines a line takes count the font height without its external leading.
     const base = Math.max(ascent + descent, gridPitch);
-    const snapped = Math.ceil(base / gridPitch - 0.01) * gridPitch;
+    // A line 0.9% taller than a grid line takes two (14pt SimHei, 18.16pt, on an 18pt grid). The
+    // 0.5% allowance covers fallback fonts' approximate heights: KaiTi_GB2312 at Noto Sans CJK's
+    // line comes out 0.3% over a 15.6pt grid line that Word's own KaiTi fits.
+    const snapped = Math.ceil(base / gridPitch - 0.005) * gridPitch;
     // "Multiple" spacing scales one grid line: text that takes more grid lines than that keeps
     // just the lines it takes.
     height = p.line > 1 ? Math.max(snapped, gridPitch * p.line) : snapped * p.line;

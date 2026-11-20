@@ -109,6 +109,10 @@ export class ZipArchive {
     return this.entries.get(clean) ?? this.lower.get(clean.toLowerCase());
   }
 
+  canonicalName(name: string): string | undefined {
+    return this.find(name)?.name;
+  }
+
   has(name: string): boolean {
     return this.find(name) !== undefined;
   }

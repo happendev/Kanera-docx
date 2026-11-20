@@ -11,7 +11,7 @@ export interface BrowserConvertOptions extends ConvertOptions {
   /**
    * URL of a folder serving the package's `fonts/` files. Defaults to the folder next to this
    * module, which works when the package is served as-is (not bundled). With a bundler, copy the
-   * selected pack's files from `node_modules/@happendev/docx2pdf/fonts` to your static assets.
+   * selected pack's files from `node_modules/@kanera/docx2pdf/fonts` to your static assets.
    * Set to `false` to disable loading fonts from URLs automatically.
    */
   fontBaseUrl?: string | URL | false;
@@ -21,7 +21,7 @@ export interface BrowserConvertOptions extends ConvertOptions {
   fetch?: typeof fetch;
 }
 
-const fontCache = new Map<string, Promise<ArrayBuffer>>();
+const fontCaches = new WeakMap<typeof fetch, Map<string, Promise<ArrayBuffer>>>();
 
 function defaultBase(): URL {
   // Kept out of a literal `new URL('…', import.meta.url)` so bundlers don't try to inline a folder.
@@ -35,7 +35,13 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, option
   const providers: FontProvider[] = [];
   if (options.fontBaseUrl !== false) {
     const base = options.fontBaseUrl ? new URL(String(options.fontBaseUrl), globalThis.location?.href) : defaultBase();
+    if (!base.pathname.endsWith('/')) base.pathname += '/';
     const doFetch = options.fetch ?? fetch;
+    let fontCache = fontCaches.get(doFetch);
+    if (!fontCache) {
+      fontCache = new Map();
+      fontCaches.set(doFetch, fontCache);
+    }
     const faces = options.fontPack === 'common' ? COMMON_FONTS : FULL_FONTS;
     providers.push({
       register(registry) {

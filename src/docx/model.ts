@@ -655,8 +655,8 @@ export interface Drawing {
   geometry: string;
   /** Adjust values for preset geometries (e.g. roundRect corner radius), raw OOXML units. */
   adjust?: Record<string, number>;
-  /** Custom geometry path in shape-relative coordinates (0..1). */
-  path?: Array<Array<{ op: 'M' | 'L' | 'C' | 'Z'; pts: number[] }>>;
+  /** Custom geometry subpaths in shape-relative coordinates (0..1), each saying whether the fill and the outline draw it. */
+  path?: Array<{ fill: boolean; stroke: boolean; segs: Array<{ op: 'M' | 'L' | 'C' | 'Z'; pts: number[] }> }>;
   fill?: Fill | null;
   line?: LineStyle | null;
   textBox?: TextBox;

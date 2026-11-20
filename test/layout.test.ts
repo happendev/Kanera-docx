@@ -602,6 +602,22 @@ describe('tables', () => {
     expect(lines(r.pages[1].body)[0].text).toBe('Tall');
   });
 
+  it('splits a row that continues a vertical merge when the merged content overflows', async () => {
+    const linesPerPage = Math.floor(BODY_HEIGHT / ARIAL_11);
+    const filler = Array.from({ length: linesPerPage - 6 }, (_, i) => p(`Line ${i + 1}`)).join('');
+    const tc = (vMerge: string, body: string) => `<w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:vMerge${vMerge}/></w:tcPr>${body}</w:tc>`;
+    const paras = (label: string, n: number) => Array.from({ length: n }, (_, i) => p(`${label} ${i + 1}`)).join('');
+    // The second row's own cell fits in the room left, but the cell merged down into it does not.
+    const tbl = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>`
+      + `<w:tr>${tc(' w:val="restart"', paras('Merged', 10))}${cell('Top', 3000)}</w:tr>`
+      + `<w:tr>${tc('', '<w:p/>')}<w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr>${paras('Own', 3)}</w:tc></w:tr></w:tbl>`;
+    const r = await layout(makeDocx({ styles: ARIAL_STYLES, settings: compat(15), body: filler + tbl }));
+    const text = (page: number) => lines(r.pages[page].body).map((l) => l.text).join(' ');
+    expect(text(0)).toContain('Own 1');
+    expect(text(1)).not.toContain('Own 1');
+  });
+
+
   it('keeps widow/orphan control when a row splits across pages', async () => {
     const linesPerPage = Math.floor(BODY_HEIGHT / ARIAL_11);
     const filler = Array.from({ length: linesPerPage - 2 }, (_, i) => p(`Line ${i + 1}`)).join('');
@@ -1029,6 +1045,37 @@ describe('fonts', () => {
     expect(two.y - one.y).toBeCloseTo(((2060 + 451) / 2048) * 11, 1);
   });
 
+  async function bundledRegistry(hints: Record<string, { altName?: string; family?: string }> = {}) {
+    const fonts = new FontRegistry();
+    for (const b of FULL_FONTS) fonts.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load: async () => readFileSync(new URL(`../fonts/${b.file}`, import.meta.url)) }, 'bundled');
+    for (const [name, h] of Object.entries(hints)) fonts.setHints(name, h);
+    await fonts.prepare(Object.keys(hints).concat('Arial Black', 'Helvetica').map((family) => ({ family, bold: false, italic: false, codePoints: new Set([0x41, 0x414]) })));
+    return fonts;
+  }
+  const lineEm = (f: { ascent: number; descent: number; externalLeading: number }) => f.ascent + f.descent + f.externalLeading;
+
+  it('follows an alternate name to Segoe UI only when the document uses Segoe UI itself', async () => {
+    // Word for Mac's PDFs draw such a Myriad Pro in Arial; Segoe UI comes from Office's cloud fonts.
+    const without = await bundledRegistry({ 'Myriad Pro': { altName: 'Segoe UI', family: 'swiss' } });
+    expect(without.resolve('Myriad Pro', false, false).face.familyName).toBe('Liberation Sans');
+    const withIt = await bundledRegistry({ 'Myriad Pro': { altName: 'Segoe UI', family: 'swiss' }, 'Segoe UI': { family: 'swiss' } });
+    expect(withIt.resolve('Myriad Pro', false, false).face.familyName).toBe('Selawik');
+  });
+
+  it("gives Helvetica Word for Mac's line, without its gap when reached by an alternate name", async () => {
+    const fonts = await bundledRegistry({ 'Helvetica, Arial, sans-serif': { altName: 'Helvetica', family: 'roman' } });
+    expect(lineEm(fonts.resolve('Helvetica', false, false))).toBeCloseTo(1.2, 3);
+    expect(lineEm(fonts.resolve('Helvetica, Arial, sans-serif', false, false))).toBeCloseTo(1.0, 3);
+  });
+
+  it("sets a Cyrillic letter Arial Black's stand-in lacks on Arial Black's line", async () => {
+    const fonts = await bundledRegistry();
+    const de = fonts.faceForChar('Arial Black', false, false, 0x414);
+    expect(fonts.resolve('Arial Black', false, false).face.font.hasGlyph(0x414)).toBe(false);
+    expect(de.face.familyName).not.toBe('Archivo Black');
+    expect(lineEm(de)).toBeCloseTo(1.101 + 0.31, 3);
+  });
+
   it('sizes the line of a symbol the font lacks by Segoe UI Symbol, which Word draws it from', async () => {
     const height = async (middle: string) => {
       const ys = lines((await layout(makeDocx({ styles: ARIAL_STYLES, body: p('Above') + middle + p('Below') }))).pages[0].body).map((l) => l.y);
@@ -1125,14 +1172,21 @@ describe('line breaking', () => {
     expect(await end(14, 9200)).toBeCloseTo(72 + 9200 / 20, 1);
   });
 
-  it('keeps a line of nothing but tabs whole past the margin, but wraps tabs that follow text', async () => {
+  it('keeps a line of nothing but tabs whole past the margin before Word 2013, but wraps tabs that follow text', async () => {
     const tabs = (text: string) => `<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="9300"/></w:tabs></w:pPr><w:r>${text ? `<w:t>${text}</w:t>` : ''}<w:tab/><w:tab/></w:r></w:p>`;
     const body = p('Before') + tabs('') + p('Middle') + tabs('Text') + p('After');
-    const ls = lines((await layout(makeDocx({ styles: ARIAL_STYLES, settings: compat(14), body }))).pages[0].body);
-    const y = (t: string) => ls.find((l) => l.text === t)!.y;
-    expect(y('Middle') - y('Before')).toBeCloseTo(2 * ARIAL_11, 1);
+    const gaps = async (mode: number) => {
+      const ls = lines((await layout(makeDocx({ styles: ARIAL_STYLES, settings: compat(mode), body }))).pages[0].body);
+      const y = (t: string) => ls.find((l) => l.text === t)!.y;
+      return [(y('Middle') - y('Before')) / ARIAL_11, (y('After') - y('Middle')) / ARIAL_11];
+    };
     // After "Text" the first tab, past the margin, starts a line that keeps the second.
-    expect(y('After') - y('Middle')).toBeCloseTo(3 * ARIAL_11, 1);
+    const [blank14, text14] = await gaps(14);
+    expect(blank14).toBeCloseTo(2, 2);
+    expect(text14).toBeCloseTo(3, 2);
+    // From Word 2013 the tabs-only line wraps at its overflowing tab as well.
+    const [blank15] = await gaps(15);
+    expect(blank15).toBeCloseTo(3, 2);
   });
 
   it('shows a soft hyphen only where a line breaks at it', async () => {
@@ -1197,7 +1251,7 @@ describe('fields', () => {
     const store = '{A1B2C3D4-0000-0000-0000-000000000001}';
     const core = '{6C3C8BC8-F283-45AE-878A-BAB7291924A1}';
     const control = (storeId: string, xpath: string, cached: string, pr = '') =>
-      `<w:p><w:sdt><w:sdtPr>${pr}<w:dataBinding w:xpath="${xpath}" w:storeItemID="${storeId}"/></w:sdtPr><w:sdtContent><w:r><w:t>${cached}</w:t></w:r></w:sdtContent></w:sdt></w:p>`;
+      `<w:p><w:sdt><w:sdtPr>${pr}<w:dataBinding w:prefixMappings="${storeId === core ? "xmlns:ns1='http://schemas.openxmlformats.org/package/2006/metadata/core-properties' xmlns:ns0='http://purl.org/dc/elements/1.1/'" : "xmlns:ns0='urn:test'"}" w:xpath="${xpath}" w:storeItemID="${storeId}"/></w:sdtPr><w:sdtContent><w:r><w:t>${cached}</w:t></w:r></w:sdtContent></w:sdt></w:p>`;
     const body =
       control(store, '/ns0:root[1]/ns0:Company[1]', 'Old') +
       control(core, '/ns1:coreProperties[1]/ns0:creator[1]', 'Wei', '<w:placeholder><w:docPart w:val="Author"/></w:placeholder>') +

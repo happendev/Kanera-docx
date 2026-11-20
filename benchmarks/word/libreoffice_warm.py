@@ -1,4 +1,4 @@
-"""Measure consecutive PDF completions from one headless LibreOffice batch."""
+"""Measure consecutive PDF completions from one CLI batch (LibreOffice or office2pdf)."""
 import ctypes
 import os
 from pathlib import Path
@@ -12,7 +12,14 @@ IN_MOVED_TO = 0x00000080
 EVENT = Struct('iIII')
 
 
-def batch_times(jobs, workspace):
+def libreoffice_command(workspace, output, sources):
+    return [
+        'soffice', '-env:UserInstallation=' + (workspace / 'profile').as_uri(),
+        '--headless', '--convert-to', 'pdf:writer_pdf_Export', '--outdir', output, *sources,
+    ]
+
+
+def batch_times(jobs, workspace, command=libreoffice_command, label='LibreOffice'):
     output = workspace / 'pdfs'
     output.mkdir()
     sources = []
@@ -31,18 +38,14 @@ def batch_times(jobs, workspace):
     try:
         if libc.inotify_add_watch(watcher, os.fsencode(output), IN_CLOSE_WRITE | IN_MOVED_TO) < 0:
             raise OSError(ctypes.get_errno(), 'inotify_add_watch')
-        command = [
-            'soffice', '-env:UserInstallation=' + (workspace / 'profile').as_uri(),
-            '--headless', '--convert-to', 'pdf:writer_pdf_Export', '--outdir', output, *sources,
-        ]
-        with (workspace / 'libreoffice.log').open('w+') as log:
+        with (workspace / 'batch.log').open('w+') as log:
             start = perf_counter()
-            with subprocess.Popen(command, stdout=log, stderr=log) as process:
+            with subprocess.Popen(command(workspace, output, sources), stdout=log, stderr=log) as process:
                 try:
                     while len(completed) < len(targets):
                         remaining = 300 - (perf_counter() - start)
                         if remaining <= 0:
-                            raise TimeoutError('LibreOffice warm batch timed out')
+                            raise TimeoutError(f'{label} warm batch timed out')
                         if select.select([watcher], [], [], min(0.1, remaining))[0]:
                             now = perf_counter()
                             events = os.read(watcher, 65536)
@@ -62,7 +65,7 @@ def batch_times(jobs, workspace):
                     raise
             if status or list(completed) != list(targets):
                 log.seek(0)
-                raise RuntimeError(f'LibreOffice warm batch did not complete in input order: {log.read()}')
+                raise RuntimeError(f'{label} warm batch did not complete in input order: {log.read()}')
     finally:
         os.close(watcher)
 

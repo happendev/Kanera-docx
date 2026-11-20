@@ -52,6 +52,15 @@ export class FontBudget {
   private mappings = 0;
   private kerningWork = 0;
 
+  /** Account for the tables of a shared, single-face font in a conversion's budget. */
+  chargeMappingsTo(target: FontBudget): void {
+    target.reserveMappings(this.mappings);
+  }
+
+  chargeKerningTo(target: FontBudget): void {
+    target.reserveKerning(this.kerningWork);
+  }
+
   reserveFaces(n: number): void {
     if (n > MAX_FONT_FACES - this.faces) throw new FontLimitError('Font face limit exceeded');
     this.faces += n;

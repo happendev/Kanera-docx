@@ -98,6 +98,20 @@ describe('East Asian lines', () => {
     expect(ys[1] - ys[0]).toBeCloseTo(15.6, 2);
   });
 
+  it('gives a line a second grid line once it is 0.5% taller than one', async () => {
+    // As in Word's PDFs: 14pt SimHei (18.16pt) takes two 18pt grid lines, a picture 18.003pt tall
+    // (228637 EMU) one.
+    const title = '<w:p><w:r><w:rPr><w:rFonts w:ascii="SimHei" w:hAnsi="SimHei" w:eastAsia="SimHei"/><w:sz w:val="28"/></w:rPr><w:t>标题</w:t></w:r></w:p>';
+    const picture = '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="228637"/><a:graphic><a:graphicData>' +
+      '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr><a:prstGeom prst="rect"/>' +
+      '<a:solidFill><a:srgbClr val="0077AA"/></a:solidFill></wps:spPr></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>';
+    const r = await layout(makeDocx({ styles: simsun(21), sectPr: sect('<w:docGrid w:type="lines" w:linePitch="360"/>'), body: title + p('中文') + picture + p('中文') }));
+    const ys = lines(r.pages[0].body).map((l) => l.y);
+    const h = (10.5 * 332) / 256;
+    expect(ys[1]).toBeCloseTo(72 + 36 + (18 - h) / 2 + h - (10.5 * 74) / 256, 2);
+    expect(ys[2] - ys[1]).toBeCloseTo(36, 2);
+  });
+
   it("sizes spacing given in lines by the section's line grid, or as 12pt without one", async () => {
     // w:beforeLines is in hundredths of a line; a later w:before in points replaces it.
     const styles = simsun(21) + '<w:style w:type="paragraph" w:styleId="Gap"><w:name w:val="Gap"/><w:pPr><w:spacing w:beforeLines="100"/></w:pPr></w:style>';

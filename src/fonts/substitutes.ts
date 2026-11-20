@@ -38,8 +38,10 @@ const RULES: Record<string, SubstituteRule> = {
   'cambria math': { families: ['caladea'], metricCompatible: false },
   arial: { families: ['liberation sans', 'arimo'], metricCompatible: true },
   'arial mt': { families: ['liberation sans', 'arimo'], metricCompatible: true },
-  helvetica: { families: ['liberation sans', 'arimo'], metricCompatible: true },
-  'helvetica neue': { families: ['liberation sans', 'arimo'], metricCompatible: false },
+  // Word for Mac adds macOS Helvetica's 0.2 em line gap above the text: a single line is 1.2 em,
+  // not Arial's 1.15. Helvetica Neue's lines are 1.2 em too.
+  helvetica: { families: ['liberation sans', 'arimo'], metricCompatible: true, vmetrics: [0.77, 0.23, 0.2] },
+  'helvetica neue': { families: ['liberation sans', 'arimo'], metricCompatible: false, vmetrics: [0.952, 0.213, 0.035] },
   'arial unicode ms': { families: ['liberation sans', 'dejavu sans'], metricCompatible: false, vmetrics: [1.069, 0.271, 0] },
   // Word's Arial Narrow has a taller line than the open font despite matching advances.
   'arial narrow': { families: ['liberation sans narrow'], close: ['liberation sans'], metricCompatible: true, vmetrics: [1916 / 2048, 434 / 2048, 0] },
@@ -53,6 +55,7 @@ const RULES: Record<string, SubstituteRule> = {
   'segoe ui light': { families: ['selawik light'], close: ['selawik'], metricCompatible: true },
   'segoe ui semibold': { families: ['selawik semibold'], close: ['selawik'], metricCompatible: true },
   'segoe ui semilight': { families: ['selawik semilight'], close: ['selawik'], metricCompatible: true },
+  'segoe ui black': { families: ['selawik'], metricCompatible: false, generic: 'sans', vmetrics: [2210 / 2048, 514 / 2048, 0] },
   roboto: { families: ['roboto'], metricCompatible: true },
   'roboto medium': { families: ['roboto medium'], close: ['roboto'], metricCompatible: true },
   aptos: { families: ['morrow sans'], close: ['selawik', 'liberation sans'], metricCompatible: true, vmetrics: APTOS_LINE_METRICS },
@@ -98,7 +101,8 @@ const RULES: Record<string, SubstituteRule> = {
   'cascadia mono': { families: ['cascadia code', 'dejavu sans mono', 'liberation mono'], metricCompatible: false },
   'comic sans ms': { families: ['comic neue'], metricCompatible: false, vmetrics: [1.102, 0.292, 0] },
   constantia: { families: ['fidela'], close: ['gelasio', 'liberation serif'], metricCompatible: true, generic: 'serif' },
-  corbel: { families: ['lintel'], close: ['carlito'], metricCompatible: true },
+  // Word's Corbel lines are 1.208 em (Word for Mac's PDFs), Carlito's 1.221.
+  corbel: { families: ['lintel'], close: ['carlito'], metricCompatible: true, vmetrics: [0.95, 0.258, 0] },
   'franklin gothic medium': { families: ['leyden medium'], close: ['libre franklin', 'roboto'], metricCompatible: true },
   gabriola: { families: ['seraphine'], close: ['cormorant', 'liberation serif'], metricCompatible: true, generic: 'serif' },
   impact: { families: ['anvil'], close: ['oswald', 'liberation sans narrow'], metricCompatible: true },
@@ -134,7 +138,7 @@ const RULES: Record<string, SubstituteRule> = {
   'din alternate': { families: ['gleis', 'roboto'], metricCompatible: false },
   'din condensed': { families: ['gleis condensed', 'liberation sans narrow'], metricCompatible: false },
   futura: { families: ['jost', 'onward', 'roboto'], metricCompatible: false },
-  geneva: { families: ['dejavu sans', 'liberation sans'], metricCompatible: false },
+  geneva: { families: ['dejavu sans', 'liberation sans'], metricCompatible: false, vmetrics: [1, 0.25, 0.08] },
   'gill sans': { families: ['rill', 'cabin', 'selawik'], metricCompatible: false },
   'helvetica neue condensed': { families: ['liberation sans narrow', 'roboto condensed'], metricCompatible: false },
   'hoefler text': { families: ['eb garamond', 'liberation serif'], metricCompatible: false, generic: 'serif' },
@@ -148,11 +152,15 @@ const RULES: Record<string, SubstituteRule> = {
   // height (Word's PDFs report Symbol's ascent as 1.005 em, taller than Calibri's).
   symbol: { families: ['dejavu sans', 'noto sans symbols2', 'noto sans symbols', 'symbola'], metricCompatible: false, vmetrics: [2059 / 2048, 442 / 2048, 0] },
   wingdings: { families: ['dejavu sans', 'noto sans symbols2', 'noto sans symbols', 'symbola'], metricCompatible: false, vmetrics: [1841 / 2048, 432 / 2048, 0] },
+  'wingdings 2': { families: ['dejavu sans', 'noto sans symbols2', 'noto sans symbols', 'symbola'], metricCompatible: false, vmetrics: [0.843, 0.211, 0] },
+  'wingdings 3': { families: ['dejavu sans', 'noto sans symbols2', 'noto sans symbols', 'symbola'], metricCompatible: false, vmetrics: [0.928, 0.211, 0] },
+  webdings: { families: ['dejavu sans', 'noto sans symbols2', 'noto sans symbols', 'symbola'], metricCompatible: false, vmetrics: [0.8, 0.2, 0] },
   // Windows Hebrew: David is a narrow serif (Word's PDFs report 0.735/0.249 em line metrics).
   david: { families: ['liberation serif'], metricCompatible: false, generic: 'serif', vmetrics: [0.735, 0.249, 0] },
   'ms sans serif': { families: ['liberation sans'], metricCompatible: false },
   'ms serif': { families: ['liberation serif'], metricCompatible: false },
   'small fonts': { families: ['liberation sans'], metricCompatible: false },
+  'britannic bold': { families: ['liberation sans'], metricCompatible: false, generic: 'sans', vmetrics: [0.833, 0.167, 0] },
 };
 
 type CjkRegion = 'sc' | 'tc' | 'hk' | 'jp' | 'kr';

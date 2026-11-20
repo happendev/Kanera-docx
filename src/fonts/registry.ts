@@ -20,10 +20,9 @@ import { mapSymbolChar, mathLetter, symbolFontKind, symbolLookalike, type Symbol
 
 export type FontOrigin = 'embedded' | 'user' | 'system' | 'bundled';
 
-/** A font supplied to the converter. Either `data` or `load` (with `family`) is required. */
-export interface FontSource {
-  data?: Uint8Array | ArrayBuffer;
-  load?: () => Promise<Uint8Array | ArrayBuffer>;
+type FontBytes = Uint8Array | ArrayBuffer;
+
+interface FontSourceMetadata {
   /** Family names this font answers to. Read from the font when `data` is given. */
   family?: string | string[];
   bold?: boolean;
@@ -34,6 +33,26 @@ export interface FontSource {
   /** Optional coverage test used to pick unloaded fonts for glyph fallback. */
   covers?: (codePoint: number) => boolean;
 }
+
+type FontSourceOptions<LoadedFont> = FontSourceMetadata & (
+  | { data: FontBytes; load?: () => Promise<LoadedFont> }
+  | { data?: undefined; family: string | string[]; load: () => Promise<LoadedFont> }
+);
+
+/** A font supplied to the converter as bytes or as a loader with a family name. */
+export type FontSource = FontSourceOptions<FontBytes>;
+
+/** Parsed once for an immutable packaged font. Each conversion still owns its face and budget. */
+export class BundledFontData {
+  readonly cost = new FontBudget();
+  readonly font: SfntFont;
+
+  constructor(data: Uint8Array) {
+    this.font = new SfntFont(data, 0, this.cost);
+  }
+}
+
+type LoadedFont = FontBytes | BundledFontData;
 
 let nextFaceId = 1;
 
@@ -60,6 +79,7 @@ export class FontFace {
     readonly font: SfntFont,
     readonly origin: FontOrigin,
     extraFamilies: string[] = [],
+    private sharedKerning?: { cost: FontBudget; target: FontBudget },
   ) {
     this.id = `F${nextFaceId++}`;
     const names = new Set<string>();
@@ -83,6 +103,15 @@ export class FontFace {
     }
   }
 
+  kerning(left: number, right: number): number {
+    const value = this.font.kerning(left, right);
+    if (this.sharedKerning) {
+      this.sharedKerning.cost.chargeKerningTo(this.sharedKerning.target);
+      this.sharedKerning = undefined;
+    }
+    return value;
+  }
+
   get familyName(): string {
     return this.font.names.typographicFamily ?? this.font.names.family;
   }
@@ -94,7 +123,7 @@ interface PendingFont {
   italic: boolean;
   weight: number;
   origin: FontOrigin;
-  load: () => Promise<Uint8Array | ArrayBuffer>;
+  load: () => Promise<LoadedFont>;
   collectionIndex?: number;
   covers?: (cp: number) => boolean;
   promise?: Promise<void>;
@@ -135,8 +164,16 @@ export interface ResolvedFace {
 
 const ORIGIN_RANK: Record<FontOrigin, number> = { embedded: 1, user: 0, system: 2, bundled: 3 };
 
-function toBytes(d: Uint8Array | ArrayBuffer): Uint8Array {
+function toBytes(d: FontBytes): Uint8Array {
   return d instanceof Uint8Array ? d : new Uint8Array(d);
+}
+
+function fontErrorMessage(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return 'Unknown font error';
+  }
 }
 
 export class FontRegistry {
@@ -152,7 +189,7 @@ export class FontRegistry {
   readonly hints = new Map<string, FontTableHints>();
   readonly warnings = new Set<string>();
 
-  add(source: FontSource, origin: FontOrigin): void {
+  add(source: FontSourceOptions<LoadedFont>, origin: FontOrigin): void {
     const extra = source.family ? (Array.isArray(source.family) ? source.family : [source.family]) : [];
     if (source.data) {
       this.readFaces(toBytes(source.data), source.collectionIndex, origin, extra);
@@ -177,7 +214,7 @@ export class FontRegistry {
   private readFaces(data: Uint8Array, index: number | undefined, origin: FontOrigin, families: string[]): void {
     const warn = (e: unknown) => {
       if (e instanceof FontLimitError) throw e;
-      this.warnings.add(`Could not read font ${families[0] ?? ''}: ${(e as Error).message}`);
+      this.warnings.add(`Could not read font ${families[0] ?? ''}: ${fontErrorMessage(e)}`);
     };
     let count: number;
     try {
@@ -243,15 +280,25 @@ export class FontRegistry {
   }
 
   private altName(norm: string): string | undefined {
-    const alt = this.hints.get(norm)?.altName;
-    return alt && normalizeFamily(alt) !== norm ? normalizeFamily(alt) : undefined;
+    const raw = this.hints.get(norm)?.altName;
+    const alt = raw ? normalizeFamily(raw) : undefined;
+    if (!alt || alt === norm) return undefined;
+    // Word for Mac fetches Segoe UI from Office's cloud fonts only for a document that sets text in
+    // it, which lists it in the font table. Otherwise the alternate name finds nothing, and a Myriad
+    // Pro whose alternate is Segoe UI comes out in Arial, the sans fallback. (Segoe UI Black, a
+    // separate font, is followed: Word's PDFs draw it for "Signifier Black".)
+    if (alt === 'segoe ui' && !this.hints.has(alt)) return undefined;
+    return alt;
   }
 
   /** Line metrics of the substitute family `cand` for `norm` (or for its alternate name). */
   private substituteMetrics(norm: string, cand: string): [number, number, number] | undefined {
     for (const name of [norm, this.altName(norm)]) {
       const sub = name && cand !== name ? substituteFamilies(name) : null;
-      if (sub?.vmetrics && sub.families.includes(cand)) return sub.vmetrics;
+      if (!sub?.vmetrics || !sub.families.includes(cand)) continue;
+      // A font reached by its alternate name has no line gap: Word for Mac sets text it draws in
+      // Helvetica for "Helvetica, Arial, sans-serif" 1.0 em apart, and text asking for Helvetica 1.2.
+      return name === norm ? sub.vmetrics : [sub.vmetrics[0], sub.vmetrics[1], 0];
     }
     if (cand === norm) return undefined;
     return cjkLineMetrics(norm) ?? (this.generic(norm) === 'cjk' && /^(noto|source han) serif/.test(cand) ? NOTO_SANS_CJK_LINE : undefined);
@@ -359,11 +406,17 @@ export class FontRegistry {
     if (!p.promise) {
       p.promise = (async () => {
         try {
-          const data = toBytes(await p.load());
-          this.readFaces(data, p.collectionIndex, p.origin, p.families);
+          const data = await p.load();
+          if (data instanceof BundledFontData) {
+            this.budget.reserveFaces(1);
+            data.cost.chargeMappingsTo(this.budget);
+            this.addFace(new FontFace(data.font, p.origin, p.families, { cost: data.cost, target: this.budget }));
+          } else {
+            this.readFaces(toBytes(data), p.collectionIndex, p.origin, p.families);
+          }
         } catch (e) {
           if (e instanceof FontLimitError) throw e;
-          this.warnings.add(`Could not load font ${p.families[0]}: ${(e as Error).message}`);
+          this.warnings.add(`Could not load font ${p.families[0]}: ${fontErrorMessage(e)}`);
         }
         p.loaded = true;
       })();
@@ -476,6 +529,12 @@ export class FontRegistry {
       const withGlyph = list.filter((f) => f.font.hasGlyph(mapped));
       if (withGlyph.length) {
         result = this.fallback(primary, this.pickStyle(withGlyph, bold, italic), bold, italic);
+        // A Latin, Greek or Cyrillic letter that a stand-in lacks is one the real font most likely
+        // has (Arial Black has Cyrillic, Archivo Black hasn't), so its line keeps the real font's
+        // metrics.
+        if (cp < 0x530 && (primary.ascent !== primary.face.ascent || primary.descent !== primary.face.descent)) {
+          result = { ...result, ascent: primary.ascent, descent: primary.descent, externalLeading: primary.externalLeading };
+        }
         found = true;
         break;
       }
