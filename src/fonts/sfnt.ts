@@ -494,18 +494,18 @@ export class SfntFont {
     return [glyf.offset + start, glyf.offset + end];
   }
 
-  /** Components referenced by a composite glyph. */
-  compositeComponents(gid: number): number[] {
+  /** Component IDs and the offsets of their ID fields within a composite glyph. */
+  compositeComponents(gid: number): Array<{ gid: number; offset: number }> {
     const range = this.glyphRange(gid);
     if (!range || range[1] - range[0] < 10) return [];
     const [start, end] = range;
     if (this.r.i16(start) >= 0) return [];
-    const out: number[] = [];
+    const out: Array<{ gid: number; offset: number }> = [];
     let p = start + 10;
     for (;;) {
       requireBytes(p, 4, end);
       const flags = this.r.u16(p);
-      out.push(this.r.u16(p + 2));
+      out.push({ gid: this.r.u16(p + 2), offset: p + 2 - start });
       p += 4;
       p += flags & 0x0001 ? 4 : 2;
       if (flags & 0x0008) p += 2;

@@ -1,35 +1,53 @@
 import type { SfntFont } from './sfnt.js';
 
-/**
- * Subset a TrueType-outline font for PDF embedding.
- *
- * Glyph ids are preserved (unused glyphs become empty), so the PDF can use an Identity
- * CIDToGIDMap and the layout's glyph ids stay valid. Returns null for CFF-outline fonts, which are
- * embedded whole instead.
- */
-export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>): Uint8Array | null {
-  if (font.isCFF || !font.table('glyf') || !font.table('loca')) return null;
-  const keep = new Set<number>([0]);
-  const queue = [...usedGlyphs];
-  while (queue.length) {
-    const g = queue.pop()!;
-    if (g >= font.numGlyphs || keep.has(g)) continue;
-    keep.add(g);
-    for (const c of font.compositeComponents(g)) if (!keep.has(c)) queue.push(c);
+export function canSubsetTrueType(font: SfntFont): boolean {
+  if ((font.fsType & 0x100) || font.isCFF || !font.table('glyf') || !font.table('loca')) return false;
+  const metrics = font.numberOfHMetrics;
+  return metrics > 0 && metrics <= font.numGlyphs &&
+    (font.table('hmtx')?.length ?? 0) >= 2 * (font.numGlyphs + metrics);
+}
+
+/** Glyph zero is reserved. Drawn glyphs follow, then composite dependencies. */
+export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>): { data: Uint8Array; glyphIds: Map<number, number> } {
+  const glyphIds = new Map<number, number>([[0, 0]]);
+  for (const gid of usedGlyphs) {
+    if (gid < 0 || gid >= font.numGlyphs) throw new Error('Invalid glyph ID for TrueType subset');
+    if (!glyphIds.has(gid)) glyphIds.set(gid, glyphIds.size);
+  }
+  const components = new Map<number, ReturnType<SfntFont['compositeComponents']>>();
+  // Iterating the map visits newly appended components as well, including nested composites.
+  for (const gid of glyphIds.keys()) {
+    const children = font.compositeComponents(gid);
+    if (children.length) components.set(gid, children);
+    for (const child of children) {
+      if (child.gid >= font.numGlyphs) throw new Error('Invalid component ID for TrueType subset');
+      if (!glyphIds.has(child.gid)) glyphIds.set(child.gid, glyphIds.size);
+    }
   }
 
-  // glyf + loca (long format)
   const pieces: Uint8Array[] = [];
-  const loca = new Uint8Array((font.numGlyphs + 1) * 4);
+  const loca = new Uint8Array((glyphIds.size + 1) * 4);
   const locaView = new DataView(loca.buffer);
+  const hmtx = new Uint8Array(glyphIds.size * 4);
+  const metrics = new DataView(hmtx.buffer);
+  const original = font.tableBytes('hmtx')!;
+  const originalMetrics = new DataView(original.buffer, original.byteOffset, original.byteLength);
+  const longMetrics = font.numberOfHMetrics;
   let off = 0;
-  for (let g = 0; g < font.numGlyphs; g++) {
-    locaView.setUint32(g * 4, off);
-    if (!keep.has(g)) continue;
-    const range = font.glyphRange(g);
-    if (!range) continue;
-    const bytes = font.data.subarray(range[0], range[1]);
-    if (bytes.length === 0) continue;
+  for (const [gid, id] of glyphIds) {
+    locaView.setUint32(id * 4, off);
+    const bearing = gid < longMetrics ? gid * 4 + 2 : (longMetrics + gid) * 2;
+    metrics.setUint16(id * 4, font.advance(gid));
+    metrics.setInt16(id * 4 + 2, originalMetrics.getInt16(bearing));
+    const [start, end] = font.glyphRange(gid)!;
+    if (start === end) continue;
+    let bytes = font.data.subarray(start, end);
+    const children = components.get(gid);
+    if (children) {
+      bytes = new Uint8Array(bytes);
+      const glyph = new DataView(bytes.buffer);
+      for (const child of children) glyph.setUint16(child.offset, glyphIds.get(child.gid)!);
+    }
     pieces.push(bytes);
     off += bytes.length;
     if (off % 4) {
@@ -38,7 +56,7 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>): Ui
       off += pad;
     }
   }
-  locaView.setUint32(font.numGlyphs * 4, off);
+  locaView.setUint32(glyphIds.size * 4, off);
   const glyf = new Uint8Array(off);
   let p = 0;
   for (const piece of pieces) {
@@ -51,12 +69,19 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>): Ui
   head[50] = 0;
   head[51] = 1;
   head[8] = head[9] = head[10] = head[11] = 0;
+  const hhea = new Uint8Array(font.tableBytes('hhea')!);
+  new DataView(hhea.buffer).setUint16(34, glyphIds.size);
+  const maxp = new Uint8Array(font.tableBytes('maxp')!);
+  new DataView(maxp.buffer).setUint16(4, glyphIds.size);
 
   const tables = new Map<string, Uint8Array>();
   tables.set('head', head);
   tables.set('glyf', glyf);
   tables.set('loca', loca);
-  for (const tag of ['hhea', 'hmtx', 'maxp', 'cvt ', 'fpgm', 'prep', 'OS/2', 'name']) {
+  tables.set('hhea', hhea);
+  tables.set('hmtx', hmtx);
+  tables.set('maxp', maxp);
+  for (const tag of ['cvt ', 'fpgm', 'prep', 'OS/2', 'name']) {
     const b = font.tableBytes(tag);
     if (b) tables.set(tag, b);
   }
@@ -70,7 +95,7 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>): Ui
     p3[3] = 0;
     tables.set('post', p3);
   }
-  return buildSfnt(tables, 0x00010000);
+  return { data: buildSfnt(tables, 0x00010000), glyphIds };
 }
 
 function checksum(d: Uint8Array): number {

@@ -25,6 +25,8 @@ export interface ShapedRun {
 }
 
 const ZERO_WIDTH = new Set([0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0xfeff, 0x2060, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e]);
+/** Punctuation a fixed-pitch East Asian font (SimSun, MS Mincho) draws an em wide, like its ideographs. */
+const FULL_WIDTH_PUNCT = new Set([0xb7, 0x2014, 0x2015, 0x2018, 0x2019, 0x201c, 0x201d, 0x2026]);
 
 /**
  * Effective glyph size and baseline shift for superscript/subscript. Word works in half-points:
@@ -108,11 +110,20 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
       if (advanceCp !== mapped) gid = font.glyphId(advanceCp);
     }
     let advance = (font.advance(gid) / font.unitsPerEm) * glyphSize * scale;
+    const half = resolved.halfWidth && cp >= 0x20 && cp <= 0x7e;
+    const full = !half && FULL_WIDTH_PUNCT.has(cp) ? resolved.fullWidth?.get(gid) : undefined;
+    if (half) {
+      gid = resolved.halfWidth!.get(gid) ?? gid;
+      advance = (glyphSize * scale) / 2;
+    } else if (full !== undefined) {
+      gid = full;
+      advance = glyphSize * scale;
+    }
     if (cp === 0x2003 && gid === font.glyphId(0x20)) advance = glyphSize * scale;
     if (cp === 0x2002 && gid === font.glyphId(0x20)) advance = (glyphSize * scale) / 2;
     advance += props.spacing;
     // Pair kerning applies when w:kern is set and the font is at least that size.
-    if (props.kern > 0 && size >= props.kern && cur.glyphs.length > 0) {
+    if (props.kern > 0 && size >= props.kern && cur.glyphs.length > 0 && !half && full === undefined) {
       const prev = cur.glyphs[cur.glyphs.length - 1];
       if (prev.gid > 0 && gid > 0) prev.advance += (font.kerning(prev.gid, gid) / font.unitsPerEm) * glyphSize * scale;
     }

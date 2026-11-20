@@ -631,6 +631,7 @@ export class ParagraphLayout {
     let ext = 0;
     let textAscent = 0;
     let textDescent = 0;
+    let textTop = 0;
     let measured = false;
     const add = (asc: number, desc: number, lead: number, text = true) => {
       ascent = Math.max(ascent, asc);
@@ -639,6 +640,7 @@ export class ParagraphLayout {
       if (text) {
         textAscent = Math.max(textAscent, asc);
         textDescent = Math.max(textDescent, desc);
+        textTop = Math.max(textTop, asc + lead);
       }
       measured = true;
     };
@@ -649,6 +651,7 @@ export class ParagraphLayout {
     // leave Calibri lines exactly as tall as plain ones, while Symbol's taller "•" pushes the
     // baseline down (measured against Word's PDFs).
     let labelAscent = 0;
+    let pictures = false;
     for (let k = start; k < end; k++) {
       const a = atoms[k];
       if (k >= this.labelStart && k < this.labelEnd && (a.k === 'g' || a.k === 'tab')) {
@@ -668,9 +671,12 @@ export class ParagraphLayout {
           break;
         case 'br':
         case 'sep':
+          // A line break after nothing but pictures leaves the line sized as a line of pictures.
+          if (a.k === 'br' && pictures && textAscent + textDescent === 0) break;
           add(a.run.ascent, a.run.descent, a.run.extLeading);
           break;
         case 'obj':
+          pictures = true;
           add(a.h + a.props.position, Math.max(0, -a.props.position), 0, false);
           // A horizontal rule's line is as tall as its run's text.
           if (a.drawing.hr) add(a.run.ascent, a.run.descent, a.run.extLeading);
@@ -702,6 +708,10 @@ export class ParagraphLayout {
       textAscent = mark.ascent;
       textDescent = mark.descent;
     }
+    // A font's line gap sits above its own ascent, so a taller font takes in a shorter one's: Times
+    // New Roman beside SimSun or Cambria, or Arial beside 18pt Courier New, leaves the line as tall
+    // as the taller font makes it (measured against Word's PDFs).
+    if (textTop > 0) ext = Math.min(ext, textTop - textAscent);
     // The label's ascent competes with the text's ascent plus its leading: Symbol's "•" in a Times
     // line adds only what its ascent exceeds Times' ascent and line gap. "Multiple" spacing scales
     // the text's height only, not what a larger label adds.
@@ -969,7 +979,8 @@ export class ParagraphLayout {
           segStart = k;
           cur = null;
         }
-        if (g.gid === -1 || (a.cp === 0xad && k !== line.end - 1)) continue;
+        // A soft hyphen shows only where a line breaks at it, not at the paragraph's end.
+        if (g.gid === -1 || (a.cp === 0xad && (k !== line.end - 1 || line.end >= atoms.length))) continue;
         if (!cur) {
           const run = a.run;
           cur = {
@@ -1230,7 +1241,9 @@ export function lineHeight(
     // The grid lines a line takes count the font height without its external leading.
     const base = Math.max(ascent + descent, gridPitch);
     const snapped = Math.ceil(base / gridPitch - 0.01) * gridPitch;
-    height = snapped * p.line;
+    // "Multiple" spacing scales one grid line: text that takes more grid lines than that keeps
+    // just the lines it takes.
+    height = p.line > 1 ? Math.max(snapped, gridPitch * p.line) : snapped * p.line;
     // The document grid centres the text in the grid lines it takes.
     return { height, baseline: (snapped - natural) / 2 + natural - descent };
   }

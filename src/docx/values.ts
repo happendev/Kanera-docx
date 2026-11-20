@@ -159,6 +159,12 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
 }
 
 /** Apply DrawingML colour modifiers (values in 1/1000 percent as in the XML). */
+const toLinear = (c: number) => {
+  const v = c / 255;
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+};
+const fromLinear = (v: number) => 255 * (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.max(0, v) ** (1 / 2.4) - 0.055);
+
 export function applyColorMods(hex: string, mods: Array<{ name: string; val: number }>): { color: string; alpha: number } {
   let [r, g, b] = rgb(hex);
   let alpha = 1;
@@ -172,21 +178,20 @@ export function applyColorMods(hex: string, mods: Array<{ name: string; val: num
         [r, g, b] = hslToRgb(h, s, Math.max(0, Math.min(1, nl)));
         break;
       }
+      // Saturation is not capped at 100%: the colour moves on out and clips at the RGB cube, so a fully
+      // saturated 00B050 under satMod 115% is 00BD4F in Word's PDFs.
       case 'satMod': {
         const [h, s, l] = rgbToHsl(r, g, b);
-        [r, g, b] = hslToRgb(h, Math.max(0, Math.min(1, s * f)), l);
+        [r, g, b] = hslToRgb(h, Math.max(0, s * f), l).map((c) => Math.max(0, Math.min(255, c))) as [number, number, number];
         break;
       }
+      // Tint moves towards white by (1 - f) and shade towards black, both in linear light: accent2
+      // C0504D tinted 77% is D19392 in Word's PDFs, and black tinted 75% is 898989.
       case 'tint':
-        // Tint moves towards white by (1 - f).
-        r = r * f + 255 * (1 - f);
-        g = g * f + 255 * (1 - f);
-        b = b * f + 255 * (1 - f);
+        [r, g, b] = [r, g, b].map((c) => fromLinear(toLinear(c) * f + (1 - f)));
         break;
       case 'shade':
-        r *= f;
-        g *= f;
-        b *= f;
+        [r, g, b] = [r, g, b].map((c) => fromLinear(toLinear(c) * f));
         break;
       case 'alpha':
         alpha = f;

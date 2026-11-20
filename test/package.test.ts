@@ -22,7 +22,7 @@ it('ships the full font pack for the CLI and exposes the browser subset after an
       FULL_FONTS.map((font) => `fonts/${font.file}`).sort(),
     );
     expect(files).toEqual(expect.arrayContaining([
-      'LICENSE', 'NOTICE', 'fonts/licenses/NotoSansCJK-OFL.txt', 'fonts/licenses/LiberationSansNarrow-EXCEPTION.txt',
+      'LICENSE', 'NOTICE', 'fonts/licenses/NotoSansCJK-OFL.txt', 'fonts/licenses/NotoSerifCJK-OFL.txt', 'fonts/licenses/LiberationSansNarrow-EXCEPTION.txt',
     ]));
     renameSync(join(dir, tarball.filename), join(dir, 'library.tgz'));
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'docx-browser-consumer', private: true, type: 'module' }));
@@ -49,7 +49,8 @@ it('ships the full font pack for the CLI and exposes the browser subset after an
     const full = spawnSync(process.execPath, [cli, doc, pdf], { encoding: 'utf8' });
     expect(full.status).toBe(0);
     expect(full.stderr).toBe('');
-    expect(readFileSync(pdf, 'latin1')).toContain('NotoSansCJKJP-Regular');
+    // The text has no East Asian font, so it takes Times New Roman's: a serif, like Word's Mincho fallback.
+    expect(readFileSync(pdf, 'latin1')).toContain('NotoSerifCJKSC-Regular');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

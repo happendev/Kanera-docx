@@ -63,8 +63,8 @@ const RULES: Record<string, SubstituteRule> = {
   verdana: { families: ['dejavu sans'], metricCompatible: false, vmetrics: [2059 / 2048, 430 / 2048, 0] },
   tahoma: { families: ['liberation sans'], metricCompatible: false, vmetrics: [2049 / 2048, 423 / 2048, 0] },
   'trebuchet ms': { families: ['roboto', 'liberation sans'], metricCompatible: false, vmetrics: [1923 / 2048, 455 / 2048, 0] },
-  // Century Gothic was drawn on ITC Avant Garde's widths, as is TeX Gyre Adventor (available via
-  // fonts or systemFonts). Word's line metrics apply whichever face stands in.
+  // Century Gothic was drawn on ITC Avant Garde's widths, as is TeX Gyre Adventor (in the full
+  // pack). Word's line metrics apply whichever face stands in.
   'century gothic': { families: ['tex gyre adventor'], close: ['liberation sans'], metricCompatible: true, vmetrics: [2060 / 2048, 451 / 2048, 0] },
   'gill sans mt': { families: ['selawik', 'liberation sans'], metricCompatible: false },
   'lucida sans unicode': { families: ['dejavu sans'], metricCompatible: false, vmetrics: [1.097, 0.44, 0] },
@@ -178,7 +178,9 @@ const CJK_FONT_REGIONS: Array<[RegExp, CjkRegion]> = [
   [/malgun|batang|gulim|dotum|gungsuh|myeongjo|myungjo|nanum|apple sd gothic|맑은|바탕|굴림|돋움|궁서|(noto|source han).* (kr|k)$/i, 'kr'],
 ];
 const CJK_CHARSETS: Record<string, CjkRegion> = { '80': 'jp', '81': 'kr', '86': 'sc', '88': 'tc' };
-const CJK_SERIF = /mincho|ming|song|sun|batang|gungsuh|myeongjo|myungjo|kai|fangsong|serif|明朝|明體|宋|楷|仿宋|바탕|궁서/i;
+// Kai (楷) is a brush script, neither Song nor Hei. It falls back to sans: Word for Mac draws 標楷體
+// (DFKai-SB) and KaiTi_GB2312 in YaHei, and Noto Sans matched Word's Kai text as closely overall.
+const CJK_SERIF = /mincho|ming|song|sun|batang|gungsuh|myeongjo|myungjo|fangsong|serif|明朝|明體|宋|仿宋|바탕|궁서/i;
 
 function languageRegion(lang: string | undefined): CjkRegion | undefined {
   const l = lang?.toLowerCase() ?? '';
@@ -191,9 +193,9 @@ function languageRegion(lang: string | undefined): CjkRegion | undefined {
 }
 
 /**
- * East Asian fallback families for a font, in order: those of the font's own region first (from its
- * name or font-table charset, then the text's East Asian language), each in the font's style (Mincho
- * and Song are serif, Gothic and Hei sans; a Latin font's own class otherwise), then other regions.
+ * East Asian fallback families for a font, in order: those in the font's style (Mincho and Song are
+ * serif, Gothic and Hei sans; a Latin font's own class otherwise), the font's own region first (from
+ * its name or font-table charset, then the text's East Asian language), then the other style.
  * The Noto CJK fonts come per region (see notofonts/noto-cjk): "Noto Serif CJK SC" for SimSun.
  */
 export function cjkFallbacks(family: string, lang?: string, hints?: FontTableHints): string[] {
@@ -205,8 +207,10 @@ export function cjkFallbacks(family: string, lang?: string, hints?: FontTableHin
   const regions = region ? [region, ...(region === 'hk' ? ['tc' as const] : region === 'tc' ? ['hk' as const] : []), ...CJK_REGIONS] : CJK_REGIONS;
   const sourceHan: Record<CjkRegion, string> = { sc: 'sc', tc: 'tc', hk: 'hc', jp: 'jp', kr: 'k' };
   const out: string[] = [];
-  for (const r of new Set(regions)) {
-    for (const style of serif ? (['serif', 'sans'] as const) : (['sans', 'serif'] as const)) {
+  // Style before region: a Mincho or Song text reads closer in another region's serif (the forms
+  // of a few characters differ) than in its own region's sans, the shape of every character.
+  for (const style of serif ? (['serif', 'sans'] as const) : (['sans', 'serif'] as const)) {
+    for (const r of new Set(regions)) {
       out.push(`noto ${style} cjk ${r}`, `noto ${style} ${r}`, `source han ${style} ${sourceHan[r]}`, ...CJK_PLATFORM[r][style]);
     }
   }
@@ -253,7 +257,8 @@ function fontRule(normalized: string): SubstituteRule | undefined {
 // Fonts Word for Mac lacks (the _GB2312 ones, DFKai-SB) are left out: it draws them in YaHei.
 const SONG_METRICS: [number, number, number] = [258 / 256, 74 / 256, 0];
 const MING_METRICS: [number, number, number] = [205 / 256, 51 / 256, 0];
-const DENG_METRICS: [number, number, number] = [1659 / 2048, 475 / 2048, 0];
+// DengXian's own metrics are 1659 and 475 units; Word makes its lines 1.3 times that, like SimSun's.
+const DENG_METRICS: [number, number, number] = [(1659 + 0.15 * 2134) / 2048, (475 + 0.15 * 2134) / 2048, 0];
 const CJK_LINE_METRICS: Record<string, [number, number, number]> = {
   simsun: SONG_METRICS, nsimsun: SONG_METRICS, 宋体: SONG_METRICS, 新宋体: SONG_METRICS,
   simhei: SONG_METRICS, 黑体: SONG_METRICS, kaiti: SONG_METRICS, 楷体: SONG_METRICS,
@@ -269,10 +274,72 @@ const CJK_LINE_METRICS: Record<string, [number, number, number]> = {
   meiryo: [1.06, 0.44, 0], メイリオ: [1.06, 0.44, 0],
 };
 
+// East Asian fonts of fixed pitch draw ASCII half an em wide (the proportional ones, PMingLiU or
+// MS PGothic, and the newer UI fonts like YaHei or Meiryo, have Latin designs of their own).
+const HALF_WIDTH_LATIN = new Set([
+  'simsun', '宋体', 'nsimsun', '新宋体', 'simhei', '黑体', 'kaiti', '楷体', 'fangsong', '仿宋',
+  'mingliu', '細明體', 'mingliu_hkscs', 'dfkai-sb', '標楷體',
+  'ms mincho', 'ｍｓ 明朝', 'ms gothic', 'ｍｓ ゴシック',
+  'batangche', '바탕체', 'gulimche', '굴림체', 'dotumche', '돋움체', 'gungsuhche', '궁서체',
+]);
+
+/** Whether `family` is an East Asian font whose ASCII characters are all half an em wide. */
+export function halfWidthLatin(family: string): boolean {
+  return HALF_WIDTH_LATIN.has(unstyledFamily(normalizeFamily(family)));
+}
+
+// Noto Sans CJK's line metrics (its win ascent and descent). An East Asian font of unknown metrics
+// keeps them when Noto Serif CJK stands in, whose lines are 0.8% shorter, so the glyph style never
+// moves the layout: on a document grid that small difference can halve the height of every line.
+export const NOTO_SANS_CJK_LINE: [number, number, number] = [1.16, 0.288, 0];
+
 /** The original line metrics of a missing East Asian system font, which its fallback keeps. */
 export function cjkLineMetrics(family: string): [number, number, number] | undefined {
   const n = unstyledFamily(normalizeFamily(family));
   return Object.hasOwn(CJK_LINE_METRICS, n) ? CJK_LINE_METRICS[n] : undefined;
+}
+
+// Word on Windows draws an East Asian character that the requested East Asian font lacks from a
+// fallback font of its own, and the line grows to about 1.71em, the height Word gives Microsoft
+// YaHei and Malgun Gothic. Chinese and Japanese fonts have no Hangul, and a Japanese font (its
+// Shift_JIS set, extended by JIS X 0213 with traditional forms like 檔) lacks the simplified ones.
+const EAST_ASIAN_FALLBACK_LINE: [number, number, number] = [1.28, 0.43, 0];
+let jisChars: Set<number> | null | undefined;
+let gb2312Chars: Set<number> | null | undefined;
+
+/** The characters of a double-byte legacy charset, or null where the runtime can't decode it. */
+function legacyCharset(label: string, leads: [number, number], trails: [number, number]): Set<number> | null {
+  try {
+    const decoder = new TextDecoder(label);
+    const out = new Set<number>();
+    const pair = new Uint8Array(2);
+    for (let a = leads[0]; a <= leads[1]; a++) {
+      for (let b = trails[0]; b <= trails[1]; b++) {
+        pair[0] = a;
+        pair[1] = b;
+        const s = decoder.decode(pair);
+        if (s.length === 1 && s !== '\ufffd') out.add(s.charCodeAt(0));
+      }
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+const isHangul = (cp: number) => (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0x1100 && cp <= 0x11ff) || (cp >= 0x3130 && cp <= 0x318f);
+
+/** Word's line metrics for an East Asian character that the East Asian system font `family` lacks. */
+export function cjkFallbackLine(family: string, cp: number): [number, number, number] | undefined {
+  const han = cp >= 0x4e00 && cp <= 0x9fff;
+  if (!(han || isHangul(cp)) || !cjkLineMetrics(family)) return undefined;
+  const region = CJK_FONT_REGIONS.find(([re]) => re.test(family.trim()))?.[1];
+  if (!region || region === 'kr') return undefined;
+  if (!han) return EAST_ASIAN_FALLBACK_LINE;
+  if (region !== 'jp') return undefined;
+  jisChars ??= legacyCharset('shift_jis', [0x81, 0xfc], [0x40, 0xfc]);
+  gb2312Chars ??= legacyCharset('gbk', [0xb0, 0xf7], [0xa1, 0xfe]);
+  return jisChars && gb2312Chars && !jisChars.has(cp) && gb2312Chars.has(cp) ? EAST_ASIAN_FALLBACK_LINE : undefined;
 }
 
 /** Families tried, in order, for a missing font; `compatible` are those with the same widths. */

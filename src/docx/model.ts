@@ -392,6 +392,25 @@ export interface ImageRef {
 export interface Fill {
   color: Color;
   alpha: number;
+  /** A gradient fill; `color` stands in for it where one colour must do. */
+  gradient?: GradientFill;
+}
+
+/** A DrawingML gradient: colour stops at positions 0..1, along a line or out from a focus. */
+export interface GradientFill {
+  stops: Array<{ pos: number; color: string }>;
+  /** A linear gradient's direction, in degrees clockwise from east. */
+  angle: number;
+  /** The angle is for the unit square, stretched with the shape (a:lin scaled). */
+  scaled?: boolean;
+  /** A path gradient runs from its focus rectangle (insets, as fractions of the box) out to the edges. */
+  path?: 'circle' | 'rect' | 'shape';
+  focus?: { l: number; t: number; r: number; b: number };
+  /**
+   * Blend in linear light, easing in and out from stop to stop. Word draws the gradients of charts,
+   * SmartArt and drawing canvases so; an ordinary shape's gradient is a straight blend in sRGB.
+   */
+  eased?: boolean;
 }
 
 export interface LineStyle {
@@ -416,6 +435,8 @@ export interface AnchorProps {
   distB: number;
   distL: number;
   distR: number;
+  /** The outline tight and through wrapping follow, as fractions of the object's extent. */
+  polygon?: Array<[number, number]>;
   posH: PositionSpec;
   posV: PositionSpec;
   layoutInCell: boolean;
@@ -434,6 +455,182 @@ export interface TextBox {
   vertical?: string;
   /** Draw content past the box edges (floating tables, whose border halves sit outside the grid). */
   unclipped?: boolean;
+}
+
+/** Text style of a chart element; colours are hex RGB. */
+export interface ChartTextStyle {
+  font: string;
+  size: number;
+  bold: boolean;
+  italic: boolean;
+  color: string;
+  /** Text rotation in degrees, clockwise; undefined lets the chart choose (category labels turn when crowded). */
+  rotation?: number;
+}
+
+export interface ChartLine {
+  color: string;
+  width: number;
+  dash?: string;
+  alpha?: number;
+}
+
+/** Fill and outline of a chart element: null draws none. */
+export interface ChartShape {
+  /** A gradient fill keeps its stops (positions 0..1) and direction; `color` stands in for it where one colour must do. */
+  fill: { color: string; alpha: number; gradient?: GradientFill } | null;
+  line: ChartLine | null;
+  /** An outer shadow (a:outerShdw): the shape again, offset by (dx, dy) pt and blurred by `blur` pt. */
+  shadow?: { dx: number; dy: number; blur: number; color: string; alpha: number };
+}
+
+/** A series' trendline (c:trendline), fitted to its values. */
+export interface ChartTrendline {
+  /** linear, exp, log, poly, power or movingAvg. */
+  type: string;
+  /** The polynomial's order or the moving average's period. */
+  order: number;
+  /** How far the line runs on past the last x value and back before the first. */
+  forward: number;
+  backward: number;
+  /** A fixed y intercept (linear, exponential and polynomial fits). */
+  intercept?: number;
+  /** The legend entry's own name. */
+  name?: string;
+  line: ChartLine | null;
+}
+
+export interface ChartLabels {
+  value: boolean;
+  category: boolean;
+  series: boolean;
+  percent: boolean;
+  /** c:dLblPos: ctr, inEnd, inBase, outEnd, t, b, l, r, bestFit. */
+  position?: string;
+  style: ChartTextStyle;
+  format?: string;
+  separator?: string;
+  /** Points whose label is deleted. */
+  hidden?: number[];
+}
+
+export interface ChartMarker {
+  /** none, circle, square, diamond, triangle, x, star, plus, dash, dot. */
+  symbol: string;
+  size: number;
+  shape: ChartShape;
+}
+
+export interface ChartSeries {
+  name: string;
+  categories: string[];
+  /** Category values when the categories are numbers or dates, for number formats. */
+  categoryNumbers?: Array<number | null>;
+  categoryFormat?: string;
+  values: Array<number | null>;
+  /** Scatter and bubble x values. */
+  xValues?: Array<number | null>;
+  format: string;
+  shape: ChartShape;
+  marker?: ChartMarker;
+  smooth: boolean;
+  labels?: ChartLabels;
+  /** Per-point formatting (c:dPt), by point index. */
+  points: Array<{ idx: number; shape: ChartShape }>;
+  /** Pie slice explosion (percent of radius). */
+  explosion: number;
+  trendlines?: ChartTrendline[];
+  errorBars?: ChartErrorBars[];
+}
+
+/** A series' error bars (c:errBars): an amount either side of each point. */
+export interface ChartErrorBars {
+  /** Along the value axis, or a scatter plot's x axis. */
+  dir: 'x' | 'y';
+  type: 'both' | 'plus' | 'minus';
+  valType: 'fixedVal' | 'percentage' | 'stdDev' | 'stdErr' | 'cust';
+  value: number;
+  /** Custom amounts, by point. */
+  plus?: Array<number | null>;
+  minus?: Array<number | null>;
+  endCap: boolean;
+  line: ChartLine | null;
+}
+
+export interface ChartTitle {
+  /** Paragraphs of runs. */
+  paragraphs: Array<Array<{ text: string; style: ChartTextStyle }>>;
+  overlay: boolean;
+  /** Manual position as fractions of the chart (top-left of the title). */
+  x?: number;
+  y?: number;
+  shape: ChartShape;
+}
+
+export interface ChartAxis {
+  id: string;
+  kind: 'cat' | 'val' | 'date' | 'ser';
+  position: 'l' | 'r' | 't' | 'b';
+  deleted: boolean;
+  reverse: boolean;
+  min?: number;
+  max?: number;
+  majorUnit?: number;
+  logBase?: number;
+  format: string;
+  /** Use the series' own number format (c:numFmt sourceLinked). */
+  sourceLinked: boolean;
+  line: ChartLine | null;
+  gridlines: ChartLine | null;
+  minorGridlines: ChartLine | null;
+  majorTick: 'out' | 'in' | 'cross' | 'none';
+  labelPosition: 'nextTo' | 'low' | 'high' | 'none';
+  style: ChartTextStyle;
+  title?: ChartTitle;
+  crossAxis: string;
+  crosses: 'autoZero' | 'min' | 'max' | number;
+  /** Categories sit between tick marks (bars) rather than on them. */
+  between: boolean;
+  labelSkip?: number;
+}
+
+export interface ChartPlot {
+  type: 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'radar';
+  /** Radar plots: lines (with or without markers) or filled shapes. */
+  radarStyle?: 'standard' | 'marker' | 'filled';
+  horizontal: boolean;
+  grouping: 'clustered' | 'stacked' | 'percentStacked' | 'standard';
+  gapWidth: number;
+  overlap: number;
+  varyColors: boolean;
+  holeSize: number;
+  firstSliceAngle: number;
+  /** Line and scatter plots: whether series without their own marker get one. */
+  markers: boolean;
+  /** Scatter: lines between points unless the style is marker-only. */
+  lines: boolean;
+  series: ChartSeries[];
+  axes: string[];
+}
+
+export interface ChartLayout {
+  /** The rectangle is the plot's inner area (without axis labels) rather than its outer one. */
+  inner: boolean;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** A chart drawn from its part's cached data. */
+export interface Chart {
+  title?: ChartTitle;
+  plots: ChartPlot[];
+  axes: ChartAxis[];
+  legend?: { position: 'r' | 'l' | 't' | 'b' | 'tr'; overlay: boolean; style: ChartTextStyle; shape: ChartShape; hidden: number[]; layout?: ChartLayout };
+  plotLayout?: ChartLayout;
+  space: ChartShape;
+  plotShape: ChartShape;
 }
 
 export interface Drawing {
@@ -466,6 +663,8 @@ export interface Drawing {
   children?: Drawing[];
   /** Watermark-style text drawn along the shape (VML textpath / WordArt). */
   textPath?: { text: string; font: string; bold: boolean; italic: boolean; color: Color; alpha: number };
+  /** A chart, drawn in the drawing's box. */
+  chart?: Chart;
   hidden: boolean;
   name?: string;
   /**

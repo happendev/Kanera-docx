@@ -2,16 +2,20 @@ import type { FontRequest } from '../docx/model.js';
 import { SfntFont, collectionSize, FontBudget, FontLimitError } from './sfnt.js';
 import {
   GENERIC_FALLBACKS,
+  cjkFallbackLine,
   cjkFallbacks,
   cjkLineMetrics,
+  NOTO_SANS_CJK_LINE,
   genericFamily,
   glyphFallbacks,
+  halfWidthLatin,
   normalizeFamily,
   substituteFamilies,
   unstyledFamily,
   type FontTableHints,
   type GenericFamily,
 } from './substitutes.js';
+import { singleSubstitutions } from './gsub.js';
 import { mapSymbolChar, mathLetter, symbolFontKind, symbolLookalike, type SymbolFontKind } from './symbol-map.js';
 
 export type FontOrigin = 'embedded' | 'user' | 'system' | 'bundled';
@@ -101,7 +105,7 @@ interface PendingFont {
  * Word draws symbols the requested font lacks (check boxes, stars, dingbats) from Segoe UI Symbol,
  * on Windows and Mac alike, and their line takes its height: 2210 + 514 of 2048 units.
  */
-const SEGOE_SYMBOL: [number, number, number] = [2210 / 2048, 514 / 2048, 0];
+const SEGOE_SYMBOL: [number, number] = [2210 / 2048, 514 / 2048];
 function symbolFallback(cp: number): boolean {
   // Miscellaneous Symbols and Dingbats. Other symbol blocks are in some Office text fonts and not
   // others, so they keep the line metrics of whichever font draws them.
@@ -120,6 +124,13 @@ export interface ResolvedFace {
   symbolMap?: SymbolFontKind;
   /** The character drawn in place of the requested one (the plain letter of a mathematical letter). */
   char?: number;
+  /**
+   * Set when a stand-in draws a fixed-pitch East Asian font: ASCII is then half an em wide, drawn
+   * with the stand-in's half-width forms (its OpenType hwid substitutions, by glyph id).
+   */
+  halfWidth?: Map<number, number>;
+  /** With halfWidth: the stand-in's full-width forms (fwid), for the punctuation such a font draws an em wide. */
+  fullWidth?: Map<number, number>;
 }
 
 const ORIGIN_RANK: Record<FontOrigin, number> = { embedded: 1, user: 0, system: 2, bundled: 3 };
@@ -135,6 +146,8 @@ export class FontRegistry {
   private byFamily = new Map<string, FontFace[]>();
   private resolveCache = new Map<string, ResolvedFace>();
   private glyphCache = new Map<string, ResolvedFace>();
+  private fallbackLines = new WeakMap<ResolvedFace, ResolvedFace>();
+  private widthFormCache = new WeakMap<FontFace, { half: Map<number, number>; full: Map<number, number> }>();
   private symbolCache = new Map<string, number>();
   readonly hints = new Map<string, FontTableHints>();
   readonly warnings = new Set<string>();
@@ -240,7 +253,8 @@ export class FontRegistry {
       const sub = name && cand !== name ? substituteFamilies(name) : null;
       if (sub?.vmetrics && sub.families.includes(cand)) return sub.vmetrics;
     }
-    return cand !== norm ? cjkLineMetrics(norm) : undefined;
+    if (cand === norm) return undefined;
+    return cjkLineMetrics(norm) ?? (this.generic(norm) === 'cjk' && /^(noto|source han) serif/.test(cand) ? NOTO_SANS_CJK_LINE : undefined);
   }
 
   private cjk(family: string, lang?: string): string[] {
@@ -405,6 +419,11 @@ export class FontRegistry {
       // A real symbol font keeps its encoding; any other face needs characters remapped.
       const isRealSymbol = symKind !== null && face.font.symbolCmap;
       result = this.styled(face, styleBold, styleItalic, symKind && !isRealSymbol ? symKind : undefined, this.substituteMetrics(norm, cand));
+      if (cand !== norm && halfWidthLatin(norm)) {
+        const { half, full } = this.widthForms(face);
+        if (half.size) result.halfWidth = half;
+        if (full.size) result.fullWidth = full;
+      }
       if (cand !== norm && symKind === null && !this.isMetricSubstitute(norm, cand)) this.warnings.add(`Font "${family}" not available; using ${face.familyName}`);
       break;
     }
@@ -444,7 +463,7 @@ export class FontRegistry {
   faceForChar(family: string, bold: boolean, italic: boolean, cp: number, lang?: string, drawn = false): ResolvedFace {
     const primary = this.resolve(family, bold, italic, lang);
     const mapped = primary.symbolMap ? this.symbolChar(primary.symbolMap, cp) : cp;
-    if (primary.face.font.hasGlyph(mapped) || cp < 0x20 || cp === 0xa0 || cp === 0x2028) return primary;
+    if (primary.face.font.hasGlyph(mapped) || cp < 0x20 || cp === 0xa0 || cp === 0x2028) return this.eastAsianFallbackLine(family, cp, primary);
     if (synthesized(primary.face.font, cp)) return primary;
     const key = `${family}\u0000${bold ? 1 : 0}${italic ? 1 : 0}\u0000${cp}\u0000${lang ?? ''}\u0000${drawn ? 1 : 0}`;
     const cached = this.glyphCache.get(key);
@@ -472,19 +491,41 @@ export class FontRegistry {
       if (!any && !math) this.warnings.add(this.missingGlyph(family, primary.symbolMap, cp, mapped));
     }
     if (found && !primary.symbolMap && (drawn || symbolFallback(cp))) result = { ...result, ...this.symbolLine(family, primary, drawn) };
+    result = this.eastAsianFallbackLine(family, cp, result);
     this.glyphCache.set(key, result);
     return result;
   }
 
+  /** A face's half- and full-width forms of proportional glyphs (empty when it has none). */
+  private widthForms(face: FontFace): { half: Map<number, number>; full: Map<number, number> } {
+    let out = this.widthFormCache.get(face);
+    if (!out) {
+      const gsub = face.font.tableBytes('GSUB');
+      out = gsub ? { half: singleSubstitutions(gsub, 'hwid'), full: singleSubstitutions(gsub, 'fwid') } : { half: new Map(), full: new Map() };
+      this.widthFormCache.set(face, out);
+    }
+    return out;
+  }
+
+  /** `face` with Word's line metrics for an East Asian character the requested font lacks (see cjkFallbackLine). */
+  private eastAsianFallbackLine(family: string, cp: number, face: ResolvedFace): ResolvedFace {
+    const line = cjkFallbackLine(family, cp);
+    if (!line) return face;
+    let out = this.fallbackLines.get(face);
+    if (!out) this.fallbackLines.set(face, (out = { ...face, ascent: line[0], descent: line[1], externalLeading: line[2] }));
+    return out;
+  }
+
   /**
    * Line metrics for a symbol (a check box, star or dingbat) that the requested font lacks. Word
-   * draws it from Segoe UI Symbol and the line takes that font's height. A missing East Asian
-   * font has these symbols itself (MS Gothic's ☐ is Word's content-control check box), and Word
-   * draws a legacy form check box as a shape, so in both the requested font's height stands.
+   * draws it from Segoe UI Symbol and the line takes that font's height, still with the requested
+   * font's external leading above it. A missing East Asian font has these symbols itself (MS
+   * Gothic's ☐ is Word's content-control check box), and Word draws a legacy form check box as a
+   * shape, so in both the requested font's height stands.
    */
   private symbolLine(family: string, primary: ResolvedFace, drawn: boolean): Pick<ResolvedFace, 'ascent' | 'descent' | 'externalLeading'> {
     if (drawn || cjkLineMetrics(family)) return { ascent: primary.ascent, descent: primary.descent, externalLeading: primary.externalLeading };
-    return { ascent: SEGOE_SYMBOL[0], descent: SEGOE_SYMBOL[1], externalLeading: SEGOE_SYMBOL[2] };
+    return { ascent: SEGOE_SYMBOL[0], descent: SEGOE_SYMBOL[1], externalLeading: primary.externalLeading };
   }
 
   /**

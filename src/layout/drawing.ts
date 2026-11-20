@@ -1,6 +1,8 @@
 import type { Drawing, LineStyle, RunProps } from '../docx/model.js';
 import { DEFAULT_RUN } from '../docx/props.js';
 import { layoutBlocks, type BoxEnv } from './box.js';
+import { renderChart } from './chart.js';
+import { gradientOps } from './gradient.js';
 import { metafileOps } from './metafile.js';
 import { shapeText } from './shaper.js';
 import { translateOps, type DrawOp, type GlyphOp, type PathSeg } from './types.js';
@@ -37,6 +39,29 @@ function ellipse(x: number, y: number, w: number, h: number): PathSeg[] {
     { op: 'C', pts: [cx + rx * K, cy - ry, cx + rx, cy - ry * K, cx + rx, cy] },
     { op: 'Z', pts: [] },
   ];
+}
+
+/**
+ * Cubic Béziers along an elliptical arc from DrawingML's start angle through its sweep (degrees,
+ * clockwise). The angles are visual: a ray at that angle meets the ellipse where the arc starts.
+ */
+function arc(cx: number, cy: number, rx: number, ry: number, start: number, sweep: number): { from: number[]; segs: PathSeg[] } {
+  const param = (deg: number) => Math.atan2(rx * Math.sin((deg * Math.PI) / 180), ry * Math.cos((deg * Math.PI) / 180));
+  const t0 = param(start);
+  let dt = param(start + sweep) - t0;
+  if (sweep > 0) while (dt <= 1e-9) dt += 2 * Math.PI;
+  if (sweep < 0) while (dt >= -1e-9) dt -= 2 * Math.PI;
+  const n = Math.max(1, Math.ceil(Math.abs(dt) / (Math.PI / 2) - 1e-9));
+  const step = dt / n;
+  const k = (4 / 3) * Math.tan(step / 4);
+  const pt = (t: number) => [cx + rx * Math.cos(t), cy + ry * Math.sin(t)];
+  const segs: PathSeg[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = t0 + i * step;
+    const b = a + step;
+    segs.push({ op: 'C', pts: [cx + rx * (Math.cos(a) - k * Math.sin(a)), cy + ry * (Math.sin(a) + k * Math.cos(a)), cx + rx * (Math.cos(b) + k * Math.sin(b)), cy + ry * (Math.sin(b) - k * Math.cos(b)), ...pt(b)] });
+  }
+  return { from: pt(t0), segs };
 }
 
 function poly(points: number[]): PathSeg[] {
@@ -157,6 +182,18 @@ export function geometryPath(d: Drawing, x: number, y: number, w: number, h: num
       if (g === 'rightArrow') return poly([x, t, x + w - head, t, x + w - head, y, x + w, y + h / 2, x + w - head, y + h, x + w - head, b, x, b]);
       return poly([x + w, t, x + head, t, x + head, y, x, y + h / 2, x + head, y + h, x + head, b, x + w, b]);
     }
+    case 'leftRightArrow': {
+      const head = Math.min(ss * adj('adj2', 50000), w / 2);
+      const t = y + (h - h * adj('adj1', 50000)) / 2;
+      const b = y + h - (t - y);
+      return poly([x, y + h / 2, x + head, y, x + head, t, x + w - head, t, x + w - head, y, x + w, y + h / 2, x + w - head, y + h, x + w - head, b, x + head, b, x + head, y + h]);
+    }
+    case 'upDownArrow': {
+      const head = Math.min(ss * adj('adj2', 50000), h / 2);
+      const l = x + (w - w * adj('adj1', 50000)) / 2;
+      const r = x + w - (l - x);
+      return poly([x, y + head, x + w / 2, y, x + w, y + head, r, y + head, r, y + h - head, x + w, y + h - head, x + w / 2, y + h, x, y + h - head, l, y + h - head, l, y + head]);
+    }
     case 'upArrow':
     case 'downArrow': {
       const shaft = w * adj('adj1', 50000);
@@ -234,6 +271,17 @@ export function geometryPath(d: Drawing, x: number, y: number, w: number, h: num
       }
       return segs;
     }
+    case 'blockArc': {
+      // A band of ring from adj1 to adj2 (60000ths of a degree, clockwise), adj3 thick.
+      const st = (d.adjust?.adj1 ?? 10800000) / 60000;
+      const end = (d.adjust?.adj2 ?? 0) / 60000;
+      const t = ss * Math.min(0.5, Math.max(0, adj('adj3', 25000)));
+      let sweep = end - st;
+      if (sweep <= 0) sweep += 360;
+      const outer = arc(x + w / 2, y + h / 2, w / 2, h / 2, st, sweep);
+      const inner = arc(x + w / 2, y + h / 2, w / 2 - t, h / 2 - t, end, -sweep);
+      return [{ op: 'M', pts: outer.from }, ...outer.segs, { op: 'L', pts: inner.from }, ...inner.segs, { op: 'Z', pts: [] }];
+    }
     case 'donut': {
       const t = ss * adj('adj', 25000);
       return [...ellipse(x, y, w, h), ...ellipse(x + t, y + t, w - 2 * t, h - 2 * t)];
@@ -285,10 +333,13 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
 
   if (d.kind === 'group' && d.children) {
     for (const kid of d.children) ops.push(...renderDrawing(kid, x + (kid.x ?? 0), y + (kid.y ?? 0), env));
+  } else if (d.chart) {
+    ops.push(...renderChart(d.chart, x, y, w, h, env));
   } else {
     const path = d.kind === 'image' && d.geometry === 'rect' ? null : geometryPath(d, x, y, w, h);
     const fill = isLine ? null : d.fill;
-    if (fill?.color && path) ops.push({ kind: 'path', segs: path, fill: fill.color, fillAlpha: fill.alpha < 1 ? fill.alpha : undefined, stroke: null });
+    if (fill?.gradient && path) ops.push(...gradientOps(path, fill.gradient, fill.alpha));
+    else if (fill?.color && path) ops.push({ kind: 'path', segs: path, fill: fill.color, fillAlpha: fill.alpha < 1 ? fill.alpha : undefined, stroke: null });
     // Metafiles play back as vector drawing; anything they cannot express stays a picture.
     const meta = d.image ? metafileOps(d.image, x, y, w, h, d.crop, env.fonts) : null;
     if (meta) {
@@ -314,9 +365,27 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
   return ops;
 }
 
+/**
+ * How far a preset's text rectangle sits inside its box on each side, before the text insets: text
+ * in a rounded rectangle keeps clear of the corners, text in an ellipse stays in its inscribed box.
+ */
+function textRectInsets(d: Drawing, w: number, h: number): [number, number, number, number] {
+  if (d.geometry === 'roundRect') {
+    const i = Math.min(w, h) * Math.min(0.5, Math.max(0, (d.adjust?.adj ?? 16667) / 100000)) * 0.29289;
+    return [i, i, i, i];
+  }
+  if (d.geometry === 'ellipse') {
+    const ix = w * (0.5 - Math.SQRT1_2 / 2);
+    const iy = h * (0.5 - Math.SQRT1_2 / 2);
+    return [ix, iy, ix, iy];
+  }
+  return [0, 0, 0, 0];
+}
+
 function renderTextBox(d: Drawing, x: number, y: number, w: number, h: number, env: BoxEnv): DrawOp[] {
-  const tb = d.textBox!;
-  const vertical = tb.vertical === 'vert' || tb.vertical === 'vert270' || tb.vertical === 'eaVert';
+  const vertical = d.textBox!.vertical === 'vert' || d.textBox!.vertical === 'vert270' || d.textBox!.vertical === 'eaVert';
+  const [rl, rt, rr, rb] = vertical ? [0, 0, 0, 0] : textRectInsets(d, w, h);
+  const tb = { ...d.textBox!, insetL: d.textBox!.insetL + rl, insetT: d.textBox!.insetT + rt, insetR: d.textBox!.insetR + rr, insetB: d.textBox!.insetB + rb };
   // Vertical text boxes lay text out along the box's height, then rotate it into place.
   const innerW = Math.max(1, (vertical ? h : w) - tb.insetL - tb.insetR);
   const innerH = (vertical ? w : h) - tb.insetT - tb.insetB;

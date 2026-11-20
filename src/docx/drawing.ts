@@ -1,5 +1,7 @@
-import { child, children, descendant, path, resolveAlternateContent, type XmlElement } from '../util/xml.js';
-import type { AnchorProps, Block, Color, Drawing, Fill, ImageRef, LineStyle, PositionSpec } from './model.js';
+import { child, children, descendant, descendants, path, resolveAlternateContent, type XmlElement } from '../util/xml.js';
+import { parseChart } from './chart.js';
+import { parseGradient } from './gradient.js';
+import type { AnchorProps, Block, Color, Drawing, Fill, ImageRef, LineStyle, PositionSpec, TextBox } from './model.js';
 import type { OpcPackage } from './package.js';
 import { themeColorValue, type Theme } from './theme.js';
 import { applyColorMods, emu, hexColor, measure, num } from './values.js';
@@ -53,7 +55,7 @@ export function parseColor(el: XmlElement | undefined, ctx: DrawingContext, phCl
       base = PRESET_COLORS[el.attrs.val ?? ''] ?? '000000';
       break;
     case 'a:scrgbClr': {
-      const c = (v: string | undefined) => Math.round(((num(v) ?? 0) / 100000) * 255);
+      const c = (v: string | undefined) => Math.round(((v?.endsWith('%') ? (num(v.slice(0, -1)) ?? 0) * 1000 : (num(v) ?? 0)) / 100000) * 255);
       base = [c(el.attrs.r), c(el.attrs.g), c(el.attrs.b)].map((v) => v.toString(16).padStart(2, '0')).join('');
       break;
     }
@@ -61,13 +63,17 @@ export function parseColor(el: XmlElement | undefined, ctx: DrawingContext, phCl
       return undefined;
   }
   if (!base) return undefined;
-  const mods = children(el).map((m) => ({ name: m.name.slice(2), val: num(m.attrs.val) ?? 0 }));
+  // Strict documents write percentages as "15%" rather than thousandths of a percent.
+  const amount = (v: string | undefined) => (v?.endsWith('%') ? (num(v.slice(0, -1)) ?? 0) * 1000 : (num(v) ?? 0));
+  const mods = children(el).map((m) => ({ name: m.name.slice(2), val: amount(m.attrs.val) }));
   return applyColorMods(base.toUpperCase(), mods);
 }
 
+const isColorElement = (c: XmlElement) => /^a:(srgbClr|schemeClr|sysClr|prstClr|scrgbClr|hslClr)$/.test(c.name);
+
 function firstColorChild(el: XmlElement | undefined): XmlElement | undefined {
   if (!el) return undefined;
-  return children(el).find((c) => /^a:(srgbClr|schemeClr|sysClr|prstClr|scrgbClr|hslClr)$/.test(c.name));
+  return children(el).find(isColorElement);
 }
 
 function parseFill(spPr: XmlElement | undefined, ctx: DrawingContext): Fill | null | undefined {
@@ -79,13 +85,25 @@ function parseFill(spPr: XmlElement | undefined, ctx: DrawingContext): Fill | nu
     return c ? { color: c.color, alpha: c.alpha } : undefined;
   }
   const grad = child(spPr, 'a:gradFill');
-  if (grad) {
-    const stops = children(child(grad, 'a:gsLst'), 'a:gs');
-    const mid = stops[Math.floor(stops.length / 2)] ?? stops[0];
-    const c = parseColor(firstColorChild(mid), ctx);
-    return c ? { color: c.color, alpha: c.alpha } : undefined;
-  }
+  if (grad) return gradientFill(grad, ctx);
   return undefined;
+}
+
+function gradientFill(grad: XmlElement, ctx: DrawingContext, phClr?: string): Fill | undefined {
+  const g = parseGradient(grad, (el) => parseColor(el, ctx, phClr));
+  return g ? { color: g.mid.color, alpha: g.mid.alpha, ...(g.gradient.stops.length > 1 && { gradient: g.gradient }) } : undefined;
+}
+
+/**
+ * A shape style's fill (a:fillRef): the theme's fill of that index in the reference's colour. Only
+ * the theme's gradients are taken from it; any other fill is the reference's colour.
+ */
+function styleFill(style: XmlElement | undefined, ctx: DrawingContext): Fill | null {
+  const ref = styleRefColor(style, 'a:fillRef', ctx);
+  if (!ref || ref.idx <= 0 || !ref.color) return null;
+  const themed = ref.idx < 1000 ? ctx.theme.fillStyles[ref.idx - 1] : undefined;
+  const grad = themed?.name === 'a:gradFill' ? gradientFill(themed, ctx, ref.color.color) : undefined;
+  return grad ?? { color: ref.color.color, alpha: ref.color.alpha };
 }
 
 function parseLine(spPr: XmlElement | undefined, ctx: DrawingContext): LineStyle | null | undefined {
@@ -121,11 +139,17 @@ function parseAnchor(a: XmlElement): AnchorProps {
   const wrapEl = children(a).find((c) => c.name.startsWith('wp:wrap'));
   let wrap: AnchorProps['wrap'] = 'none';
   let wrapText: AnchorProps['wrapText'] = 'bothSides';
+  let polygon: AnchorProps['polygon'];
   if (wrapEl) {
     const kind = wrapEl.name.slice(7);
     wrap = kind === 'Square' ? 'square' : kind === 'Tight' ? 'tight' : kind === 'Through' ? 'through' : kind === 'TopAndBottom' ? 'topAndBottom' : 'none';
     const wt = wrapEl.attrs.wrapText;
     if (wt === 'left' || wt === 'right' || wt === 'largest') wrapText = wt;
+    // Wrap polygon points are in 21600ths of the object's extent.
+    const polyEl = child(wrapEl, 'wp:wrapPolygon');
+    const points = polyEl ? children(polyEl).filter((c) => c.name === 'wp:start' || c.name === 'wp:lineTo') : [];
+    const outline = points.map((c): [number, number] => [Number(c.attrs.x) / 21600, Number(c.attrs.y) / 21600]);
+    if ((wrap === 'tight' || wrap === 'through') && outline.length >= 3 && outline.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y))) polygon = outline;
   }
   const d = (n: string) => emu(Number(a.attrs[n] ?? 0) || 0);
   const simple = a.attrs.simplePos === '1' || a.attrs.simplePos === 'true';
@@ -147,6 +171,7 @@ function parseAnchor(a: XmlElement): AnchorProps {
     distB: d('distB'),
     distL: d('distL'),
     distR: d('distR'),
+    ...(polygon && { polygon }),
     posH,
     posV,
     layoutInCell: a.attrs.layoutInCell !== '0' && a.attrs.layoutInCell !== 'false',
@@ -182,9 +207,11 @@ function applyGeometry(d: Drawing, spPr: XmlElement | undefined): void {
   if (cust) {
     d.geometry = 'custom';
     d.path = [];
+    // A path without its own size is drawn in the shape's extent (EMU), as SmartArt connectors are.
+    const ext = child(child(spPr, 'a:xfrm'), 'a:ext');
     for (const p of children(child(cust, 'a:pathLst'), 'a:path')) {
-      const w = Number(p.attrs.w ?? 0) || 1;
-      const h = Number(p.attrs.h ?? 0) || 1;
+      const w = Number(p.attrs.w ?? 0) || Number(ext?.attrs.cx ?? 0) || 1;
+      const h = Number(p.attrs.h ?? 0) || Number(ext?.attrs.cy ?? 0) || 1;
       const sub: Array<{ op: 'M' | 'L' | 'C' | 'Z'; pts: number[] }> = [];
       const pts = (el: XmlElement) => children(el, 'a:pt').flatMap((pt) => [(Number(pt.attrs.x) || 0) / w, (Number(pt.attrs.y) || 0) / h]);
       for (const cmd of children(p)) {
@@ -232,10 +259,7 @@ function parseShape(wsp: XmlElement, ctx: DrawingContext, d: Drawing): void {
   applyGeometry(d, spPr);
   const style = child(wsp, 'wps:style');
   let fill = parseFill(spPr, ctx);
-  if (fill === undefined) {
-    const ref = styleRefColor(style, 'a:fillRef', ctx);
-    fill = ref && ref.idx > 0 && ref.color ? { color: ref.color.color, alpha: ref.color.alpha } : null;
-  }
+  if (fill === undefined) fill = styleFill(style, ctx);
   let line = parseLine(spPr, ctx);
   const lnRef = styleRefColor(style, 'a:lnRef', ctx);
   if (line === undefined || (line && line.color === null)) {
@@ -258,8 +282,13 @@ function parseShape(wsp: XmlElement, ctx: DrawingContext, d: Drawing): void {
   if (content) {
     const ins = (n: string, dflt: number) => (bodyPr?.attrs[n] !== undefined ? emu(Number(bodyPr.attrs[n])) : dflt);
     const anchor = bodyPr?.attrs.anchor;
+    const blocks = ctx.parseBlocks(content);
+    // Text a styled shape's runs leave automatic takes the shape style's font colour (white text on
+    // a "Colored Fill" shape).
+    const fontColor = styleRefColor(style, 'a:fontRef', ctx)?.color?.color;
+    if (fontColor) colorAutomaticText(blocks, fontColor);
     d.textBox = {
-      blocks: ctx.parseBlocks(content),
+      blocks,
       insetL: ins('lIns', 7.2),
       insetT: ins('tIns', 3.6),
       insetR: ins('rIns', 7.2),
@@ -268,6 +297,17 @@ function parseShape(wsp: XmlElement, ctx: DrawingContext, d: Drawing): void {
       autoFit: !!child(bodyPr, 'a:spAutoFit'),
       vertical: bodyPr?.attrs.vert,
     };
+  }
+}
+
+function colorAutomaticText(blocks: Block[], color: string): void {
+  for (const b of blocks) {
+    if (b.type === 'table') {
+      for (const row of b.rows) for (const cell of row.cells) colorAutomaticText(cell.content, color);
+      continue;
+    }
+    if (b.markProps.color === null) b.markProps = { ...b.markProps, color };
+    for (const item of b.content) if ('props' in item && item.props.color === null) item.props = { ...item.props, color };
   }
 }
 
@@ -347,11 +387,30 @@ export function parseDrawing(el: XmlElement, ctx: DrawingContext): Drawing | nul
   else if (content.name === 'wpc:wpc') {
     // Drawing canvas: treat like a group of its shapes.
     parseGroup(content, ctx, d, true);
+    easeGradients(d);
   } else if (content.name === 'dgm:relIds') {
     const pre = parseSmartArtDrawing(content, ctx, d);
     if (!pre) d.kind = 'unsupported';
+    easeGradients(d);
+  } else if (content.name === 'c:chart') {
+    // Word keeps no picture of a chart, only its data: draw it from the chart part's cached values.
+    const rel = ctx.pkg.rels(ctx.part).get(content.attrs['r:id'] ?? '');
+    const root = rel && !rel.external ? ctx.pkg.xml(rel.target) : undefined;
+    const space = root?.name === 'c:chartSpace' ? root : descendant(root, 'c:chartSpace');
+    const sub: DrawingContext = rel ? { ...ctx, part: rel.target } : ctx;
+    const chart = space ? parseChart(space, ctx.theme, (e) => parseColor(e, sub)) : undefined;
+    if (chart) {
+      d.kind = 'shape';
+      d.chart = chart;
+    }
   }
   return d;
+}
+
+/** Mark the gradients of a canvas's or SmartArt's shapes as Word draws them there (GradientFill.eased). */
+function easeGradients(d: Drawing): void {
+  if (d.fill?.gradient) d.fill.gradient.eased = true;
+  for (const kid of d.children ?? []) easeGradients(kid);
 }
 
 /** SmartArt keeps a pre-rendered shape tree in a "diagramDrawing" part; render that. */
@@ -368,6 +427,7 @@ function parseSmartArtDrawing(relIds: XmlElement, ctx: DrawingContext, d: Drawin
   const spTree = descendant(drawing, 'dsp:spTree');
   if (!spTree) return false;
   const sub: DrawingContext = { ...ctx, part: rel.target };
+  const textColors = smartArtTextColors(relIds, dataXml, ctx);
   d.kind = 'group';
   d.children = [];
   for (const sp of children(spTree, 'dsp:sp')) {
@@ -382,10 +442,7 @@ function parseSmartArtDrawing(relIds: XmlElement, ctx: DrawingContext, d: Drawin
     applyGeometry(kid, spPr);
     const style = child(sp, 'dsp:style');
     let fill = parseFill(spPr, sub);
-    if (fill === undefined) {
-      const ref = styleRefColor(style, 'a:fillRef', sub);
-      fill = ref && ref.idx > 0 && ref.color ? { color: ref.color.color, alpha: ref.color.alpha } : null;
-    }
+    if (fill === undefined) fill = styleFill(style, sub);
     let line = parseLine(spPr, sub);
     if (line === undefined || (line && line.color === null)) {
       const ref = styleRefColor(style, 'a:lnRef', sub);
@@ -393,94 +450,176 @@ function parseSmartArtDrawing(relIds: XmlElement, ctx: DrawingContext, d: Drawin
     }
     kid.fill = fill;
     kid.line = line;
-    const txBody = child(sp, 'dsp:txBody');
-    if (txBody) kid.textBox = drawingMLTextBox(txBody, child(sp, 'dsp:txXfrm'), kid, style, sub);
     d.children.push(kid);
+    const txBody = child(sp, 'dsp:txBody');
+    if (!txBody) continue;
+    const color = textColors.get(sp.attrs.modelId ?? '');
+    const txXfrm = child(sp, 'dsp:txXfrm');
+    const toff = child(txXfrm, 'a:off');
+    const text = child(txXfrm, 'a:ext');
+    if (!toff || !text) {
+      kid.textBox = drawingMLTextBox(txBody, style, sub, color);
+      continue;
+    }
+    // The text has a rectangle of its own, already inside the shape's text area, turned by the
+    // shape's rotation plus its own and never mirrored: a chevron stood on end keeps its label
+    // upright, a box turned on its side reads up the page. Like any shape text it may overflow.
+    const label = baseDrawing('shape', true, emu(Number(text.attrs.cx ?? 0) || 0), emu(Number(text.attrs.cy ?? 0) || 0));
+    label.x = emu(Number(toff.attrs.x ?? 0) || 0);
+    label.y = emu(Number(toff.attrs.y ?? 0) || 0);
+    label.rotation = kid.rotation + (Number(txXfrm!.attrs.rot ?? 0) || 0) / 60000;
+    label.fill = null;
+    label.line = null;
+    label.textBox = { ...drawingMLTextBox(txBody, style, sub, color), unclipped: true };
+    d.children.push(label);
   }
   return true;
 }
 
-/** Convert DrawingML text (a:p/a:r) into simple paragraphs via a synthetic WordprocessingML tree. */
-function drawingMLTextBox(txBody: XmlElement, txXfrm: XmlElement | undefined, shape: Drawing, style: XmlElement | undefined, ctx: DrawingContext) {
+/**
+ * Each SmartArt node's text colour, from the diagram's colour definition by the node's style label.
+ * Word draws the text in that colour even where the cached drawing's font reference disagrees (dark
+ * text in white boxes that the cache records as white).
+ */
+function smartArtTextColors(relIds: XmlElement, dataXml: XmlElement | undefined, ctx: DrawingContext): Map<string, { color: string; alpha: number }> {
+  const out = new Map<string, { color: string; alpha: number }>();
+  const rel = ctx.pkg.rels(ctx.part).get(relIds.attrs['r:cs'] ?? '');
+  if (!rel || !dataXml) return out;
+  const lists = new Map<string, XmlElement>();
+  for (const lbl of descendants(ctx.pkg.xml(rel.target), 'dgm:styleLbl')) {
+    const list = child(lbl, 'dgm:txFillClrLst');
+    if (lbl.attrs.name && firstColorChild(list)) lists.set(lbl.attrs.name, list!);
+  }
+  for (const pt of descendants(dataXml, 'dgm:pt')) {
+    const set = child(pt, 'dgm:prSet');
+    const list = pt.attrs.type === 'pres' ? lists.get(set?.attrs.presStyleLbl ?? '') : undefined;
+    if (!list || !pt.attrs.modelId) continue;
+    const colors = children(list).filter(isColorElement);
+    const i = Number(set!.attrs.presStyleIdx ?? 0) || 0;
+    // "repeat" keeps the last colour for later nodes, "cycle" starts over; "span" blends, taken as repeat.
+    const c = parseColor(colors[list.attrs.meth === 'cycle' ? i % colors.length : Math.min(i, colors.length - 1)], ctx);
+    if (c) out.set(pt.attrs.modelId, c);
+  }
+  return out;
+}
+
+const elem = (name: string, attrs: Record<string, string> = {}, kids: Array<XmlElement | string> = []): XmlElement => ({ name, attrs, children: kids }) as XmlElement;
+
+/** Convert DrawingML text (a:p/a:r) into WordprocessingML paragraphs. */
+function drawingMLTextBox(txBody: XmlElement, style: XmlElement | undefined, ctx: DrawingContext, textColor?: { color: string; alpha: number }): TextBox {
   const bodyPr = child(txBody, 'a:bodyPr');
-  const fontColor = parseColor(firstColorChild(child(style, 'dsp:fontRef') ?? child(style, 'a:fontRef')), ctx);
-  const paras: XmlElement[] = [];
-  for (const p of children(txBody, 'a:p')) {
+  const fontRef = child(style, 'dsp:fontRef') ?? child(style, 'a:fontRef');
+  const fontColor = textColor ?? parseColor(firstColorChild(fontRef), ctx);
+  const scheme = fontRef?.attrs.idx === 'major' || fontRef?.attrs.idx === 'minor' ? fontRef.attrs.idx : undefined;
+  const autofit = child(bodyPr, 'a:normAutofit');
+  const fontScale = (Number(autofit?.attrs.fontScale ?? 100000) || 100000) / 100000;
+  const lineScale = 1 - (Number(autofit?.attrs.lnSpcReduction ?? 0) || 0) / 100000;
+  const twips = (pt: number) => String(Math.round(pt * 20));
+  // A run's typeface: a name, a theme slot (+mn-lt, +mj-ea), or the shape style's theme font.
+  const fonts = (rPr: XmlElement | undefined): Record<string, string> => {
+    const a: Record<string, string> = {};
+    const slot = (tag: string, nameAttrs: string[], themeAttrs: string[], suffix: string) => {
+      const tf = child(rPr, tag)?.attrs.typeface;
+      const theme = tf === undefined ? scheme : tf.startsWith('+mj') ? 'major' : tf.startsWith('+mn') ? 'minor' : undefined;
+      if (tf && !theme) for (const n of nameAttrs) a[n] = tf;
+      else if (theme) for (const n of themeAttrs) a[n] = theme + suffix;
+    };
+    slot('a:latin', ['w:ascii', 'w:hAnsi'], ['w:asciiTheme', 'w:hAnsiTheme'], 'HAnsi');
+    slot('a:ea', ['w:eastAsia'], ['w:eastAsiaTheme'], 'EastAsia');
+    slot('a:cs', ['w:cs'], ['w:cstheme'], 'Bidi');
+    return a;
+  };
+  const runProps = (rPr: XmlElement | undefined, size: number): XmlElement[] => {
+    const half = String(Math.max(1, Math.round(size * 2)));
+    const out = [elem('w:sz', { 'w:val': half }), elem('w:szCs', { 'w:val': half }), elem('w:rFonts', fonts(rPr))];
+    if (rPr?.attrs.b === '1') out.push(elem('w:b'), elem('w:bCs'));
+    if (rPr?.attrs.i === '1') out.push(elem('w:i'), elem('w:iCs'));
+    if (rPr?.attrs.u && rPr.attrs.u !== 'none') out.push(elem('w:u', { 'w:val': 'single' }));
+    if (rPr?.attrs.strike && rPr.attrs.strike !== 'noStrike') out.push(elem('w:strike'));
+    const baseline = Number(rPr?.attrs.baseline ?? 0) || 0;
+    if (baseline) out.push(elem('w:vertAlign', { 'w:val': baseline > 0 ? 'superscript' : 'subscript' }));
+    const col = parseColor(firstColorChild(child(rPr, 'a:solidFill')), ctx) ?? fontColor;
+    if (col) out.push(elem('w:color', { 'w:val': col.color }));
+    return out;
+  };
+  const ps = children(txBody, 'a:p');
+  const firstLast = bodyPr?.attrs.spcFirstLastPara === '1';
+  const paras = ps.map((p, pi) => {
     const pPr = child(p, 'a:pPr');
-    const algn = pPr?.attrs.algn;
-    const jc = algn === 'ctr' ? 'center' : algn === 'r' ? 'right' : algn === 'just' ? 'both' : 'left';
+    const endSize = ((Number(child(p, 'a:endParaRPr')?.attrs.sz) || 0) / 100) * fontScale;
+    const items = children(p).filter((c) => c.name === 'a:r' || c.name === 'a:fld' || c.name === 'a:br');
+    const sizeOf = (rPr: XmlElement | undefined) => ((Number(rPr?.attrs.sz) || 0) / 100) * fontScale || endSize || 18 * fontScale;
+    let size = 0;
     const runs: XmlElement[] = [];
-    for (const r of children(p, 'a:r')) {
+    for (const r of items) {
       const rPr = child(r, 'a:rPr');
-      const sz = Number(rPr?.attrs.sz ?? child(child(p, 'a:endParaRPr'), 'x')?.attrs.sz ?? 1800) / 100;
-      const col = parseColor(firstColorChild(child(rPr, 'a:solidFill')), ctx) ?? fontColor;
-      const props: XmlElement[] = [
-        { name: 'w:sz', attrs: { 'w:val': String(Math.round(sz * 2)) }, children: [] },
-        { name: 'w:szCs', attrs: { 'w:val': String(Math.round(sz * 2)) }, children: [] },
-      ];
-      if (rPr?.attrs.b === '1') props.push({ name: 'w:b', attrs: {}, children: [] });
-      if (rPr?.attrs.i === '1') props.push({ name: 'w:i', attrs: {}, children: [] });
-      if (col) props.push({ name: 'w:color', attrs: { 'w:val': col.color }, children: [] });
-      const latin = child(rPr, 'a:latin')?.attrs.typeface;
-      if (latin && !latin.startsWith('+')) props.push({ name: 'w:rFonts', attrs: { 'w:ascii': latin, 'w:hAnsi': latin }, children: [] });
-      const text = children(r, 'a:t')
-        .map((t) => t.children.join(''))
-        .join('');
-      runs.push({
-        name: 'w:r',
-        attrs: {},
-        children: [
-          { name: 'w:rPr', attrs: {}, children: props },
-          { name: 'w:t', attrs: { 'xml:space': 'preserve' }, children: [text] },
-        ],
-      });
+      const s = sizeOf(rPr);
+      size = Math.max(size, s);
+      const content =
+        r.name === 'a:br'
+          ? elem('w:br')
+          : elem('w:t', { 'xml:space': 'preserve' }, [
+              children(r, 'a:t')
+                .map((t) => t.children.join(''))
+                .join(''),
+            ]);
+      runs.push(elem('w:r', {}, [elem('w:rPr', {}, runProps(rPr, s)), content]));
     }
-    paras.push({
-      name: 'w:p',
-      attrs: {},
-      children: [
-        {
-          name: 'w:pPr',
-          attrs: {},
-          children: [
-            { name: 'w:jc', attrs: { 'w:val': jc }, children: [] },
-            { name: 'w:spacing', attrs: { 'w:before': '0', 'w:after': '0', 'w:line': '216', 'w:lineRule': 'auto' }, children: [] },
-          ],
-        },
-        ...runs,
-      ],
-    });
-  }
-  const container: XmlElement = { name: 'w:txbxContent', attrs: {}, children: paras };
+    size ||= endSize || 18 * fontScale;
+    // A bullet hangs in the indent, in the first run's look unless the bullet names its own font
+    // or colour. Empty paragraphs show no bullet.
+    const bullet = child(pPr, 'a:buChar')?.attrs.char;
+    const first = items.find((r) => r.name !== 'a:br');
+    if (bullet && first) {
+      const props = runProps(child(first, 'a:rPr'), sizeOf(child(first, 'a:rPr')));
+      const face = child(pPr, 'a:buFont')?.attrs.typeface;
+      const bc = parseColor(firstColorChild(child(pPr, 'a:buClr')), ctx);
+      const adjusted = props.map((e) =>
+        e.name === 'w:rFonts' && face && !face.startsWith('+') ? elem('w:rFonts', { 'w:ascii': face, 'w:hAnsi': face }) : e.name === 'w:color' && bc ? elem('w:color', { 'w:val': bc.color }) : e,
+      );
+      runs.unshift(elem('w:r', {}, [elem('w:rPr', {}, adjusted), elem('w:t', {}, [bullet]), elem('w:tab')]));
+    }
+    // Paragraph spacing: points, or a percentage of a single line (1.2 times the text size).
+    const space = (tag: string) => {
+      const s = child(pPr, tag);
+      const pts = child(s, 'a:spcPts');
+      if (pts) return (Number(pts.attrs.val) || 0) / 100;
+      return ((Number(child(s, 'a:spcPct')?.attrs.val) || 0) / 100000) * size * 1.2;
+    };
+    const lnSpc = child(pPr, 'a:lnSpc');
+    const lnPts = child(lnSpc, 'a:spcPts');
+    const line = lnPts
+      ? { 'w:line': twips(((Number(lnPts.attrs.val) || 0) / 100) * lineScale), 'w:lineRule': 'exact' }
+      : { 'w:line': String(Math.round(240 * ((Number(child(lnSpc, 'a:spcPct')?.attrs.val ?? 100000) || 100000) / 100000) * lineScale)), 'w:lineRule': 'auto' };
+    // Without spcFirstLastPara the first paragraph's space before and the last's space after are dropped.
+    const before = pi === 0 && !firstLast ? 0 : space('a:spcBef');
+    const after = pi === ps.length - 1 && !firstLast ? 0 : space('a:spcAft');
+    const marL = emu(Number(pPr?.attrs.marL ?? 0) || 0);
+    const indent = emu(Number(pPr?.attrs.indent ?? 0) || 0);
+    const algn = pPr?.attrs.algn;
+    const jc = algn === 'ctr' ? 'center' : algn === 'r' ? 'right' : algn === 'just' || algn === 'dist' ? 'both' : 'left';
+    return elem('w:p', {}, [
+      elem('w:pPr', {}, [
+        elem('w:jc', { 'w:val': jc }),
+        elem('w:spacing', { 'w:before': twips(before), 'w:after': twips(after), ...line }),
+        elem('w:ind', { 'w:left': twips(marL), ...(indent < 0 ? { 'w:hanging': twips(-indent) } : { 'w:firstLine': twips(indent) }) }),
+        elem('w:rPr', {}, runProps(child(p, 'a:endParaRPr'), size)),
+      ]),
+      ...runs,
+    ]);
+  });
   const ins = (n: string, dflt: number) => (bodyPr?.attrs[n] !== undefined ? emu(Number(bodyPr.attrs[n])) : dflt);
-  // txXfrm gives the text rectangle inside the shape.
-  if (txXfrm) {
-    const off = child(txXfrm, 'a:off');
-    const ext = child(txXfrm, 'a:ext');
-    if (off && ext && shape.x !== undefined && shape.y !== undefined) {
-      const tx = emu(Number(off.attrs.x) || 0) - shape.x;
-      const ty = emu(Number(off.attrs.y) || 0) - shape.y;
-      const tw = emu(Number(ext.attrs.cx) || 0);
-      const th = emu(Number(ext.attrs.cy) || 0);
-      return {
-        blocks: ctx.parseBlocks(container),
-        insetL: tx + ins('lIns', 7.2),
-        insetT: ty + ins('tIns', 3.6),
-        insetR: shape.width - tx - tw + ins('rIns', 7.2),
-        insetB: shape.height - ty - th + ins('bIns', 3.6),
-        vAlign: (bodyPr?.attrs.anchor === 't' ? 'top' : bodyPr?.attrs.anchor === 'b' ? 'bottom' : 'center') as 'top' | 'center' | 'bottom',
-        autoFit: false,
-      };
-    }
-  }
+  const vert = bodyPr?.attrs.vert;
+  const anchor = bodyPr?.attrs.anchor;
   return {
-    blocks: ctx.parseBlocks(container),
+    blocks: ctx.parseBlocks(elem('w:txbxContent', {}, paras)),
     insetL: ins('lIns', 7.2),
     insetT: ins('tIns', 3.6),
     insetR: ins('rIns', 7.2),
     insetB: ins('bIns', 3.6),
-    vAlign: 'center' as const,
+    vAlign: anchor === 'ctr' ? 'center' : anchor === 'b' ? 'bottom' : 'top',
     autoFit: false,
+    ...((vert === 'vert' || vert === 'vert270' || vert === 'eaVert') && { vertical: vert }),
   };
 }
 

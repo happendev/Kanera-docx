@@ -49,16 +49,19 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && esbuild src/util/pako.ts src/image/jpeg-codec.ts src/pdf/svg.ts --bundle --format=esm --platform=browser --target=es2022 --minify --sourcemap --sources-content=false --define:Buffer.from=Uint8Array.from --outbase=src --outdir=dist",
     "prepare": "npm run build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p demo/tsconfig.json",
     "test": "vitest run",
     "render": "tsx scripts/render.ts",
-    "corpus": "tsx scripts/corpus.ts"
+    "corpus": "tsx scripts/corpus.ts",
+    "demo": "tsx scripts/build-demo.ts",
+    "demo:serve": "tsx scripts/build-demo.ts --serve"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
     "esbuild": "0.28.2",
     "jpeg-js": "0.4.4",
     "pako": "3.0.3",
+    "pdfjs-dist": "6.4.299",
     "svgpath": "2.6.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

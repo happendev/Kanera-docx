@@ -8,7 +8,8 @@ export interface Theme {
   minorEastAsia: string;
   majorCs: string;
   minorCs: string;
-  /** Fill style list for shapes that reference theme fills by index. */
+  /** The format scheme's fills (a:fillStyleLst), which shape styles reference by index (a:fillRef). */
+  fillStyles: XmlElement[];
   hasTheme: boolean;
 }
 
@@ -33,6 +34,7 @@ export const DEFAULT_THEME: Theme = {
   minorEastAsia: '',
   majorCs: '',
   minorCs: '',
+  fillStyles: [],
   hasTheme: false,
 };
 
@@ -82,6 +84,7 @@ export function parseTheme(root: XmlElement | undefined, langs: { eastAsia?: str
     theme.majorCs = child(major, 'a:cs')?.attrs.typeface || script(major, langs.bidi);
     theme.minorCs = child(minor, 'a:cs')?.attrs.typeface || script(minor, langs.bidi);
   }
+  theme.fillStyles = children(descendant(root, 'a:fillStyleLst'));
   return theme;
 }
 

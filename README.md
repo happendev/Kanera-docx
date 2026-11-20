@@ -13,6 +13,10 @@ import { docxToPdf } from '@happendev/docx2pdf';
 const pdf = await docxToPdf('contract.docx'); // Uint8Array
 ```
 
+**[Try the demo](https://happendev.github.io/kanera-docx/)**: convert your own `.docx` in the browser (nothing is
+uploaded), or open any of the benchmark documents and compare the result with Word's own output side by side or
+overlaid.
+
 ## How it gets close to Word
 
 Matching Word means reproducing its layout rules, not only its formatting:
@@ -62,29 +66,50 @@ and against where Word last broke pages (`w:lastRenderedPageBreak`) and how many
 
 ## Benchmark
 
-The [benchmark](benchmarks/word/README.md) now runs 208 cases, including
-[30 pinned Hugging Face cases](benchmarks/word/fixtures.json) and
-[178 vendored cases](benchmarks/word/upstream/fixtures.json).
+The [benchmark](benchmarks/word/README.md) runs 208 cases:
+[30 pinned Hugging Face cases](benchmarks/word/fixtures.json) with Word for Mac PDFs and
+[178 vendored cases](benchmarks/word/upstream/fixtures.json) with Microsoft 365 Word page images
+and Word or LibreOffice PDFs.
 
-| Converter | Median cold time | Median warm time | Median cold peak RSS | Max cold peak RSS | Matched Word's page count | Accuracy (mean ink overlap) | Total PDF size |
+| Converter | Median cold time | Median warm time | Median cold peak RSS | Max cold peak RSS | Matched the reference page count | Accuracy (mean ink overlap) | Total PDF size |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `@happendev/docx2pdf` 0.1.0 | 79.0 ms | 9.1 ms | 74.1 MiB | 137.2 MiB | 29/30 | 65.7% | 1.93 MiB |
-| EigenPal 2.39.0 | 554.6 ms | 77.6 ms | 236.0 MiB | 528.8 MiB | 28/30 | 74.9% | 1.99 MiB |
-| LibreOffice 26.8 alpha | 247.8 ms | 29.6 ms | 184.0 MiB | 237.0 MiB | 26/30 | 66.8% | 2.42 MiB |
-| Aspose.Words 26.11.0 | 962.4 ms | 50.4 ms | 101.0 MiB | 143.4 MiB | 26/30 | 55.2% | 1.62 MiB |
+| `@happendev/docx2pdf` 0.1.0 | 84.2 ms | 9.0 ms | 79.6 MiB | 213.7 MiB | 206/208 | **95.6%** | 7.28 MiB |
+| EigenPal 2.39.0 | 713.1 ms | 236.1 ms | 279.1 MiB | 570.4 MiB | 200/208 | 73.4% | 9.28 MiB |
+| LibreOffice 26.8.3 | 733.1 ms | 47.2 ms | n/a | n/a | 199/208 | 85.0% | 24.06 MiB |
+| Aspose.Words for .NET 26.11.0 | 902.7 ms | 49.9 ms | 104.1 MiB | 154.6 MiB | 195/208 | 51.4% | 9.27 MiB |
+| Syncfusion DocIO 28.2.4 | 490.1 ms | 49.4 ms | 119.8 MiB | 974.0 MiB | 195/208 | 56.9% | 6.52 MiB |
+
+Accuracy by reference:
+
+| Cases | Reference | Ours | EigenPal | LibreOffice | Aspose | Syncfusion |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 150 classic | Microsoft 365 Word page images | **99.1%** | 74.0% | 91.2% | 51.0% | 58.4% |
+| 30 Hugging Face | Word for Mac PDFs | **93.4%** | 74.9% | 79.5% | 55.3% | 54.7% |
+| 20 issues | Microsoft 365 Word PDFs | **87.7%** | 71.1% | 53.7% | 49.8% | 51.9% |
+| 8 issues | LibreOffice PDFs | 58.6% | 62.9% | **68.1%** | 49.4% | 48.7% |
+
+Document by document, ours scores higher than EigenPal on 178 cases and lower on 9, higher than
+LibreOffice on 117 and lower on 14 (77 ties), higher than Aspose on 196 and lower on 6, and higher
+than Syncfusion on 201 and lower on 3.
 
 Cold timings include a fresh process launch and file I/O. Warm timings reuse one process per
 engine after an unmeasured conversion, with file I/O still included. GNU time records peak
-resident memory (RSS) for the cold runs. The JavaScript engines ran on Node 24 and licensed
-Aspose.Words ran on .NET 10. EigenPal used best-effort mode. Kanera DOCX used the full font pack.
+resident memory (RSS) for the cold runs. The JavaScript engines ran on Node 24, and licensed
+Aspose.Words and Syncfusion DocIO ran on .NET 10. EigenPal used best-effort mode. Kanera DOCX used
+the full font pack. PDF sizes sum the cold-run files for each converter.
 
-PDF sizes sum the cold-run files for each converter.
+LibreOffice ran as a Flatpak on the host, launched from a container: its times include that
+launch, and GNU time couldn't see its memory. It also used the host's fonts, which include
+Microsoft's Arial, Aptos and Times New Roman, where the other converters draw stand-ins; Aspose and
+Syncfusion fell back to Liberation and DejaVu. In an earlier run where every converter used the
+same open fonts, LibreOffice and Syncfusion each scored 84.4% against our 93.9%. Eight of the issue
+references were made by LibreOffice, so they favour it.
 
 For fidelity, we rasterized each PDF at 96 DPI and compared corresponding pages. Ink overlap
-combines how much of Word's ink the converter reproduced with how much of the converter's ink
-matched Word, allowing a one-pixel shift. Unmatched pages score zero. We averaged page scores
-within each document, then gave each document equal weight. The metric measures placement and
-visible content, including missing images, and ignores colour differences. The [benchmark
+combines how much of the reference's ink the converter reproduced with how much of the converter's
+ink matched the reference, allowing a one-pixel shift. Unmatched pages score zero. We averaged page
+scores within each document, then gave each document equal weight. The metric measures placement
+and visible content, including missing images, and ignores colour differences. The [benchmark
 instructions](benchmarks/word/README.md) explain how to reproduce the results and generate the
 side-by-side screenshot gallery.
 
@@ -107,12 +132,19 @@ demand.
 ### Node
 
 ```ts
-import { convertDocx, docxToPdf } from '@happendev/docx2pdf'; // or '@happendev/docx2pdf/node'
+import { writeFile } from 'node:fs/promises';
+import { docxToPdf } from '@happendev/docx2pdf'; // or '@happendev/docx2pdf/node'
 
-// A path, Uint8Array, Buffer or ArrayBuffer.
-const pdf = await docxToPdf(await readFile('in.docx'));
+const pdf = await docxToPdf('in.docx'); // a path, Uint8Array, Buffer or ArrayBuffer
+await writeFile('out.pdf', pdf);
+```
 
-// The full result:
+`convertDocx` returns the page count and warnings with the PDF, and takes the same options:
+
+```ts
+import { readFile } from 'node:fs/promises';
+import { convertDocx } from '@happendev/docx2pdf';
+
 const result = await convertDocx('in.docx', {
   systemFonts: true, // also use fonts installed on this machine (default false)
   fonts: [{ data: await readFile('BrandSans.ttf') }], // extra fonts, highest priority
@@ -126,23 +158,125 @@ result.warnings; // e.g. 'Font "Proxima Nova" not available; using Liberation Sa
 `systemFonts` is off by default so the output doesn't depend on which machine runs the
 conversion. Pass `true` to scan the usual font folders, or an array of folders to scan.
 
-### Browser
+The package is ES modules only. CommonJS code can `require()` it on Node 20.19+ and 22.12+; on older
+versions, use `await import('@happendev/docx2pdf')`.
+
+Fonts load from the package's `fonts/` folder, found next to its code. If you bundle your server
+(esbuild, webpack and the like), copy that folder into your build output and pass its path as
+`fontDir`.
+
+#### In a web server
+
+This server takes a `.docx` as the request body and responds with the PDF. It uses only Node's
+built-in `http` module; the same `convertDocx` call works in Express, Fastify or any other framework.
 
 ```ts
-import { docxToPdf } from '@happendev/docx2pdf'; // resolves to the browser build
+import { createServer } from 'node:http';
+import { convertDocx } from '@happendev/docx2pdf';
 
-const file = input.files[0]; // File, Blob, Uint8Array or ArrayBuffer
-const pdf = await docxToPdf(file, { fontBaseUrl: '/assets/docx2pdf-fonts/' });
-const url = URL.createObjectURL(new Blob([pdf], { type: 'application/pdf' }));
+const MAX_UPLOAD = 20 * 1024 * 1024;
+
+createServer(async (req, res) => {
+  if (req.method !== 'POST') return void res.writeHead(405).end();
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_UPLOAD) return void res.writeHead(413).end();
+    chunks.push(chunk);
+  }
+  try {
+    const { pdf, warnings } = await convertDocx(Buffer.concat(chunks));
+    if (warnings.length) console.warn(warnings);
+    res.writeHead(200, { 'content-type': 'application/pdf' }).end(pdf);
+  } catch (err) {
+    res.writeHead(422, { 'content-type': 'text/plain' }).end(`Could not convert: ${(err as Error).message}`);
+  }
+}).listen(3000);
 ```
 
-The full pack is available by default. The browser fetches individual faces on demand and caches
-them for the page's lifetime. With a bundler, copy the installed package's `fonts/` directory
-into your static assets and point `fontBaseUrl` at it. When serving the package as-is, the default
-`fontBaseUrl` resolves to that directory.
+```bash
+curl --data-binary @in.docx -o out.pdf http://localhost:3000/
+```
 
-Pass `fetch` to add caching or auth. Set `fontBaseUrl: false` to use only embedded fonts and
-faces you supply through `fonts`.
+Conversion is synchronous work on the event loop, so a large document holds up other requests while
+it converts. If the documents come from users, run each conversion in a separate process with a
+memory limit and a deadline; see [Converting untrusted documents](#converting-untrusted-documents).
+
+### Browser
+
+The [demo](https://happendev.github.io/kanera-docx/) is a working example of everything below
+([source](demo/)).
+
+**1. Serve the fonts.** The browser downloads font faces as a document needs them, so the package's
+`fonts/` folder has to be reachable over HTTP. With a bundler such as Vite or webpack, copy it into
+your static assets folder, for example from a `postinstall` script:
+
+```json
+{
+  "scripts": {
+    "postinstall": "node -e \"require('fs').cpSync('node_modules/@happendev/docx2pdf/fonts', 'public/docx2pdf-fonts', { recursive: true })\""
+  }
+}
+```
+
+Then pass that location as `fontBaseUrl` (a relative URL resolves against the page). Without a
+bundler, when your server serves `node_modules/@happendev/docx2pdf` as-is, the default `fontBaseUrl`
+already points at its `fonts/` folder.
+
+**2. Convert a file.** `docxToPdf` and `convertDocx` take a `File`, `Blob`, `Uint8Array` or
+`ArrayBuffer`.
+
+```ts
+import { convertDocx } from '@happendev/docx2pdf'; // resolves to the browser build
+
+const input = document.querySelector<HTMLInputElement>('input[type=file]')!;
+input.addEventListener('change', async () => {
+  const file = input.files?.[0];
+  if (!file) return;
+  const { pdf, warnings } = await convertDocx(file, { fontBaseUrl: '/docx2pdf-fonts/' });
+  if (warnings.length) console.warn(warnings);
+  const url = URL.createObjectURL(new Blob([pdf], { type: 'application/pdf' }));
+  window.open(url); // or use it as the href of an <a download> or the src of an <iframe>
+});
+```
+
+**3. Optional: convert in a Web Worker.** Conversion runs on the thread that calls it, so a long
+document freezes the page until it finishes. Calling it from a worker keeps the page responsive:
+
+```ts
+// convert.worker.ts
+import { convertDocx } from '@happendev/docx2pdf';
+
+self.onmessage = async (e: MessageEvent<File>) => {
+  try {
+    const { pdf, warnings } = await convertDocx(e.data, { fontBaseUrl: '/docx2pdf-fonts/' });
+    self.postMessage({ pdf, warnings });
+  } catch (err) {
+    self.postMessage({ error: String(err) });
+  }
+};
+```
+
+```ts
+// main.ts
+const worker = new Worker(new URL('./convert.worker.ts', import.meta.url), { type: 'module' });
+worker.onmessage = (e) => {
+  if (e.data.error) return console.error(e.data.error);
+  const url = URL.createObjectURL(new Blob([e.data.pdf], { type: 'application/pdf' }));
+  window.open(url);
+};
+worker.postMessage(file);
+```
+
+In a worker, a relative `fontBaseUrl` resolves against the worker script's URL, so use a path that
+starts with `/` or a full URL. Downloaded faces stay cached for the worker's lifetime, so reuse one
+worker for several conversions.
+
+The browser fetches only the faces a document uses: a plain Arial document downloads Liberation Sans
+Regular alone (about 400 KB). Chinese, Japanese or Korean text that no smaller face covers fetches
+a Noto CJK face of over 20 MB. Pass `fetch` to add caching or auth. Set `fontBaseUrl: false` to use
+only embedded fonts and faces you supply through `fonts`.
 
 #### Common font pack in the browser
 
@@ -239,6 +373,7 @@ becomes available in.
 | Bahnschrift (Regular, Bold and widths)    | Gleis                            | yes               | Full   |
 | Candara (including Light)                | Taper                            | yes               | Full   |
 | Impact                                   | Anvil                            | yes               | Full   |
+| Century Gothic                           | TeX Gyre Adventor                | yes               | Full   |
 | Avenir Next LT Pro                       | Onward                           | yes               | Full   |
 | Avenir, Avenir Next                      | Onward                           | approximate       | Full   |
 | Menlo, Monaco, SF Mono                    | DejaVu Sans Mono                 | approximate       | Full   |
@@ -248,8 +383,8 @@ becomes available in.
 | Symbol, Wingdings 1–3, Webdings            | mapped to Unicode                | n/a               | Both   |
 
 "Same glyph widths" means the substitute is designed to match the original's advance widths for
-shared characters. Coverage, kerning and line metrics can still affect layout. Caladea, Gelasio and
-Liberation Sans Narrow use the original fonts' line metrics. A character the substitute lacks can
+shared characters. Coverage, kerning and line metrics can still affect layout. Caladea, Gelasio,
+Liberation Sans Narrow and TeX Gyre Adventor use the original fonts' line metrics. A character the substitute lacks can
 come from a font with different widths. Morrow Sans, Morrow Sans Display, Morrow Sans Narrow and
 Morrow Sans Light match the line metrics of their Aptos counterparts. [Morrow Sans font log](https://github.com/open-metric-fonts/open-metric-fonts/blob/d5d565c5056491a20480674e9b1d95394188cfa8/fonts/morrow-sans/FONTLOG.txt)
 
@@ -265,24 +400,31 @@ look-alike stands in (U+27A2 for Wingdings' ➢ arrowhead bullet); otherwise, an
 with no Unicode equivalent, the symbol draws as a missing glyph and `warnings` names it. Pass the
 symbol font itself through `fonts` to draw the original shapes.
 
-East Asian text whose font is missing falls back by the font's region and style (SimSun to Noto
-Serif CJK SC, MS Mincho to Noto Serif CJK JP, Malgun Gothic to Noto Sans CJK KR), then by the text's
-East Asian language (`w:lang`). The full font pack provides Noto Sans CJK JP in all three runtimes.
+East Asian text whose font is missing falls back by the font's style, then its region (SimSun to
+Noto Serif CJK SC, MS Mincho to Noto Serif CJK JP, Malgun Gothic to Noto Sans CJK KR), then by the
+text's East Asian language (`w:lang`). Style comes first because a Mincho or Song text reads closer in
+another region's serif than in its own region's sans. Kai (brush) faces fall back to a sans, as Word
+for Mac draws them. The full font pack provides Noto Sans CJK JP and Noto Serif CJK SC in all three
+runtimes. A serif stand-in keeps the sans's line height, so the glyph style never moves the layout.
 Add regional Noto CJK fonts through `fonts` or `systemFonts` for other glyph forms.
 
-Fonts are subset into the PDF (TrueType, keeping glyph IDs) with a `ToUnicode` map, so text can be
-selected, searched and copied. CFF-based OpenType fonts and fonts that prohibit subsetting are embedded whole. Fonts that prohibit outline embedding are skipped with a warning. Missing bold or italic
-faces are synthesised the way Word does.
+TrueType fonts are embedded as subsets with compact glyph IDs. The PDF uses a `ToUnicode` map so
+text can be selected, searched and copied. CFF-based OpenType fonts and fonts that prohibit
+subsetting are embedded whole. Fonts that prohibit outline embedding are skipped with a warning.
+Missing bold or italic faces are synthesised the way Word does.
 
 The bundled Caladea is the original 1.002 release, whose widths match Cambria; later Caladea
 releases changed the widths. It lacks the Romanian comma-below letters (Ș ș Ț ț), some combining
 accents and superscript four, which come from a fallback font.
 
 The common browser font files total about 16 MiB and include the Aptos Narrow and Aptos Light
-substitutes. The full pack is about 49 MiB. A regular Arial document fetches only Liberation Sans
-Regular. The browser can fetch Noto Sans CJK JP (20.7 MiB) from the full pack for
-missing East Asian glyphs. It uses Japanese glyph forms. The pack supplies a static regular face
-generated at weight 400 from the [upstream variable TrueType font](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/Variable/TTF/NotoSansCJKjp-VF.ttf).
+substitutes. The full pack is about 73 MiB. A regular Arial document fetches only Liberation Sans
+Regular. The browser can fetch Noto Sans CJK JP (20.7 MiB, Japanese glyph forms) or Noto Serif CJK SC
+(23.0 MiB, Simplified Chinese forms) from the full pack for missing East Asian glyphs. Each is a
+static regular face generated at weight 400 from the upstream variable TrueType font
+([Sans](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/Variable/TTF/NotoSansCJKjp-VF.ttf),
+[Serif](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Serif/Variable/TTF/NotoSerifCJKsc-VF.ttf)).
+The Serif keeps only the glyphs and layout features the converter can reach.
 
 Font licenses are in [`fonts/licenses`](fonts/licenses). The full pack includes Liberation Sans
 Narrow from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception. Its corresponding source is in
@@ -290,7 +432,8 @@ Narrow from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception. Its
 Anvil, Gleis, Morrow Mono, Onward and Taper come from the same revision as Morrow Sans.
 [Open Metric Fonts](https://github.com/open-metric-fonts/open-metric-fonts/tree/d5d565c5056491a20480674e9b1d95394188cfa8)
 
-Archivo Black and Comic Neue are from Google Fonts. DejaVu Sans Mono is from DejaVu 2.37.
+Archivo Black and Comic Neue are from Google Fonts. DejaVu Sans Mono is from DejaVu 2.37. TeX Gyre
+Adventor is the unmodified 2.501 release from GUST under the GUST Font License.
 [Archivo Black](https://github.com/google/fonts/tree/94a7d81318e438525a5285e07ab72c050fdfeb44/ofl/archivoblack) · [Comic Neue](https://github.com/google/fonts/tree/9b83905ab4e7a6034297ff95598d37644fb7d378/ofl/comicneue)
 
 ## What is supported
@@ -326,8 +469,14 @@ Archivo Black and Comic Neue are from Google Fonts. DejaVu Sans Mono is from Dej
   TIFF (uncompressed, LZW, Deflate and PackBits). Basic SVG, EMF and WMF are drawn as vector paths.
   Images can be inline or floating, with cropping, rotation, flips and square/tight/top-and-bottom
   text wrap, also around pictures in headers and footers.
-- Shapes and text boxes (DrawingML and VML): preset geometries, custom paths, fills, outlines, dash
-  styles, transparency, groups, rotated and vertical text, WordArt text paths and watermarks.
+- Shapes and text boxes (DrawingML and VML): preset geometries, custom paths, fills (including
+  linear and path gradients, blended as Word blends them), outlines, dash styles, transparency,
+  groups, rotated and vertical text, WordArt text paths and watermarks.
+- Charts: column, bar, line, area, scatter, pie, doughnut and radar charts (clustered, stacked and
+  100%, combinations and secondary axes) are drawn as vector graphics from the values cached in the
+  document, with Excel's automatic axis scaling, number formats, titles, legends, data labels,
+  trendlines, error bars, gradient fills and shadows. SmartArt is drawn from the shapes Word saves
+  with the diagram, text included.
 - Tracked changes render as the final document (insertions shown, deletions hidden).
 - Right-to-left paragraphs, headers and table text, with bidirectional reordering and Arabic
   letter joining.
@@ -338,7 +487,10 @@ Archivo Black and Comic Neue are from Google Fonts. DejaVu Sans Mono is from Dej
   available. Supported SVGs become PDF vector drawing commands, with metadata and unused
   definitions omitted. An unsupported SVG without a preview, WebP, or CCITT- or JPEG-compressed
   TIFF produces a warning. Metafiles drawn only in EMF+ records come out blank.
-- Charts and SmartArt appear only through the fallback picture Word saves with them.
+- 3D charts are drawn as their flat versions. Surface charts are left blank, and newer chart types
+  (waterfall, treemap, histogram and others) show the fallback Word saves with them. No document in
+  the benchmark or test corpora has a radar chart or error bars, so those follow Excel's documented
+  behaviour without a Word reference to check them against.
 - Equations render as linear text.
 - Bidirectional text follows a simplified Unicode algorithm without explicit embeddings, and Arabic
   joins through presentation forms; no Indic shaping, no OpenType ligatures, and right-to-left
@@ -360,6 +512,8 @@ pnpm build         # dist/
 
 pnpm render in.docx --out out/ --png       # convert, and rasterise with Ghostscript
 pnpm corpus list.txt --root ~/docs         # compare page counts and breaks with Word for many files
+pnpm demo          # build the browser demo into out/demo (deployed to GitHub Pages from main)
+pnpm demo:serve    # serve it on http://localhost:8000 and rebuild on change
 ```
 
 `list.txt` holds one `.docx` path per line (relative to `--root`). Set `BREAKS=1` to print where

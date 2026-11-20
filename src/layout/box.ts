@@ -122,17 +122,32 @@ export function shadedSpaceAfter(para: Paragraph, frame: ParaFrame, next: Paragr
   return spaceAfter(p);
 }
 
+/**
+ * How far a paragraph's side borders run on below the rest of its box. With no bottom border to
+ * close the box, Word carries them down through the space after, which the shading leaves bare
+ * unless the next paragraph is shaded too.
+ */
+export function sideBorderRunOn(para: Paragraph, frame: ParaFrame, next: Paragraph | null): number {
+  const p = para.props;
+  if (!(p.borders.left || p.borders.right) || p.borders.bottom || frame.groupedNext) return 0;
+  if (p.contextualSpacing && next?.props.styleId === p.styleId) return 0;
+  return spaceAfter(p) - shadedSpaceAfter(para, frame, next);
+}
+
 export function hasDecorations(p: ParaProps): boolean {
   const b = p.borders;
   return !!(b.top || b.bottom || b.left || b.right || b.between || p.shading);
 }
 
+/** Word's paragraph box, shading and borders alike, reaches this far past the text on either side. */
+const BOX_PAD = 1.5;
+
 /** Border and shading ops for a vertical slice [top, bottom] of a paragraph. */
-export function paraDecorations(p: ParaProps, frame: ParaFrame, x0: number, areaWidth: number, top: number, bottom: number, firstSlice: boolean, lastSlice: boolean): DrawOp[] {
+export function paraDecorations(p: ParaProps, frame: ParaFrame, x0: number, areaWidth: number, top: number, bottom: number, firstSlice: boolean, lastSlice: boolean, sideRunOn = 0): DrawOp[] {
   const ops: DrawOp[] = [];
   const b = p.borders;
-  const left = x0 + p.indLeft - (b.left ? b.left.space + b.left.width : 0);
-  const right = x0 + areaWidth - p.indRight + (b.right ? b.right.space + b.right.width : 0);
+  const left = x0 + p.indLeft - (b.left ? b.left.space + b.left.width : 0) - BOX_PAD;
+  const right = x0 + areaWidth - p.indRight + (b.right ? b.right.space + b.right.width : 0) + BOX_PAD;
   if (p.shading) ops.push({ kind: 'rect', x: left, y: top, w: right - left, h: bottom - top, fill: p.shading });
   const line = (br: Border, x1: number, y1: number, x2: number, y2: number) => {
     const color = br.color ?? '000000';
@@ -144,8 +159,9 @@ export function paraDecorations(p: ParaProps, frame: ParaFrame, x0: number, area
       ops.push({ kind: 'line', x1: x1 + (horiz ? 0 : off), y1: y1 + (horiz ? off : 0), x2: x2 + (horiz ? 0 : off), y2: y2 + (horiz ? off : 0), width: w, color });
     } else ops.push({ kind: 'line', x1, y1, x2, y2, width: br.width, color, dash: dashFor(br) });
   };
-  if (b.left) line(b.left, left + b.left.width / 2, top, left + b.left.width / 2, bottom);
-  if (b.right) line(b.right, right - b.right.width / 2, top, right - b.right.width / 2, bottom);
+  const sideBottom = lastSlice ? bottom + sideRunOn : bottom;
+  if (b.left) line(b.left, left + b.left.width / 2, top, left + b.left.width / 2, sideBottom);
+  if (b.right) line(b.right, right - b.right.width / 2, top, right - b.right.width / 2, sideBottom);
   if (firstSlice) {
     const tb = frame.groupedPrev ? b.between : b.top;
     if (tb) line(tb, left, top + tb.width / 2, right, top + tb.width / 2);
@@ -174,73 +190,179 @@ export interface Exclusion {
   y2: number;
   wrap: AnchorProps['wrap'];
   side: AnchorProps['wrapText'];
+  /**
+   * Tight and through wrapping: the object's outline, as points from (x1, y1), and the distances
+   * kept from text around it. Text then wraps to the outline's extent across each line; x1 to y2
+   * stay the object's box.
+   */
+  poly?: { pts: Array<[number, number]>; padL: number; padT: number; padR: number; padB: number };
 }
 
 const EPS = 0.01;
 /** Narrowest gap beside a wrapped object that still receives text. */
 const MIN_WRAP_WIDTH = 18;
 
-/** The text interval for a line of height h at y between L and R, avoiding exclusions. */
-function findSlot(ex: Exclusion[], y: number, h: number, L: number, R: number): { y: number; left: number; right: number } {
+/**
+ * The text interval for a line of height h at y between L and R, avoiding exclusions. Outlines
+ * meet only the line's text, `text` high (Word's tight wrapping ignores the extra space of
+ * "multiple" line spacing below it); boxes meet the whole line.
+ */
+export function findSlot(ex: Exclusion[], y: number, h: number, L: number, R: number, text = h): { y: number; left: number; right: number } {
   if (!ex.length) return { y, left: L, right: R };
   for (let iter = 0; iter < 100; iter++) {
-    const hits = ex.filter((e) => e.y1 < y + h - EPS && e.y2 > y + EPS && e.x1 < R - EPS && e.x2 > L + EPS);
+    const hits = bandHits(ex, y, h, text, L, R);
     if (!hits.length) return { y, left: L, right: R };
     const block = hits.filter((e) => e.wrap === 'topAndBottom');
     if (block.length) {
       y = Math.max(...block.map((e) => e.y2));
       continue;
     }
-    let intervals: Array<[number, number]> = [[L, R]];
-    for (const e of hits) {
-      const next: Array<[number, number]> = [];
-      for (const [a, b] of intervals) {
-        let leftPart: [number, number] | null = e.x1 > a ? [a, Math.min(b, e.x1)] : null;
-        let rightPart: [number, number] | null = e.x2 < b ? [Math.max(a, e.x2), b] : null;
-        if (e.side === 'left') rightPart = null;
-        else if (e.side === 'right') leftPart = null;
-        else if (e.side === 'largest') {
-          const lw = leftPart ? leftPart[1] - leftPart[0] : 0;
-          const rw = rightPart ? rightPart[1] - rightPart[0] : 0;
-          if (lw >= rw) rightPart = null;
-          else leftPart = null;
-        }
-        if (leftPart && leftPart[1] - leftPart[0] > EPS) next.push(leftPart);
-        if (rightPart && rightPart[1] - rightPart[0] > EPS) next.push(rightPart);
-      }
-      intervals = next;
-    }
-    const fit = intervals.find(([a, b]) => b - a >= MIN_WRAP_WIDTH);
+    const fit = gaps(hits, L, R).find(([a, b]) => b - a >= MIN_WRAP_WIDTH);
     if (fit) return { y, left: fit[0], right: fit[1] };
-    y = Math.min(...hits.map((e) => e.y2));
+    y = Math.min(...hits.map((e) => e.next ?? e.y2));
   }
   return { y, left: L, right: R };
 }
 
 /**
+ * The next gap right of x on the line band from y to y + h. Word fills each gap that objects
+ * wrapped on both sides leave beside a line, left to right, before it moves down a line.
+ */
+export function gapBeside(ex: Exclusion[], y: number, h: number, text: number, L: number, R: number, x: number): { left: number; right: number } | null {
+  const hits = bandHits(ex, y, h, text, L, R);
+  if (!hits.length || hits.some((e) => e.wrap === 'topAndBottom')) return null;
+  const fit = gaps(hits, L, R).find(([a, b]) => a > x + EPS && b - a >= MIN_WRAP_WIDTH);
+  return fit ? { left: fit[0], right: fit[1] } : null;
+}
+
+/** The exclusions a line at y, h high with text `text` high, between L and R meets. */
+function bandHits(ex: Exclusion[], y: number, h: number, text: number, L: number, R: number): Array<Exclusion & { next?: number }> {
+  return ex
+    .map((e) => (e.poly ? outlineBand(e, y, h, text) : e))
+    .filter((e): e is Exclusion & { next?: number } => !!e && e.y1 < y + h - EPS && e.y2 > y + EPS && e.x1 < R - EPS && e.x2 > L + EPS);
+}
+
+/** The parts of L to R that the side-wrapped exclusions leave to text. */
+function gaps(hits: Exclusion[], L: number, R: number): Array<[number, number]> {
+  let intervals: Array<[number, number]> = [[L, R]];
+  for (const e of hits) {
+    const next: Array<[number, number]> = [];
+    for (const [a, b] of intervals) {
+      let leftPart: [number, number] | null = e.x1 > a ? [a, Math.min(b, e.x1)] : null;
+      let rightPart: [number, number] | null = e.x2 < b ? [Math.max(a, e.x2), b] : null;
+      if (e.side === 'left') rightPart = null;
+      else if (e.side === 'right') leftPart = null;
+      else if (e.side === 'largest') {
+        const lw = leftPart ? leftPart[1] - leftPart[0] : 0;
+        const rw = rightPart ? rightPart[1] - rightPart[0] : 0;
+        if (lw >= rw) rightPart = null;
+        else leftPart = null;
+      }
+      if (leftPart && leftPart[1] - leftPart[0] > EPS) next.push(leftPart);
+      if (rightPart && rightPart[1] - rightPart[0] > EPS) next.push(rightPart);
+    }
+    intervals = next;
+  }
+  return intervals;
+}
+
+/**
+ * The box an outline-wrapped object keeps text out of beside a line at y, h high with text `text`
+ * high: the outline's horizontal extent across the text. Null where the text misses the outline.
+ * A line that fits beside none of it moves down a line (`next`), as Word skips a line there.
+ */
+function outlineBand(e: Exclusion, y: number, h: number, text: number): (Exclusion & { next: number }) | null {
+  const { pts, padL, padT, padR, padB } = e.poly!;
+  // The distances above and below the outline widen the band it is measured across.
+  const ya = y - padB;
+  const yb = y + text + padT;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const [px, py] = [e.x1 + pts[i][0], e.y1 + pts[i][1]];
+    const [qx, qy] = [e.x1 + pts[(i + 1) % pts.length][0], e.y1 + pts[(i + 1) % pts.length][1]];
+    if (Math.max(py, qy) < ya || Math.min(py, qy) > yb) continue;
+    if (Math.abs(qy - py) < EPS) {
+      lo = Math.min(lo, px, qx);
+      hi = Math.max(hi, px, qx);
+      continue;
+    }
+    // The part of the edge inside the band.
+    const ta = Math.max(0, Math.min(1, (ya - py) / (qy - py)));
+    const tb = Math.max(0, Math.min(1, (yb - py) / (qy - py)));
+    for (const t of [ta, tb]) {
+      const x = px + (qx - px) * t;
+      lo = Math.min(lo, x);
+      hi = Math.max(hi, x);
+    }
+  }
+  if (lo > hi) return null;
+  return { x1: lo - padL, x2: hi + padR, y1: y, y2: y + text, wrap: e.wrap, side: e.side, next: y + Math.max(h, 1) };
+}
+
+/** A line's text height, without the extra space "multiple" line spacing adds below. */
+export function textHeight(line: Line): number {
+  return Math.min(line.height, line.baseline + line.descent);
+}
+
+/**
  * The next line of a paragraph at or below y in the column (x, w), flowing around the exclusions.
  * The line's height decides which objects it meets, so a line taller than estimated is retried.
+ * With `gap`, the line continues one at y in that gap beside an object (`bottom` is the earlier
+ * part's bottom). `right` is the right edge of the space the line had.
  */
-export function wrapLine(layout: ParagraphLayout, ex: Exclusion[], y: number, estimate: number, col: { x: number; w: number }): { line: Line; y: number } | null {
-  let est = Math.max(estimate, 1);
+export function wrapLine(
+  layout: ParagraphLayout,
+  ex: Exclusion[],
+  y: number,
+  estimate: { h: number; text: number },
+  col: { x: number; w: number },
+  gap?: { left: number; right: number; bottom: number },
+): { line: Line; y: number; right: number } | null {
+  let est = { h: Math.max(estimate.h, 1), text: Math.max(estimate.text, 1) };
+  const y0 = y;
   for (let iter = 0; iter < 50; iter++) {
     const base = layout.lineBounds(col.w);
-    const slot = findSlot(ex, y, est, col.x + base.left, col.x + base.right);
+    const L = gap ? Math.max(gap.left, col.x + base.left) : col.x + base.left;
+    const R = gap ? Math.min(gap.right, col.x + base.right) : col.x + base.right;
+    const slot = findSlot(ex, y, est.h, L, R, est.text);
+    // A gap beside an earlier part of the line holds only on that line: text that no longer fits
+    // there goes below the line.
+    if (gap && slot.y > y + EPS) {
+      y = gap.bottom;
+      gap = undefined;
+      continue;
+    }
     const snap = layout.snapshot();
     // A first line pushed right by an object keeps its first-line indent from the object's edge.
     let left = slot.left;
     if (slot.left > col.x + base.left + EPS) left = Math.min(slot.right, slot.left + Math.max(0, base.left - layout.para.props.indLeft));
     const line = layout.nextLine(left - col.x, slot.right - col.x, col.w);
     if (!line) return null;
-    if (!ex.length || line.height <= est + EPS) return { line, y: slot.y };
-    const check = findSlot(ex, slot.y, line.height, col.x + base.left, col.x + base.right);
-    if (Math.abs(check.y - slot.y) < EPS && Math.abs(check.left - slot.left) < EPS && Math.abs(check.right - slot.right) < EPS) return { line, y: slot.y };
+    // A line holding nothing but a page or column break takes no room beside objects: it stays
+    // where it is rather than move below one (and push its break onto the next page).
+    if (slot.y > y0 + EPS && !gap && (line.brk === 'page' || line.brk === 'column') && line.contentRight <= line.left + EPS) {
+      layout.restore(snap);
+      const bounds = layout.lineBounds(col.w);
+      const kept = layout.nextLine(bounds.left, bounds.right, col.w);
+      return kept && { line: kept, y: y0, right: col.x + bounds.right };
+    }
+    const text = textHeight(line);
+    // A line moved down past an outline moved a line at a time, so it searches again with its
+    // real height.
+    const moved = slot.y > y0 + EPS && !gap && Math.abs(line.height - est.h) > EPS && ex.some((e) => e.poly);
+    if (!ex.length || (!moved && line.height <= est.h + EPS && text <= est.text + EPS)) return { line, y: slot.y, right: slot.right };
+    if (!moved) {
+      const check = findSlot(ex, slot.y, line.height, L, R, text);
+      if (Math.abs(check.y - slot.y) < EPS && Math.abs(check.left - slot.left) < EPS && Math.abs(check.right - slot.right) < EPS) return { line, y: slot.y, right: slot.right };
+    }
     layout.restore(snap);
-    est = line.height;
-    y = slot.y;
+    est = { h: line.height, text };
+    y = moved ? y0 : slot.y;
   }
-  const line = layout.nextLine(layout.lineBounds(col.w).left, layout.lineBounds(col.w).right, col.w);
-  return line ? { line, y } : null;
+  const bounds = layout.lineBounds(col.w);
+  const line = layout.nextLine(bounds.left, bounds.right, col.w);
+  return line ? { line, y, right: col.x + bounds.right } : null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -260,6 +382,8 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
   const wrap = opts.wrap;
   const items: BoxItem[] = [];
   const exclusions: Exclusion[] = [];
+  // Top-and-bottom objects placed on the page rather than from their paragraph.
+  const banners: Exclusion[] = [];
   let y = 0;
   let prevPara: Paragraph | null = null;
   let pendingAfter = 0;
@@ -306,7 +430,10 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
       if (wrap) {
         for (const f of layout.floatDrawings) {
           const ex = f.hidden ? null : wrap(f, paraY);
-          if (ex) exclusions.push(ex);
+          if (!ex) continue;
+          exclusions.push(ex);
+          const v = f.anchor!.posV.relativeFrom;
+          if (ex.wrap === 'topAndBottom' && v !== 'paragraph' && v !== 'line') banners.push(ex);
         }
       }
       let estimate = layout.markRun.ascent + layout.markRun.descent;
@@ -315,10 +442,12 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
         line = layoutNextLine(layout, width);
         if (!line) break;
         // Lines with text flow around the objects; Word leaves an empty line where it is (a logo
-        // over a header's blank paragraphs doesn't make the header taller).
-        if (snap && line.contentRight > line.left) {
+        // over a header's blank paragraphs doesn't make the header taller), unless a banner placed
+        // on the page and wrapped above and below covers it.
+        const around = line.contentRight > line.left ? exclusions : banners;
+        if (snap && around.length) {
           layout.restore(snap);
-          const placed = wrapLine(layout, exclusions, y, estimate, { x: 0, w: width });
+          const placed = wrapLine(layout, around, y, { h: estimate, text: estimate }, { x: 0, w: width });
           if (!placed) break;
           line = placed.line;
           y = placed.y;
@@ -347,7 +476,7 @@ export function layoutBlocks(blocks: Block[], width: number, env: BoxEnv, opts: 
           const isLast = k === items.length - 1;
           const top = isFirst ? it.y - frame.topExtra : it.y;
           const bottom = isLast ? it.y + it.height + frame.bottomExtra + nextGap.after + nextGap.before + shadedSpaceAfter(block, frame, next) : it.y + it.height;
-          it.ops.unshift(...paraDecorations(block.props, frame, 0, width, top, bottom, isFirst, isLast));
+          it.ops.unshift(...paraDecorations(block.props, frame, 0, width, top, bottom, isFirst, isLast, sideBorderRunOn(block, frame, next)));
         }
       }
       y += frame.bottomExtra;
@@ -434,6 +563,22 @@ export interface CellLayout {
   box: BoxResult;
   /** Rows spanned by a vertical merge (1 when not merged). */
   rowSpan: number;
+  /** Text turned to run along the row (w:textDirection), and the line length it was laid out at. */
+  turned?: { dir: TurnedText; length: number };
+}
+
+/**
+ * Text that runs up the cell (btLr), down it from the right edge (tbRl), or down it from the left
+ * edge (tbLrV). The glyphs of the last two face the same way; only where the lines start differs.
+ */
+type TurnedText = 'up' | 'down' | 'downFromLeft';
+
+function turnedText(dir: string): TurnedText | undefined {
+  // Transitional names, then their Strict equivalents.
+  if (dir === 'btLr' || dir === 'lr') return 'up';
+  if (dir === 'tbRl' || dir === 'tbRlV' || dir === 'rl' || dir === 'rlV') return 'down';
+  if (dir === 'tbLrV' || dir === 'lrV') return 'downFromLeft';
+  return undefined;
 }
 
 export interface RowLayout {
@@ -445,6 +590,8 @@ export interface RowLayout {
   /** Cell spacing above and below the row's cells. */
   spaceTop: number;
   spaceBottom: number;
+  /** Room below the table's last row for its bottom border, which lies on the content's edge. */
+  borderBottom?: number;
 }
 
 export interface TableLayout {
@@ -505,8 +652,8 @@ function inCellFloatsBottom(box: BoxResult, marginTop: number): number {
 /** Word's widest table column: 22 inches. */
 const MAX_COLUMN = 1584;
 
-/** Narrowest and widest a cell's content can be laid out without breaking words. */
-function cellContentWidths(cell: TableCell, env: BoxEnv): { lo: number; hi: number } {
+/** Narrowest and widest a cell's content can be laid out without breaking words (`hi` 0 with `loOnly`). */
+function cellContentWidths(cell: TableCell, env: BoxEnv, loOnly = false): { lo: number; hi: number } {
   let lo = 0;
   let hi = 0;
   const wide = 2 * MAX_COLUMN;
@@ -521,6 +668,7 @@ function cellContentWidths(cell: TableCell, env: BoxEnv): { lo: number; hi: numb
     }
     const layout = new ParagraphLayout(b, env);
     lo = Math.max(lo, layout.minContentWidth());
+    if (loOnly) continue;
     for (let line = layoutNextLine(layout, wide); line; line = layoutNextLine(layout, wide)) hi = Math.max(hi, line.contentRight + wide - line.right);
   }
   return { lo, hi: Math.max(lo, hi) };
@@ -577,6 +725,26 @@ function autofitGrid(table: Table, maxWidth: number, env: BoxEnv): number[] {
   return boxes.map((b, i) => b + (i === 0 ? 2 * sp : sp) + (i === n - 1 ? 2 * sp : sp));
 }
 
+/** An autofit table's grid with each column widened to its cells' longest word. */
+function widenToWords(table: Table, grid: number[], env: BoxEnv): number[] {
+  const out = grid.slice();
+  for (const row of table.rows) {
+    let col = row.gridBefore;
+    const sp = row.cellSpacing;
+    for (let ci = 0; ci < row.cells.length; ci++) {
+      const cell = row.cells[ci];
+      const from = col;
+      col += cell.gridSpan;
+      if (cell.gridSpan !== 1 || from >= out.length || cell.vMerge === 'continue' || turnedText(cell.textDirection)) continue;
+      const lead = ci === 0 ? 2 * sp : sp;
+      const trail = ci === row.cells.length - 1 ? 2 * sp : sp;
+      const need = cellContentWidths(cell, env, true).lo + cell.margins.left + cell.margins.right + lead + trail;
+      if (need > out[from]) out[from] = need;
+    }
+  }
+  return out;
+}
+
 /**
  * Whether a row another tool wrote gives every column a fixed preferred width (one cell per column)
  * that disagrees with the grid. Word sizes such a table's columns from the cells, not from the grid
@@ -615,13 +783,19 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
     x -= (firstCell ? firstCell.margins.left : table.props.cellMargins.left) + 2 * spacing;
   }
   if (nested) x = Math.max(0, x);
+  // An autofit table may reach the right margin; in Word 2010 mode and before, its last cell's text
+  // does, so that cell's margin and spacing go past the margin.
+  const lastRow = table.rows[table.rows.length - 1];
+  const lastCell = lastRow?.cells[lastRow.cells.length - 1];
+  const past = env.compatibilityMode < 15 && lastCell ? lastCell.margins.right + 2 * lastRow.cellSpacing : 0;
+  const maxWidth = (aligned ? avail : avail - x) + past;
   if ((env.settings.generated || gridContradicted(table)) && !nested && table.props.layout === 'autofit' && table.props.width.type === 'auto' && !table.props.floating && grid.length > 0) {
-    // The table may reach the right margin; in Word 2010 mode and before, its last cell's text
-    // does, so that cell's margin and spacing go past the margin.
-    const lastRow = table.rows[table.rows.length - 1];
-    const lastCell = lastRow?.cells[lastRow.cells.length - 1];
-    const past = env.compatibilityMode < 15 && lastCell ? lastCell.margins.right + 2 * lastRow.cellSpacing : 0;
-    grid = autofitGrid(table, (aligned ? avail : avail - x) + past, env);
+    grid = autofitGrid(table, maxWidth, env);
+  } else if (!nested && table.props.layout === 'autofit') {
+    // Word widens a column to hold its longest word while the table still fits; past that it
+    // breaks the word.
+    const wide = widenToWords(table, grid, cellEnv);
+    if (wide.reduce((a, b) => a + b, 0) <= maxWidth + 0.01) grid = wide;
   }
   const colX: number[] = [0];
   for (const g of grid) colX.push(colX[colX.length - 1] + g);
@@ -632,6 +806,7 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
   const rows: RowLayout[] = [];
   for (const row of table.rows) {
     const cells: CellLayout[] = [];
+    const contents: Block[][] = [];
     let col = row.gridBefore;
     // Cell spacing insets every cell of the row on all sides (Word's HTML-style cellspacing).
     // Word's spacing value is half the gap: adjacent cells sit twice it apart, and the outermost
@@ -648,7 +823,7 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
       const trail = ci === row.cells.length - 1 ? 2 * sp : sp;
       const cx = colX[c0] + lead;
       const cw = Math.max(0, colX[c1] - colX[c0] - lead - trail);
-      const inner = Math.max(1, cw - cell.margins.left - cell.margins.right);
+      const inner = Math.max(1, cw - cell.margins.left - cell.margins.right - (sp > 0 ? sideBorders(cell) : 0));
       // A continued merge has no content of its own. hideMark hides the cell's empty paragraph
       // marks: a cell of nothing but empty paragraphs takes no room (a row of them collapses to its
       // margins), and an empty last paragraph after text adds nothing below it.
@@ -662,10 +837,19 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
       // cell ends at the nested table's bottom.
       if (content.length > 1 && isEmpty(content[content.length - 1]) && content[content.length - 2].type === 'table') content = content.slice(0, -1);
       const empty = cell.vMerge === 'continue' || content.length === 0;
-      let box = empty ? { height: 0, items: [] } : layoutBlocks(content, inner, cellEnv, { cell: true });
-      const floats = inCellFloatsBottom(box, cell.margins.top);
+      // Turned text runs along the row: Word grows the row to fit its longest line rather than
+      // wrapping it, unless the row's height is exact.
+      const dir = empty ? undefined : turnedText(cell.textDirection);
+      let length = 0;
+      if (dir) {
+        const exact = row.heightRule === 'exact' && row.height > 0;
+        length = Math.max(1, exact ? row.height - cell.margins.top - cell.margins.bottom : Math.min(MAX_COLUMN, cellContentWidths({ ...cell, content }, cellEnv).hi));
+      }
+      let box = empty ? { height: 0, items: [] } : layoutBlocks(content, dir ? length : inner, cellEnv, { cell: true });
+      const floats = dir ? 0 : inCellFloatsBottom(box, cell.margins.top);
       if (floats > box.height) box = { ...box, height: floats };
-      cells.push({ cell, col, x: cx, width: cw, box, rowSpan: 1 });
+      cells.push({ cell, col, x: cx, width: cw, box, rowSpan: 1, turned: dir ? { dir, length } : undefined });
+      contents.push(content);
       col += cell.gridSpan;
     }
     let h = 0;
@@ -678,12 +862,19 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
       const up = above?.find((o) => o.col === c.col)?.cell.borders.bottom?.width ?? 0;
       borderTop = Math.max(borderTop, c.cell.borders.top?.width ?? 0, up - c.cell.margins.top);
     }
-    for (const c of cells) if (c.cell.vMerge !== 'restart' && c.cell.vMerge !== 'continue') h = Math.max(h, c.box.height + c.cell.margins.top + c.cell.margins.bottom);
+    for (const c of cells) if (c.cell.vMerge !== 'restart' && c.cell.vMerge !== 'continue') h = Math.max(h, (c.turned ? c.turned.length : c.box.height) + c.cell.margins.top + c.cell.margins.bottom);
     h += borderTop + spaceTop + spaceBottom;
+    // A spaced cell keeps its bottom border inside it too (the last row's is added below).
+    if (sp > 0 && ri < table.rows.length - 1) h += Math.max(0, ...cells.map((c) => c.cell.borders.bottom?.width ?? 0));
     // Rows with only merged cells still need room for their own (empty) content.
     if (cells.every((c) => c.cell.vMerge)) for (const c of cells) if (c.cell.vMerge === 'continue') h = Math.max(h, c.cell.margins.top + c.cell.margins.bottom);
     if (cells.length === 0) h = 0;
-    if (row.heightRule === 'exact' && row.height > 0) h = row.height;
+    if (row.heightRule === 'exact' && row.height > 0) {
+      // An exact height leaves out the row's bottom margin, which Word adds below it.
+      let bottom = 0;
+      for (const c of cells) bottom = Math.max(bottom, c.cell.margins.bottom);
+      h = row.height + bottom;
+    }
     // A minimum row height leaves out the row's top border and the cells' top and bottom margins,
     // as content heights do.
     else if (row.height > 0) {
@@ -691,6 +882,13 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
       for (const c of cells) margins = Math.max(margins, c.cell.margins.top + c.cell.margins.bottom);
       h = Math.max(h, row.height + margins + borderTop);
     }
+    // Turned lines span the whole row, so centred or right-aligned text moves along it.
+    cells.forEach((c, i) => {
+      const length = h - borderTop - spaceTop - spaceBottom - c.cell.margins.top - c.cell.margins.bottom;
+      if (!c.turned || row.heightRule === 'exact' || length <= c.turned.length + EPS) return;
+      c.box = layoutBlocks(contents[i], length, cellEnv, { cell: true });
+      c.turned.length = length;
+    });
     rows.push({ row, cells, height: h, borderTop, spaceTop, spaceBottom });
   }
   // The table's bottom border sits below the last row's content.
@@ -698,7 +896,10 @@ export function measureTable(table: Table, avail: number, env: BoxEnv, nested = 
   if (last) {
     let bb = 0;
     for (const c of last.cells) bb = Math.max(bb, c.cell.borders.bottom?.width ?? 0);
-    if (last.row.heightRule !== 'exact') last.height += bb;
+    if (last.row.heightRule !== 'exact') {
+      last.height += bb;
+      last.borderBottom = bb;
+    }
   }
   // Vertical merges: the restart cell spans following rows whose cell at the same column continues.
   for (let r = 0; r < rows.length; r++) {
@@ -741,12 +942,30 @@ function findRestart(tl: TableLayout, r: number, col: number): { r: number; cell
   return null;
 }
 
+/** The border Word draws where two cells' borders meet: the wider, or the first when they tie. */
+function heavier(a: Border | null, b: Border | null | undefined): Border | null {
+  return b && (!a || b.width > a.width) ? b : a;
+}
+
+/** Widths of a cell's left and right borders. */
+function sideBorders(cell: TableCell): number {
+  return (cell.borders.left?.width ?? 0) + (cell.borders.right?.width ?? 0);
+}
+
 function drawEdge(out: DrawOp[], br: Border | null, x1: number, y1: number, x2: number, y2: number): void {
   if (!br || br.width <= 0) return;
   const color = br.color ?? '000000';
+  const horiz = y1 === y2;
+  // A vertical border straddles its edge. A horizontal one hangs from it: Word starts it at most
+  // 0.375pt above the edge and runs it down into the room the row below (or, for the table's
+  // bottom, the last row) keeps for it.
+  if (horiz) {
+    const shift = (br.width - Math.min(br.width, 0.75)) / 2;
+    y1 += shift;
+    y2 += shift;
+  }
   if (br.style === 'double') {
     const w = Math.max(0.25, br.width / 3);
-    const horiz = y1 === y2;
     out.push({ kind: 'line', x1: x1 - (horiz ? 0 : w), y1: y1 - (horiz ? w : 0), x2: x2 - (horiz ? 0 : w), y2: y2 - (horiz ? w : 0), width: w, color });
     out.push({ kind: 'line', x1: x1 + (horiz ? 0 : w), y1: y1 + (horiz ? w : 0), x2: x2 + (horiz ? 0 : w), y2: y2 + (horiz ? w : 0), width: w, color });
   } else out.push({ kind: 'line', x1, y1, x2, y2, width: br.width, color, dash: dashFor(br), cap: 'square' });
@@ -792,7 +1011,9 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
       height -= tl.rows[spanFrom].spaceTop + tl.rows[Math.min(spanEnd, tl.rows.length) - 1].spaceBottom;
       if (cell.cell.shading) back.push({ kind: 'rect', x, y: top, w: cell.width, h: height, fill: cell.cell.shading });
       const m = cell.cell.margins;
-      const innerX = x + m.left;
+      // Spaced cells hold their borders inside them, so text starts past the left border.
+      const spaced = tl.rows[spanFrom].row.cellSpacing > 0;
+      const innerX = x + m.left + (spaced ? (cell.cell.borders.left?.width ?? 0) : 0);
       const innerH = height - m.top - m.bottom;
       const items = cell.box.items;
       let from = 0;
@@ -818,11 +1039,31 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
       }
       let dy = top + m.top - shift + (from === 0 ? tl.rows[spanFrom].borderTop : 0);
       if (align && from === 0 && to === items.length) {
-        const free = innerH - cell.box.height;
+        // Word centres and bottom-aligns content in the space between the row's borders.
+        const ruled = tl.rows[spanFrom].borderTop + (tl.rows[Math.min(spanEnd, tl.rows.length) - 1]?.borderBottom ?? 0);
+        const free = innerH - ruled - cell.box.height;
         if (free > 0 && cell.cell.vAlign === 'center') dy += free / 2;
         else if (free > 0 && cell.cell.vAlign === 'bottom') dy += free;
       }
-      const area = { x: innerX, y: top, w: cell.width - m.left - m.right, h: height };
+      const area = { x: innerX, y: top, w: cell.width - m.left - m.right - (spaced ? sideBorders(cell.cell) : 0), h: height };
+      if (cell.turned) {
+        // The content box, laid out along the row, turns a quarter into the cell: text running up
+        // starts at the cell's bottom with its lines' tops to the left; text running down starts at
+        // the top with them to the right. Vertical alignment moves the lines across the cell.
+        const free = area.w - cell.box.height;
+        const off = free > 0 && cell.cell.vAlign === 'center' ? free / 2 : free > 0 && cell.cell.vAlign === 'bottom' ? free : 0;
+        const y0 = top + m.top + tl.rows[spanFrom].borderTop;
+        const dir = cell.turned.dir;
+        const matrix: [number, number, number, number, number, number] =
+          dir === 'up' ? [0, -1, 1, 0, innerX + off, top + height - m.bottom] : [0, 1, -1, 0, dir === 'down' ? innerX + area.w - off : innerX + off + cell.box.height, y0];
+        content.push({ kind: 'transform', matrix });
+        for (const it of items) {
+          content.push(...it.ops);
+          if (it.notes) notes.push(...it.notes);
+        }
+        content.push({ kind: 'restore' });
+        from = to;
+      }
       for (let k = from; k < to; k++) {
         // Objects laid out in the cell position from it (the innermost cell of nested tables).
         for (const op of translateOps(items[k].ops, innerX, dy)) content.push(op.kind === 'float' && !op.cell ? { ...op, cell: area } : op);
@@ -831,11 +1072,29 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
       const b = cell.cell.borders;
       const lastRow = tl.rows[Math.min(spanEnd, tl.rows.length) - 1];
       const bottomCell = lastRow?.cells.find((o) => o.col === cell.col);
-      const bottomB = bottomCell ? bottomCell.cell.borders.bottom : b.bottom;
-      drawEdge(borders, b.top, x, top, x + cell.width, top);
-      drawEdge(borders, bottomB, x, top + height, x + cell.width, top + height);
-      drawEdge(borders, b.left, x, top, x, top + height);
-      drawEdge(borders, b.right, x + cell.width, top, x + cell.width, top + height);
+      // Cells that touch share an edge, and Word draws only the heavier of their two borders there.
+      const touching = tl.rows[spanFrom].row.cellSpacing <= 0;
+      const own = tl.rows[spanFrom].cells;
+      const above = touching && spanFrom > 0 ? tl.rows[spanFrom - 1].cells.find((o) => o.col === cell.col) : undefined;
+      const below = touching ? tl.rows[spanEnd]?.cells.find((o) => o.col === cell.col) : undefined;
+      const left = touching ? own.find((o) => o.col + o.cell.gridSpan === cell.col) : undefined;
+      const right = touching ? own.find((o) => o.col === cell.col + cell.cell.gridSpan) : undefined;
+      const bottomB = heavier(bottomCell ? bottomCell.cell.borders.bottom : b.bottom, below?.cell.borders.top);
+      const yb = top + height - (lastRow?.borderBottom ?? 0);
+      if (spaced) {
+        // Each spaced cell draws its whole border inside its own box.
+        const hang = (br: Border | null) => (br ? br.width / 2 - (br.width - Math.min(br.width, 0.75)) / 2 : 0);
+        const half = (br: Border | null) => (br ? br.width / 2 : 0);
+        drawEdge(borders, b.top, x, top + hang(b.top), x + cell.width, top + hang(b.top));
+        drawEdge(borders, bottomB, x, top + height - half(bottomB) * 2 + hang(bottomB), x + cell.width, top + height - half(bottomB) * 2 + hang(bottomB));
+        drawEdge(borders, b.left, x + half(b.left), top, x + half(b.left), top + height);
+        drawEdge(borders, b.right, x + cell.width - half(b.right), top, x + cell.width - half(b.right), top + height);
+      } else {
+        drawEdge(borders, heavier(b.top, above?.cell.borders.bottom), x, top, x + cell.width, top);
+        drawEdge(borders, bottomB, x, yb, x + cell.width, yb);
+        drawEdge(borders, heavier(b.left, left?.cell.borders.right), x, top, x, top + height);
+        drawEdge(borders, heavier(b.right, right?.cell.borders.left), x + cell.width, top, x + cell.width, top + height);
+      }
       drawEdge(borders, b.tl2br, x, top, x + cell.width, top + height);
       drawEdge(borders, b.tr2bl, x + cell.width, top, x, top + height);
     }

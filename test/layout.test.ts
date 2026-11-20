@@ -13,6 +13,9 @@ import { layoutDocument } from '../src/layout/engine.js';
 import { A4_SECT, makeDocx, p } from './helpers/docx.js';
 import { glyphOps, layout, lines, pageText } from './helpers/layout.js';
 import { anchoredImage, inlineImage, redPng } from './helpers/sample.js';
+import { formatNumber } from '../src/layout/chart.js';
+import { applyColorMods } from '../src/docx/values.js';
+import type { DrawOp as DrawOpLike, PathOp } from '../src/layout/types.js';
 
 const ARIAL_STYLES =
   '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>';
@@ -172,6 +175,21 @@ describe('line height and spacing', () => {
     expect(await yellow('', blue)).toBeCloseTo(ARIAL_11 + 12, 1);
     expect(await yellow('', p('Plain'))).toBeCloseTo(ARIAL_11, 1);
     expect(await yellow('<w:pBdr><w:bottom w:val="single" w:sz="4" w:space="1" w:color="auto"/></w:pBdr>', blue)).toBeLessThan(ARIAL_11 + 6);
+  });
+
+  it("reaches the paragraph box 1.5pt past the text, and runs side borders through the space after", async () => {
+    const left = '<w:pBdr><w:left w:val="single" w:sz="8" w:space="4" w:color="FF0000"/></w:pBdr><w:spacing w:after="200"/>';
+    const body = p('Ruled', left) + p('Shaded', '<w:shd w:val="clear" w:color="auto" w:fill="FFFF00"/>');
+    const ops = (await layout(makeDocx({ styles: ARIAL_STYLES, body }))).pages[0].body;
+    const rule = ops.find((o) => o.kind === 'line');
+    const fill = ops.find((o) => o.kind === 'rect');
+    if (rule?.kind !== 'line' || fill?.kind !== 'rect') throw new Error('missing decorations');
+    // 4pt of space, the 1pt line's centre, and Word's 1.5pt beyond the 72pt margin.
+    expect(rule.x1).toBeCloseTo(72 - 4 - 0.5 - 1.5, 2);
+    // The line, then the 10pt space after: there is no bottom border to close the box above it.
+    expect(rule.y2 - rule.y1).toBeCloseTo(ARIAL_11 + 10, 1);
+    expect(fill.x).toBeCloseTo(72 - 1.5, 2);
+    expect(fill.w).toBeCloseTo(841.9 / 1.414 - 144 + 3, 0);
   });
 });
 
@@ -446,6 +464,27 @@ describe('tables', () => {
     expect(strokes.map((o) => o.kind === 'line' && o.y1).reduce((a, b) => Math.abs(Number(a) - Number(b)))).toBeCloseTo(1.5, 2);
   });
 
+  it('hangs horizontal borders from their edge, draws the heavier of two that meet, and ends the table on its last content', async () => {
+    const borders = (top: string, bottom: string) => `<w:tcBorders><w:top ${top} w:space="0" w:color="000000"/><w:bottom ${bottom} w:space="0" w:color="000000"/></w:tcBorders>`;
+    const double = 'w:val="double" w:sz="6"';
+    const tbl = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid><w:tr>${cell('A', 3000, borders(double, double))}</w:tr><w:tr>${cell('B', 3000, borders('w:val="single" w:sz="4"', 'w:val="thick" w:sz="18"'))}</w:tr></w:tbl>`;
+    const body = (await layout(makeDocx({ styles: ARIAL_STYLES, settings: compat(15), body: tbl + p('After') }))).pages[0].body;
+    const ys = new Map(lines(body).map((l) => [l.text, l.y]));
+    const strokes = body.flatMap((o) => (o.kind === 'line' ? [o] : []));
+    // The double between the rows outweighs the second row's single top border, which is not drawn.
+    expect(strokes.some((o) => o.width === 0.5)).toBe(false);
+    const doubles = [...new Set(strokes.filter((o) => o.width === 0.75).map((o) => o.y1))].sort((a, b) => a - b);
+    // Each double starts on its edge and its second line lies 1.5pt below.
+    expect(doubles).toHaveLength(4);
+    expect(doubles[1] - doubles[0]).toBeCloseTo(1.5, 2);
+    expect(doubles[2] - doubles[0]).toBeCloseTo(ys.get('B')! - ys.get('A')!, 2);
+    // The 2.25pt bottom border starts 0.375pt above the last row's content edge; the table keeps
+    // room for it before the next paragraph.
+    const thick = strokes.find((o) => o.width === 2.25)!;
+    expect(ys.get('After')! - ys.get('B')!).toBeCloseTo(ARIAL_11 + 2.25, 2);
+    expect(thick.y1 - doubles[2]).toBeCloseTo(2.25 + ARIAL_11 + 0.75, 2);
+  });
+
   it("adds the cells' top and bottom margins to a minimum row height", async () => {
     const tcMar = '<w:tcMar><w:top w:w="40" w:type="dxa"/><w:bottom w:w="40" w:type="dxa"/></w:tcMar>';
     const row = (text: string, trPr = '') => `<w:tr>${trPr && `<w:trPr>${trPr}</w:trPr>`}${cell(text, 3000, tcMar)}${cell(text, 4000, tcMar)}</w:tr>`;
@@ -455,6 +494,37 @@ describe('tables', () => {
     // 30pt for the content, then the 2pt margins above and below it.
     expect(y('Plain') - y('Tall')).toBeCloseTo(30 + 4, 1);
     expect(y('End') - y('Plain')).toBeCloseTo(ARIAL_11 + 4, 1);
+  });
+
+  it('turns cell text that runs up or down the row, and grows the row to fit its line', async () => {
+    const turn = (dir: string) => `<w:textDirection w:val="${dir}"/>`;
+    const tbl = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid><w:tr>${cell('Plain', 2000)}${cell('Running up the row', 2000, turn('btLr'))}${cell('Down', 2000, turn('tbRl'))}</w:tr></w:tbl>`;
+    const body = (await layout(makeDocx({ styles: ARIAL_STYLES, settings: compat(15), body: tbl + p('After') }))).pages[0].body;
+    const turns = body.flatMap((o) => (o.kind === 'transform' ? [o.matrix] : []));
+    // Up: tops of the lines to the left, from the cell's bottom; down: tops to the right, from its top.
+    expect(turns.map((m) => m.slice(0, 4))).toEqual([
+      [0, -1, 1, 0],
+      [0, 1, -1, 0],
+    ]);
+    // The up line starts at the second cell's left text edge, the down line at the third's right
+    // (these styles give cells no side margins).
+    expect(turns[1][4] - turns[0][4]).toBeCloseTo(200, 1);
+    const ls = lines(body);
+    const y = (t: string) => ls.find((l) => l.text === t)!.y;
+    // One unwrapped line of the longer text, about 100pt, sets the row's height.
+    expect(y('After') - y('Plain')).toBeGreaterThan(90);
+    expect(turns[0][5] - turns[1][5]).toBeGreaterThan(90);
+  });
+
+  it("adds the row's bottom margin to an exact row height and starts its cells at its largest top margin", async () => {
+    const mar = (top: number, bottom: number) => `<w:tcMar><w:top w:w="${top}" w:type="dxa"/><w:bottom w:w="${bottom}" w:type="dxa"/></w:tcMar>`;
+    const exact = '<w:trPr><w:trHeight w:val="1000" w:hRule="exact"/></w:trPr>';
+    const tbl = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr>${exact}${cell('Left', 3000, mar(40, 200))}${cell('Right', 4000, mar(200, 0))}</w:tr><w:tr>${exact}${cell('Next', 3000, mar(0, 0))}${cell('Other', 4000, mar(0, 0))}</w:tr></w:tbl>`;
+    const ls = lines((await layout(makeDocx({ styles: ARIAL_STYLES, settings: compat(15), body: tbl }))).pages[0].body);
+    const y = (t: string) => ls.find((l) => l.text.includes(t))!.y;
+    expect(y('Left')).toBeCloseTo(y('Right'), 2);
+    // The 50pt row, then its 10pt bottom margin; the next row's cells have no top margin.
+    expect(y('Next') - y('Left')).toBeCloseTo(50 + 10 - 10, 1);
   });
 
   it('hangs the cell margin left of the indent in a package without a settings part', async () => {
@@ -544,15 +614,53 @@ describe('tables', () => {
     expect(lines(off.pages[1].body)).toHaveLength(1);
   });
 
+  it("leaves a cell's orphaned first line before Word 2013, and moves its row from Word 2013", async () => {
+    const linesPerPage = Math.floor(BODY_HEIGHT / ARIAL_11);
+    const filler = Array.from({ length: linesPerPage - 1 }, (_, i) => p(`Line ${i + 1}`)).join('');
+    // Room is left for the 1pt border and one line of a four-line statement beside an empty cell.
+    const tbl = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>${borders}</w:tblPr><w:tblGrid><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/></w:tblGrid><w:tr>${cell(words(8), 1500)}${cell('', 1500)}</w:tr></w:tbl>`;
+    const word2010 = await layout(makeDocx({ styles: ARIAL_STYLES, settings: compat(14), body: filler + tbl }));
+    expect(lines(word2010.pages[0].body).at(-1)!.text.trim()).toBe('word0 word1');
+    expect(lines(word2010.pages[1].body)).toHaveLength(3);
+    const word2013 = await layout(makeDocx({ styles: ARIAL_STYLES, settings: compat(15), body: filler + tbl }));
+    expect(lines(word2013.pages[0].body).at(-1)!.text).toBe(`Line ${linesPerPage - 1}`);
+    expect(lines(word2013.pages[1].body)).toHaveLength(4);
+  });
+
+  it("leaves room for a split row's top border on the page the row starts on", async () => {
+    const linesPerPage = Math.floor(BODY_HEIGHT / ARIAL_11);
+    const filler = Array.from({ length: linesPerPage - 2 }, (_, i) => p(`Line ${i + 1}`)).join('');
+    // Two lines and 2.4pt of room are left, so below the 3pt top border only one line fits.
+    const top = '<w:tcBorders><w:top w:val="single" w:sz="24" w:space="0" w:color="000000"/></w:tcBorders>';
+    const tbl = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/>${top}</w:tcPr>${p('One')}${p('Two')}${p('Three')}</w:tc></w:tr></w:tbl>`;
+    const r = await layout(makeDocx({ styles: ARIAL_STYLES, body: filler + tbl }));
+    expect(lines(r.pages[0].body).at(-1)!.text).toBe('One');
+    expect(lines(r.pages[1].body)[0].text).toBe('Two');
+  });
+
+  it("widens an autofit column to its longest word while the table fits, and breaks the word otherwise", async () => {
+    // A file Word saved (it has revision ids) keeps its grid; only too-narrow columns widen.
+    const settings = '<w:rsids><w:rsidRoot w:val="00000001"/></w:rsids>';
+    const texts = async (text: string, tblPr = '') => {
+      const tbl = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>${tblPr}</w:tblPr><w:tblGrid><w:gridCol w:w="600"/><w:gridCol w:w="600"/></w:tblGrid><w:tr>${cell(text, 600)}${cell('B', 600)}</w:tr></w:tbl>`;
+      return lines((await layout(makeDocx({ styles: ARIAL_STYLES, settings, body: tbl }))).pages[0].body).map((l) => l.text);
+    };
+    // "Unbreakable" is wider than its 30pt column.
+    expect(await texts('Unbreakable')).toEqual(['UnbreakableB']);
+    expect((await texts('Unbreakable', '<w:tblLayout w:type="fixed"/>')).length).toBeGreaterThan(1);
+    expect((await texts('W'.repeat(60))).length).toBeGreaterThan(1);
+  });
+
   it('insets every cell by the cell spacing', async () => {
     const settings = '<w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat>';
     const run = async (tblPr: string) => lines((await layout(makeDocx({ styles: ARIAL_STYLES, settings, body: table([['A1', 'B1'], ['A2', 'B2']], tblPr) }))).pages[0].body);
     const plain = await run('');
     const spaced = await run('<w:tblCellSpacing w:w="40" w:type="dxa"/>');
     // Word's spacing value is half the gap: cells sit 4pt apart and 4pt in from the table's
-    // edges, so rows are 4pt further apart and text moves 4pt in.
-    expect(spaced[0].ops[0].x - plain[0].ops[0].x).toBeCloseTo(4, 2);
-    expect(spaced[1].y - spaced[0].y - (plain[1].y - plain[0].y)).toBeCloseTo(4, 2);
+    // edges. A spaced cell also holds its 1pt borders inside it, so rows are 5pt further apart
+    // and text moves 5pt in.
+    expect(spaced[0].ops[0].x - plain[0].ops[0].x).toBeCloseTo(5, 2);
+    expect(spaced[1].y - spaced[0].y - (plain[1].y - plain[0].y)).toBeCloseTo(5, 2);
   });
 
   it('applies row-level table property exceptions', async () => {
@@ -597,6 +705,15 @@ describe('tables', () => {
     expect(await sizes(14)).toEqual([10, 11]);
     expect(await sizes(15)).toEqual([11, 11]);
   });
+
+  it("centres cell text in the space below the row's top border", async () => {
+    const rule = '<w:top w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="12" w:space="0" w:color="000000"/>';
+    const row = (text: string) => `<w:tr><w:trPr><w:trHeight w:val="400"/></w:trPr>${cell(text, 4000, '<w:vAlign w:val="center"/>')}</w:tr>`;
+    const body = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>${rule}</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid>${row('Middle')}${row('Next')}</w:tbl>`;
+    const first = lines((await layout(makeDocx({ styles: ARIAL_STYLES, body }))).pages[0].body)[0];
+    // A 20pt row below a 1.5pt border.
+    expect(first.y).toBeCloseTo(72 + 1.5 + (20 - ARIAL_11) / 2 + ARIAL_11 - (434 / 2048) * 11, 1);
+  });
 });
 
 describe('headers, footers and fields', () => {
@@ -636,6 +753,10 @@ describe('headers, footers and fields', () => {
     // Blank lines stay where they are: the two-line header leaves the body at the top margin.
     const empty = await layout(makeDocx({ styles: ARIAL_STYLES, sectPr, headers: { hdr1: `<w:p>${logo}</w:p><w:p/>` }, body: p('Body') }));
     expect(lines(empty.pages[0].body)[0].y).toBeCloseTo(72 + baseline, 1);
+    // A banner placed on the page and wrapped above and below does move a blank line, to 70pt here.
+    const banner = anchoredImage('none', 451, 50, { h: 'margin', x: 0, v: 'page', y: 20 }, '<wp:wrapTopAndBottom/>');
+    const below = await layout(makeDocx({ styles: ARIAL_STYLES, sectPr, headers: { hdr1: `<w:p>${banner}</w:p>` }, body: p('Body') }));
+    expect(lines(below.pages[0].body)[0].y).toBeCloseTo(70 + ARIAL_11 + baseline, 1);
   });
 
   it('positions a picture laid out in a header table cell from the cell, and grows the row to hold it', async () => {
@@ -696,6 +817,67 @@ describe('floating objects', () => {
     const starts = ls[0].ops.flatMap((o) => o.xs.map((x) => o.x + x));
     expect(Math.max(...starts)).toBeLessThan(72 + 300);
     expect(ls.find((l) => l.text === 'Anchor')!.y).toBeGreaterThan(ls[1].y);
+  });
+
+  /** Tight wrapping along an outline given as fractions of the object's extent. */
+  const tight = (pts: Array<[number, number]>) =>
+    `<wp:wrapTight wrapText="bothSides"><wp:wrapPolygon edited="0">${pts.map(([x, y], i) => `<wp:${i ? 'lineTo' : 'start'} x="${x * 21600}" y="${y * 21600}"/>`).join('')}</wp:wrapPolygon></wp:wrapTight>`;
+  const box = tight([[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]);
+  const starts = (line: { ops: Array<{ x: number; xs: number[] }> }) => line.ops.flatMap((o) => o.xs.map((x) => o.x + x));
+
+  it('wraps tight text along the outline and fills the gaps on both sides of a line', async () => {
+    // The outline covers the middle half of a picture 150-250pt from the margin.
+    const pic = anchoredImage('img1', 100, 60, { h: 'margin', x: 150, v: 'paragraph', y: 0 }, tight([[0.25, 0], [0.25, 1], [0.75, 1], [0.75, 0], [0.25, 0]]));
+    const body = `<w:p>${pic}<w:r><w:t>${words(60)}</w:t></w:r></w:p>`;
+    const xs = starts(lines((await layout(makeDocx({ styles: ARIAL_STYLES, body, media }))).pages[0].body)[0]);
+    expect(Math.min(...xs)).toBeCloseTo(72, 1);
+    expect(Math.min(...xs.filter((x) => x > 72 + 175))).toBeCloseTo(72 + 225, 0);
+  });
+
+  it('wraps an outline beside the text of a line, not the space that "multiple" spacing adds below it', async () => {
+    // The picture starts 15pt down: below the first line's 12.6pt of text but within its double-spaced line.
+    const first = async (wrap: string) => {
+      const pic = anchoredImage('img1', 100, 50, { h: 'margin', x: 0, v: 'paragraph', y: 15 }, wrap);
+      const body = `<w:p><w:pPr><w:spacing w:line="480" w:lineRule="auto"/></w:pPr>${pic}<w:r><w:t>${words(40)}</w:t></w:r></w:p>`;
+      return lines((await layout(makeDocx({ styles: ARIAL_STYLES, body, media }))).pages[0].body)[0].x;
+    };
+    expect(await first(box)).toBeCloseTo(72, 1);
+    expect(await first(square)).toBeCloseTo(172, 1);
+  });
+
+  it('moves a line with no room beside an outline down a line at a time', async () => {
+    // A triangle over the column whose right side opens downwards: no room on the first line, 57pt
+    // on the second. A box would send the line below the whole picture.
+    const pic = anchoredImage('img1', 451.3, 100, { h: 'margin', x: 0, v: 'paragraph', y: 0 }, tight([[0, 0], [1, 0], [0, 1], [0, 0]]));
+    const body = `<w:p>${pic}<w:r><w:t>${words(4)}</w:t></w:r></w:p>`;
+    const first = lines((await layout(makeDocx({ styles: ARIAL_STYLES, body, media }))).pages[0].body)[0];
+    expect(first.y).toBeCloseTo(72 + ARIAL_11 + ARIAL_11 - (434 / 2048) * 11, 1);
+    expect(first.x).toBeCloseTo(72 + 451.3 * (1 - ARIAL_11 / 100), 0);
+  });
+
+  it('leaves a page break beside an object on its page', async () => {
+    // The picture fills the rest of the page below "One", leaving no room for the break's line.
+    const pic = anchoredImage('img1', 451.3, 680, { h: 'margin', x: 0, v: 'margin', y: 15 }, square);
+    const body = `<w:p>${pic}<w:r><w:t>One</w:t></w:r></w:p><w:p><w:r><w:br w:type="page"/></w:r></w:p>` + p('Two');
+    const r = await layout(makeDocx({ styles: ARIAL_STYLES, body, media }));
+    expect(r.pages).toHaveLength(2);
+    expect(pageText(r.pages[1])).toBe('Two');
+  });
+
+  it('sizes a line of pictures ended by a line break as a line of pictures', async () => {
+    const pic = inlineImage('img1', 40, 40);
+    const next = async (body: string) => lines((await layout(makeDocx({ styles: ARIAL_STYLES, body, media }))).pages[0].body).find((l) => l.text === 'Next')!.y;
+    expect(await next(`<w:p>${pic}<w:r><w:br/><w:t>Next</w:t></w:r></w:p>`)).toBeCloseTo(await next(`<w:p>${pic}</w:p>${p('Next')}`), 2);
+  });
+
+  it('aligns an object together with its effects', async () => {
+    // A 10pt shadow on the right keeps inside the margin.
+    const pic = anchoredImage('img1', 100, 40, { h: 'margin', x: 0, v: 'paragraph', y: 0 }, square)
+      .replace('<wp:posOffset>0</wp:posOffset></wp:positionH>', '<wp:align>right</wp:align></wp:positionH>')
+      .replace(square, `<wp:effectExtent l="0" t="0" r="${10 * 12700}" b="0"/>${square}`);
+    const page = (await layout(makeDocx({ styles: ARIAL_STYLES, body: `<w:p>${pic}</w:p>`, media }))).pages[0];
+    const img = [...page.behind, ...page.body, ...page.front].find((o) => o.kind === 'image');
+    expect(img?.x).toBeCloseTo(595.3 - 72 - 10 - 100, 1);
   });
 });
 
@@ -843,7 +1025,7 @@ describe('fonts', () => {
     const run = '<w:rFonts w:ascii="Century Gothic" w:hAnsi="Century Gothic"/>';
     const { result } = await layoutWithWarnings(makeDocx({ styles: ARIAL_STYLES, body: p('One', '', run) + p('Two', '', run) }));
     const [one, two] = lines(result.pages[0].body);
-    expect(one.ops[0].face.familyName).toBe('Liberation Sans');
+    expect(one.ops[0].face.familyName).toBe('TeX Gyre Adventor');
     expect(two.y - one.y).toBeCloseTo(((2060 + 451) / 2048) * 11, 1);
   });
 
@@ -952,6 +1134,14 @@ describe('line breaking', () => {
     // After "Text" the first tab, past the margin, starts a line that keeps the second.
     expect(y('After') - y('Middle')).toBeCloseTo(3 * ARIAL_11, 1);
   });
+
+  it('shows a soft hyphen only where a line breaks at it', async () => {
+    // 35pt holds "aaaa-" but not "aaaabbbb".
+    const narrow = `<w:pPr><w:ind w:right="${Math.round((451.3 - 35) * 20)}"/></w:pPr>`;
+    const body = `<w:p>${narrow}<w:r><w:t>aaaa</w:t><w:softHyphen/><w:t>bbbb</w:t></w:r></w:p><w:p><w:r><w:t>End</w:t><w:softHyphen/></w:r></w:p>`;
+    const ls = lines((await layout(makeDocx({ styles: ARIAL_STYLES, body }))).pages[0].body);
+    expect(ls.map((l) => l.text)).toEqual(['aaaa-', 'bbbb', 'End']);
+  });
 });
 
 describe('fields', () => {
@@ -1031,5 +1221,153 @@ describe('run formatting', () => {
     const rules = r.pages[0].body.filter((o) => o.kind === 'line');
     expect(rules).toHaveLength(1);
     expect(rules[0].kind === 'line' && rules[0].y1).toBeGreaterThan(under.y);
+  });
+});
+
+describe('charts', () => {
+  const inlineChart = (rid: string, wPt: number, hPt: number) =>
+    `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${wPt * 12700}" cy="${hPt * 12700}"/><wp:docPr id="1" name="Chart 1"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="${rid}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+  const pts = (cats: string[], fmt?: string) =>
+    `${fmt ? `<c:formatCode>${fmt}</c:formatCode>` : ''}<c:ptCount val="${cats.length}"/>${cats.map((c, i) => `<c:pt idx="${i}"><c:v>${c}</c:v></c:pt>`).join('')}`;
+  const axes =
+    '<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="2"/><c:crosses val="autoZero"/><c:auto val="1"/></c:catAx>' +
+    '<c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="1"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>';
+  const values = [4.3, 2.5, 3.5, 4.5];
+  const barChart =
+    '<c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:varyColors val="0"/>' +
+    `<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>Sales</c:v></c:tx><c:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></c:spPr><c:cat><c:strLit>${pts(['North', 'South', 'East', 'West'])}</c:strLit></c:cat><c:val><c:numLit>${pts(values.map(String), 'General')}</c:numLit></c:val></c:ser>` +
+    `<c:gapWidth val="150"/><c:axId val="1"/><c:axId val="2"/></c:barChart>${axes}</c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend><c:plotVisOnly val="1"/></c:chart>`;
+
+  it("draws a chart from its cached data, on Excel's automatic value axis", async () => {
+    // Word stores no picture of a chart, so without drawing the data the chart would be blank.
+    const r = await layout(makeDocx({ body: `<w:p>${inlineChart('rIdChart1', 360, 216)}</w:p>`, charts: { rIdChart1: barChart } }));
+    const ops = r.pages[0].body;
+    const texts = glyphOps(ops).map((g) => ({ text: g.texts.join(''), x: g.x, y: g.y }));
+    for (const t of ['North', 'South', 'East', 'West', 'Sales']) expect(texts.map((g) => g.text)).toContain(t);
+    // 4.5 at most rounds out to an axis that ends on a whole step: 0 to 5.
+    const numbers = texts.filter((g) => /^\d+(\.\d+)?$/.test(g.text));
+    const zero = numbers.find((g) => g.text === '0')!;
+    const five = numbers.find((g) => g.text === '5')!;
+    expect(zero).toBeDefined();
+    expect(five).toBeDefined();
+    expect(Math.max(...numbers.map((g) => Number(g.text)))).toBe(5);
+    const bars = ops
+      .filter((o): o is PathOp => o.kind === 'path' && (o.fill ?? '').replace('#', '').toUpperCase() === 'FF0000')
+      .map((o) => {
+        const ys = o.segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 1));
+        return { top: Math.min(...ys), bottom: Math.max(...ys) };
+      })
+      // The fifth red shape is the legend key, a small square under the plot.
+      .filter((b) => b.bottom - b.top > 10);
+    expect(bars).toHaveLength(4);
+    // Bars stand on the zero line, as tall as their values, the tallest 9/10 of the way to the 5 label.
+    const base = bars[0].bottom;
+    bars.forEach((b, i) => {
+      expect(b.bottom).toBeCloseTo(base, 3);
+      expect((b.bottom - b.top) / (bars[3].bottom - bars[3].top)).toBeCloseTo(values[i] / 4.5, 3);
+    });
+    expect((zero.y - (bars[3].top + (zero.y - base))) / (zero.y - five.y)).toBeCloseTo(0.9, 3);
+  });
+
+  it('formats axis and data labels with Excel number formats', () => {
+    expect(formatNumber(0.15, '0.00%')).toBe('15.00%');
+    expect(formatNumber(12345.6, '#,##0')).toBe('12,346');
+    expect(formatNumber(-1234.5, '#,##0.0;(#,##0.0)')).toBe('(1,234.5)');
+    expect(formatNumber(3.5, '"$"0.00')).toBe('$3.50');
+    expect(formatNumber(0.1 + 0.2, 'General')).toBe('0.3');
+    // Serial dates and times: 44409 is 1 August 2021, and 51 seconds after midnight.
+    expect(formatNumber(44409, 'mmm\\-yy')).toBe('Aug-21');
+    expect(formatNumber(51 / 86400, 'h:mm:ss AM/PM')).toBe('12:00:51 AM');
+  });
+
+  it('tints and shades DrawingML colours in linear light, as Word does', () => {
+    // Measured from Word's PDFs: accent2 C0504D tinted 77% and shaded 76%, and black tinted 75% (chart gridlines).
+    expect(applyColorMods('C0504D', [{ name: 'tint', val: 77000 }]).color).toBe('D19392');
+    expect(applyColorMods('C0504D', [{ name: 'shade', val: 76000 }]).color).toBe('AA4643');
+    expect(applyColorMods('000000', [{ name: 'tint', val: 75000 }]).color).toBe('898989');
+  });
+
+  it('lets satMod push a colour past full saturation, clipping at the RGB cube as Word does', () => {
+    // From a Word for Mac gradient's samples: 00B050 is already fully saturated, yet satMod 115% brightens it.
+    expect(applyColorMods('00B050', [{ name: 'satMod', val: 115000 }]).color).toBe('00BD4F');
+    expect(applyColorMods('00B050', [{ name: 'shade', val: 30000 }, { name: 'satMod', val: 115000 }]).color).toBe('006D2A');
+  });
+
+  const strokes = (ops: DrawOpLike[], color: string) => ops.filter((o): o is PathOp => o.kind === 'path' && !o.fill && o.stroke === color);
+  const ys = (o: PathOp) => o.segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 1));
+  const chartWith = (plot: string) =>
+    `<c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/>${plot}${axes}</c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend><c:plotVisOnly val="1"/></c:chart>`;
+  const seriesWith = (extra: string, vals = values) =>
+    `<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>Sales</c:v></c:tx><c:spPr><a:ln w="19050"><a:solidFill><a:srgbClr val="0000FF"/></a:solidFill></a:ln></c:spPr>${extra}<c:cat><c:strLit>${pts(['North', 'South', 'East', 'West'])}</c:strLit></c:cat><c:val><c:numLit>${pts(vals.map(String), 'General')}</c:numLit></c:val></c:ser>`;
+  const chartPage = async (xml: string) => (await layout(makeDocx({ body: `<w:p>${inlineChart('rIdChart1', 360, 216)}</w:p>`, charts: { rIdChart1: xml } }))).pages[0].body;
+  const axisTop = (ops: DrawOpLike[]) => Math.max(...glyphOps(ops).map((g) => g.texts.join('')).filter((t) => /^\d+$/.test(t)).map(Number));
+
+  it('draws error bars and scales the value axis to take them in', async () => {
+    // Without the bars 4.5 rounds out to 5; one either side of each point reaches 5.5, so the axis runs to 6.
+    const bars = '<c:errBars><c:errDir val="y"/><c:errBarType val="both"/><c:errValType val="fixedVal"/><c:noEndCap val="0"/><c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="00AA00"/></a:solidFill></a:ln></c:spPr><c:val val="1"/></c:errBars>';
+    const ops = await chartPage(chartWith(`<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${seriesWith(bars)}<c:marker val="1"/><c:axId val="1"/><c:axId val="2"/></c:lineChart>`));
+    expect(axisTop(ops)).toBe(6);
+    const drawn = strokes(ops, '00AA00');
+    expect(drawn).toHaveLength(4);
+    // Each bar spans two units: a third of the axis, with a cap across each end.
+    const unit = (Math.max(...ys(drawn[0])) - Math.min(...ys(drawn[0]))) / 2;
+    for (const b of drawn) {
+      expect(b.segs.filter((s) => s.op === 'M')).toHaveLength(3);
+      expect((Math.max(...ys(b)) - Math.min(...ys(b))) / unit).toBeCloseTo(2, 3);
+    }
+  });
+
+  it('draws trendlines into the axis range and names them in the legend', async () => {
+    // A linear fit of 4.3, 2.5, 3.5, 4.5 carried two periods back starts near 3.1 and ends near 4.1: inside 0..5.
+    // Carried six periods forward it climbs past 5, so the axis grows to take the line in.
+    const trend = (forward: number) => `<c:trendline><c:spPr><a:ln w="12700"><a:solidFill><a:srgbClr val="AA00AA"/></a:solidFill></a:ln></c:spPr><c:trendlineType val="linear"/><c:forward val="${forward}"/><c:dispRSqr val="0"/><c:dispEq val="0"/></c:trendline>`;
+    const plot = (forward: number) => chartWith(`<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${seriesWith(trend(forward))}<c:marker val="1"/><c:axId val="1"/><c:axId val="2"/></c:lineChart>`);
+    const near = await chartPage(plot(0));
+    expect(axisTop(near)).toBe(5);
+    expect(strokes(near, 'AA00AA').length).toBeGreaterThanOrEqual(1);
+    expect(glyphOps(near).map((g) => g.texts.join(''))).toContain('Linear (Sales)');
+    expect(axisTop(await chartPage(plot(6)))).toBeGreaterThan(5);
+  });
+
+  it('draws radar charts: closed series outlines, value labels and category names', async () => {
+    const radar = `<c:radarChart><c:radarStyle val="marker"/><c:varyColors val="0"/>${seriesWith('<c:marker><c:symbol val="none"/></c:marker>')}<c:axId val="1"/><c:axId val="2"/></c:radarChart>`;
+    const ops = await chartPage(chartWith(radar));
+    const texts = glyphOps(ops).map((g) => g.texts.join(''));
+    for (const t of ['North', 'South', 'East', 'West', '0']) expect(texts).toContain(t);
+    const outline = strokes(ops, '0000FF').filter((o) => o.segs.length > 2);
+    expect(outline).toHaveLength(1);
+    expect(outline[0].segs.filter((s) => s.op === 'L')).toHaveLength(3);
+    expect(outline[0].segs.at(-1)!.op).toBe('Z');
+    // The first category stands straight up from the centre, the third of four (East) straight down.
+    const north = outline[0].segs[0].pts;
+    const east = outline[0].segs[2].pts;
+    expect(north[0]).toBeCloseTo(east[0], 3);
+    expect(north[1]).toBeLessThan(east[1]);
+  });
+});
+
+describe('shape gradients', () => {
+  const shape = (spPr: string) =>
+    '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="1270000"/><a:graphic><a:graphicData>' +
+    `<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr><a:prstGeom prst="rect"/>${spPr}</wps:spPr></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+  const grad = '<a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="000000"/></a:gs><a:gs pos="100000"><a:srgbClr val="FFFFFF"/></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill>';
+  const gray = (o: PathOp) => parseInt((o.fill ?? '').slice(0, 2), 16);
+
+  it('draws a linear gradient as bands down the shape, blended straight through sRGB', async () => {
+    // A shape's gradient is a straight sRGB blend in Word for Mac's PDFs (charts and SmartArt blend in linear light).
+    const ops = (await layout(makeDocx({ body: shape(grad) }))).pages[0].body;
+    const clip = ops.findIndex((o) => o.kind === 'clip');
+    expect(clip).toBeGreaterThanOrEqual(0);
+    const bands = ops.filter((o): o is PathOp => o.kind === 'path' && !!o.fill && !o.stroke);
+    expect(bands.length).toBeGreaterThan(20);
+    const levels = bands.map(gray);
+    // Black at the top, white at the foot, rising steadily: the middle band is mid grey.
+    expect(levels[0]).toBeLessThan(8);
+    expect(levels.at(-1)).toBeGreaterThan(247);
+    expect(levels.every((v, i) => i === 0 || v >= levels[i - 1])).toBe(true);
+    expect(Math.abs(levels[Math.floor(levels.length / 2)] - 128)).toBeLessThan(8);
+    // Each band runs on to the shape's foot, under the next, so no seam lets the page through between them.
+    const foot = Math.max(...bands[0].segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 1)));
+    for (const b of bands) expect(Math.max(...b.segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 1)))).toBeCloseTo(foot, 1);
   });
 });

@@ -42,6 +42,7 @@ export const COMMON_FONTS: BundledFont[] = [
 export const FULL_FONTS: BundledFont[] = [
   ...COMMON_FONTS,
   { file: 'NotoSansCJKjp-Regular.ttf', family: 'Noto Sans CJK JP', bold: false, italic: false, weight: 400, covers: isEastAsian },
+  { file: 'NotoSerifCJKsc-Regular.ttf', family: 'Noto Serif CJK SC', bold: false, italic: false, weight: 400, covers: isEastAsian },
   ...four('Liberation Sans Narrow', 'LiberationSansNarrow'),
   ...four('Morrow Mono', 'MorrowMono'),
   ...four('Onward', 'Onward'),
@@ -55,6 +56,11 @@ export const FULL_FONTS: BundledFont[] = [
   { file: 'Gleis-SemiCondensed.ttf', family: 'Gleis SemiCondensed', bold: false, italic: false, weight: 400 },
   { file: 'Gleis-BoldSemiCondensed.ttf', family: 'Gleis SemiCondensed', bold: true, italic: false, weight: 700 },
   { file: 'Anvil.ttf', family: 'Anvil', bold: false, italic: false, weight: 400 },
+  // The GUST release, unmodified (CFF outlines, so PDFs embed it whole).
+  { file: 'texgyreadventor-regular.otf', family: 'TeX Gyre Adventor', bold: false, italic: false, weight: 400 },
+  { file: 'texgyreadventor-bold.otf', family: 'TeX Gyre Adventor', bold: true, italic: false, weight: 700 },
+  { file: 'texgyreadventor-italic.otf', family: 'TeX Gyre Adventor', bold: false, italic: true, weight: 400 },
+  { file: 'texgyreadventor-bolditalic.otf', family: 'TeX Gyre Adventor', bold: true, italic: true, weight: 700 },
   { file: 'ArchivoBlack-Regular.ttf', family: 'Archivo Black', bold: false, italic: false, weight: 400 },
   ...four('Comic Neue', 'ComicNeue'),
   ...four('Roboto', 'Roboto'),

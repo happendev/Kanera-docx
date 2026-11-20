@@ -147,6 +147,34 @@ describe('PDF fonts, links and public inputs', () => {
     expect(Buffer.from(result.pdf).includes(data)).toBe(true);
   });
 
+  it('compacts the embedded glyph IDs and remaps composite components', async () => {
+    const data = font('DejaVuSans.ttf');
+    const original = new SfntFont(data);
+    const text = 'Bé';
+    const doc = makeDocx({ body: p(text, '', '<w:rFonts w:ascii="Subset test" w:hAnsi="Subset test"/>') });
+    const result = await coreConvert(doc, { fonts: [{ family: 'Subset test', data }] });
+    const streams = pdfStreams(result.pdf);
+    const embedded = streams.find((stream) => stream.startsWith('\x00\x01\x00\x00'));
+    expect(embedded).toBeDefined();
+    const subset = new SfntFont(Buffer.from(embedded!, 'latin1'));
+    const plain = original.glyphId('B'.codePointAt(0)!);
+    const composite = original.glyphId('é'.codePointAt(0)!);
+    const children = original.compositeComponents(composite);
+    expect(children).toHaveLength(2);
+    expect(subset.numGlyphs).toBe(5);
+    expect(subset.numberOfHMetrics).toBe(subset.numGlyphs);
+    expect(subset.table('loca')?.length).toBe((subset.numGlyphs + 1) * 4);
+    expect(subset.advance(1)).toBe(original.advance(plain));
+    expect(subset.advance(2)).toBe(original.advance(composite));
+    expect(subset.compositeComponents(2)).toEqual(children.map(({ offset }, index) => ({ offset, gid: index + 3 })));
+    expect(pdfText(result.pdf)).toMatch(/\/CIDToGIDMap \d+ 0 R/);
+    const mapping = streams.find((stream) => stream.length === 2 * (composite + 1));
+    expect(mapping).toBeDefined();
+    expect(mapping!.charCodeAt(plain * 2 + 1)).toBe(1);
+    expect(mapping!.charCodeAt(composite * 2 + 1)).toBe(2);
+    if (ghostscript) expect(pdfPagesText(result.pdf)[0]).toContain(text);
+  });
+
   it('encodes supplementary Unicode characters in hyperlinks', async () => {
     const doc = makeDocx({ body: '<w:p><w:hyperlink r:id="h"><w:r><w:t>Report</w:t></w:r></w:hyperlink></w:p>', links: { h: 'https://example.org/📄' } });
     expect(pdfText((await convertDocx(doc)).pdf)).toContain('/URI (https://example.org/%F0%9F%93%84)');
@@ -175,7 +203,8 @@ describe('PDF fonts, links and public inputs', () => {
     expect(files.some((name) => name.includes('CJK'))).toBe(false);
     expect(common.warnings.join('\n')).toContain('No font has a glyph');
     const cjk = await browserConvert(doc, options);
-    expect(files.filter((name) => name.includes('CJK'))).toEqual(['NotoSansCJKjp-Regular.ttf']);
+    // The text has no East Asian font, so it takes Times New Roman's: a serif, like Word's fallback.
+    expect(files.filter((name) => name.includes('CJK'))).toEqual(['NotoSerifCJKsc-Regular.ttf']);
     // Looking for the CJK glyphs never fetches the other styles of the Latin fallbacks.
     expect(files.filter((name) => /Bold|Italic/.test(name))).toEqual([]);
     expect(cjk.warnings.filter((w) => w.includes('No font has a glyph'))).toEqual([]);

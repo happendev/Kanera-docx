@@ -9,6 +9,10 @@ import {
   measureTable,
   paraDecorations,
   shadedSpaceAfter,
+  sideBorderRunOn,
+  findSlot,
+  gapBeside,
+  textHeight,
   paraFrame,
   renderSegment,
   spaceAfter,
@@ -682,19 +686,33 @@ class Paginator {
       let linesHere = 0;
       let startedHere = true;
       let lineCps: Array<{ cp: Checkpoint; snap: ReturnType<ParagraphLayout['snapshot']> }> = [];
-      let estimate = layout.markRun.ascent + layout.markRun.descent;
+      const markHeight = layout.markRun.ascent + layout.markRun.descent;
+      let estimate = { h: markHeight, text: markHeight };
+      // The gap beside an object where the line just placed continues, and that line's bottom.
+      let beside: { left: number; right: number; bottom: number } | null = null;
+      let besideBottom = 0;
       for (;;) {
         if (!floatsPlaced) {
           const tables = this.tableFloats.get(para);
-          this.placeFloats(tables ? [...tables, ...layout.floatDrawings] : layout.floatDrawings, this.column, this.y);
+          const drawings = tables ? [...tables, ...layout.floatDrawings] : layout.floatDrawings;
+          // Before Word 2013, a paragraph whose first line starts right of an object it wraps around
+          // measures its own objects' column offsets from where that line starts.
+          let lineX: number | undefined;
+          if (drawings.length && this.env.compatibilityMode < 15) {
+            const base = layout.lineBounds(this.column.w);
+            const slot = findSlot(this.page.exclusions, this.y, estimate.h, this.column.x + base.left, this.column.x + base.right, estimate.text);
+            if (slot.y <= this.y + EPS && slot.left > this.column.x + base.left + EPS) lineX = slot.left;
+          }
+          this.placeFloats(drawings, this.column, this.y, lineX);
           floatsPlaced = true;
         }
         const snap = layout.snapshot();
         const lineCp = this.checkpoint();
-        const placed = this.layoutLine(layout, estimate);
+        const placed = this.layoutLine(layout, estimate, beside ?? undefined);
+        beside = null;
         if (!placed) break;
         const { line, y, left } = placed;
-        estimate = line.height;
+        estimate = { h: line.height, text: textHeight(line) };
         const noteH = this.notesHeight(line.notes);
         // The extra space of "multiple" line spacing sits below the text, and Word lets it hang into
         // the bottom margin: only the text of the line has to fit. Above a footer tall enough to push
@@ -702,9 +720,10 @@ class Paginator {
         // the bottom margin, not into it.
         const marginEdge = this.page!.height - this.page!.section.marginBottom;
         const intoMargin = this.page!.bottom >= marginEdge - EPS;
-        const text = Math.min(line.height, line.baseline + line.descent);
+        const text = textHeight(line);
         const fits = y + text + noteH <= this.colBottom + EPS && (intoMargin || y + line.height + noteH <= marginEdge + EPS);
         if (!fits && !this.atTop) {
+          besideBottom = 0;
           layout.restore(snap);
           this.restore(lineCp);
           const canMoveWhole = startedHere && !paraCp.atTop && attempts < 3;
@@ -763,11 +782,17 @@ class Paginator {
           const nextGap = frame.groupedNext && nextPara ? gapBetween(para, nextPara) : { after: 0, before: 0 };
           const top = line.first ? y - frame.topExtra : y;
           const bottom = line.last ? y + line.height + frame.bottomExtra + nextGap.after + nextGap.before + shadedSpaceAfter(para, frame, nextPara) : y + line.height;
-          this.page.body.push(...paraDecorations(para.props, frame, col.x, col.w, top, bottom, line.first, line.last));
+          this.page.body.push(...paraDecorations(para.props, frame, col.x, col.w, top, bottom, line.first, line.last, line.last ? sideBorderRunOn(para, frame, nextPara) : 0));
         }
         this.page.body.push(...layout.renderLine(line, col.x + left, y));
-        this.y = y + line.height;
-        this.markPlaced(this.y);
+        const bottom = Math.max(y + line.height, besideBottom);
+        // The paragraph's next line may continue beside an object wrapped on both sides.
+        const base = layout.lineBounds(col.w);
+        const rest = !line.last && line.brk !== 'page' && line.brk !== 'column' ? gapBeside(this.page.exclusions, y, line.height, textHeight(line), col.x + base.left, col.x + base.right, placed.right) : null;
+        beside = rest && { ...rest, bottom };
+        besideBottom = rest ? bottom : 0;
+        this.y = rest ? y : bottom;
+        this.markPlaced(bottom);
         this.addNotes(line.notes);
         linesHere++;
         if (line.brk === 'page') {
@@ -794,8 +819,8 @@ class Paginator {
   }
 
   /** Lay out the next line at the current position, flowing around wrapped objects. */
-  private layoutLine(layout: ParagraphLayout, estimate: number): { line: Line; y: number; left: number } | null {
-    const placed = wrapLine(layout, this.page.exclusions, this.y, estimate, this.column);
+  private layoutLine(layout: ParagraphLayout, estimate: { h: number; text: number }, gap?: { left: number; right: number; bottom: number }): { line: Line; y: number; left: number; right: number } | null {
+    const placed = wrapLine(layout, this.page.exclusions, this.y, estimate, this.column, gap);
     return placed && { ...placed, left: 0 };
   }
 
@@ -850,9 +875,10 @@ class Paginator {
     })();
     let x = h0.base;
     const ha = a.posH.align;
-    if (ha === 'right' || ha === 'outside') x = h0.base + h0.size - w;
-    else if (ha === 'center') x = h0.base + (h0.size - w) / 2;
-    else if (ha === 'left' || ha === 'inside') x = h0.base;
+    // Word aligns an object together with its effects (a shadow keeps inside the margin).
+    if (ha === 'right' || ha === 'outside') x = h0.base + h0.size - w - d.effectR;
+    else if (ha === 'center') x = h0.base + (h0.size - w - d.effectL - d.effectR) / 2 + d.effectL;
+    else if (ha === 'left' || ha === 'inside') x = h0.base + d.effectL;
     else if (a.posH.pct !== undefined) x = h0.base + a.posH.pct * h0.size;
     else x = h0.base + (a.posH.offset ?? 0);
     const v0 = (() => {
@@ -873,9 +899,9 @@ class Paginator {
     })();
     let y = v0.base;
     const va = a.posV.align;
-    if (va === 'bottom' || va === 'outside') y = v0.base + v0.size - h;
-    else if (va === 'center') y = v0.base + (v0.size - h) / 2;
-    else if (va === 'top' || va === 'inside') y = v0.base;
+    if (va === 'bottom' || va === 'outside') y = v0.base + v0.size - h - d.effectB;
+    else if (va === 'center') y = v0.base + (v0.size - h - d.effectT - d.effectB) / 2 + d.effectT;
+    else if (va === 'top' || va === 'inside') y = v0.base + d.effectT;
     else if (a.posV.pct !== undefined) y = v0.base + a.posV.pct * v0.size;
     else y = v0.base + (a.posV.offset ?? 0);
     // Word keeps a text-wrapping object laid out in a cell from rising above the cell's top.
@@ -886,14 +912,43 @@ class Paginator {
   private exclusionFor(d: Drawing, x: number, y: number): Exclusion | null {
     const a = d.anchor;
     if (!a || a.wrap === 'none') return null;
+    if (a.polygon && !d.rotation && !d.flipH && !d.flipV) {
+      // Tight and through wrapping follow the object's wrap outline beside each line.
+      const x1 = x - d.effectL - a.distL;
+      const y1 = y - d.effectT - a.distT;
+      const pts = a.polygon.map(([px, py]): [number, number] => [x + px * d.width - x1, y + py * d.height - y1]);
+      const poly = { pts, padL: a.distL, padT: a.distT, padR: a.distR, padB: a.distB };
+      return { x1, y1, x2: x + d.width + d.effectR + a.distR, y2: y + d.height + d.effectB + a.distB, wrap: a.wrap, side: a.wrapText, poly };
+    }
+    // Word lays out an object turned nearer a quarter turn than upright in its upright box turned
+    // about the centre (width and height swapped); the effect extents grow that box.
+    const turn = (((d.rotation % 180) + 180) % 180);
+    const swap = turn >= 45 && turn < 135;
+    const w = swap ? d.height : d.width;
+    const h = swap ? d.width : d.height;
+    x += (d.width - w) / 2;
+    y += (d.height - h) / 2;
     return {
       x1: x - d.effectL - a.distL,
       y1: y - d.effectT - a.distT,
-      x2: x + d.width + d.effectR + a.distR,
-      y2: y + d.height + d.effectB + a.distB,
+      x2: x + w + d.effectR + a.distR,
+      y2: y + h + d.effectB + a.distB,
       wrap: a.wrap,
       side: a.wrapText,
     };
+  }
+
+  /**
+   * Word keeps an object that text wraps around, placed below its paragraph, on its anchor's page:
+   * one that would run past the bottom margin (before Word 2013, the page's edge) moves up to end
+   * there. A top-and-bottom object moved up over its own paragraph's line pushes that line, and so
+   * the paragraph, to the next page.
+   */
+  private keptOnPage(d: Drawing, y: number): number {
+    const a = d.anchor!;
+    if (d.hidden || a.wrap === 'none' || (a.posV.relativeFrom !== 'paragraph' && a.posV.relativeFrom !== 'line') || a.posV.align || a.posV.pct !== undefined) return y;
+    const limit = this.env.compatibilityMode < 15 ? this.page.height : this.page.height - this.page.section.marginBottom;
+    return Math.min(y, Math.max(limit - d.height - d.effectB, this.page.colTop));
   }
 
   /** Whether a float placed from the current position ends above the bottom of the page body. */
@@ -952,7 +1007,7 @@ class Paginator {
     return drawing;
   }
 
-  private placeFloats(drawings: Drawing[], col: Column, paraY: number): void {
+  private placeFloats(drawings: Drawing[], col: Column, paraY: number, lineX?: number): void {
     const index = this.pages.length - 1;
     for (const d of drawings) {
       if (!d.anchor || d.hidden) continue;
@@ -963,7 +1018,10 @@ class Paginator {
         this.early.delete(d);
         this.earlyChanged = true;
       }
-      const pos = this.floatPosition(d, this.page, col, col.x, paraY);
+      const h = d.anchor.posH;
+      const fromLine = lineX !== undefined && h.relativeFrom === 'column' && !h.align && h.pct === undefined;
+      const pos = this.floatPosition(d, this.page, fromLine ? { ...col, x: lineX } : col, col.x, paraY);
+      pos.y = this.keptOnPage(d, pos.y);
       this.page.floats.push({ z: d.anchor.zIndex, behind: d.anchor.behindDoc, ops: renderDrawing(d, pos.x, pos.y, this.env) });
       const ex = this.exclusionFor(d, pos.x, pos.y);
       if (!ex) continue;
@@ -1211,7 +1269,8 @@ class Paginator {
 
   private canSplit(tl: TableLayout, r: number): boolean {
     const row = tl.rows[r];
-    if (row.row.cantSplit || row.row.heightRule === 'exact') return false;
+    // Turned text runs the full height of its row, so the row moves to the next page whole.
+    if (row.row.cantSplit || row.row.heightRule === 'exact' || row.cells.some((c) => c.turned)) return false;
     return row.cells.some((c) => c.rowSpan === 1 && !c.cell.vMerge && c.box.items.length > 1);
   }
 
@@ -1254,17 +1313,22 @@ class Paginator {
       const items = c.box.items;
       const from = progress.get(c) ?? 0;
       const shift = from < items.length ? items[from].y : 0;
-      const inner = avail - c.cell.margins.top - c.cell.margins.bottom;
+      // A piece that starts the row has its content below the row's top border.
+      const lead = from === 0 ? row.borderTop : 0;
+      const inner = avail - lead - c.cell.margins.top - c.cell.margins.bottom;
       let to = from;
       if (!c.cell.vMerge) {
         while (to < items.length && items[to].y - shift + items[to].height <= inner + EPS) to++;
         const fits = to;
         while (to > from && to < items.length && items[to].keepWithPrev) to--;
-        if (to === from) to = force ? Math.max(fits, Math.min(from + 1, items.length)) : from;
+        // Before Word 2013 (compatibility mode 14 and earlier) keeping lines together never empties a
+        // cell's piece: Word leaves the first line of a long statement at the foot of the page. Word
+        // 2013 moves the row to the next page instead.
+        if (to === from) to = force ? Math.max(fits, Math.min(from + 1, items.length)) : this.env.compatibilityMode < 15 ? fits : from;
       }
       if (to > from) advanced = true;
       slices.set(c, { from, to, shift });
-      if (to > from) height = Math.max(height, items[to - 1].y + items[to - 1].height - shift + c.cell.margins.top + c.cell.margins.bottom);
+      if (to > from) height = Math.max(height, lead + items[to - 1].y + items[to - 1].height - shift + c.cell.margins.top + c.cell.margins.bottom);
     }
     if (!advanced) return null;
     for (const [c, s] of slices) progress.set(c, s.to);

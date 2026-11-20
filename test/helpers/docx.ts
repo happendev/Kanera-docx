@@ -28,6 +28,8 @@ export interface DocxSpec {
   footers?: Record<string, string>;
   /** Images: relationship id → { name, data }. */
   media?: Record<string, { name: string; data: Uint8Array }>;
+  /** Chart parts: relationship id → `<c:chartSpace>` inner XML. */
+  charts?: Record<string, string>;
   /** External hyperlinks: relationship id → URL. */
   links?: Record<string, string>;
   footnotes?: string;
@@ -64,6 +66,13 @@ export function makeDocx(spec: DocxSpec): Uint8Array {
   if (spec.settings !== undefined) {
     files.push(['word/settings.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings ${W_NS}>${spec.settings}</w:settings>`]);
     rels.push(`<Relationship Id="rIdSettings" Type="${REL}/settings" Target="settings.xml"/>`);
+  }
+  for (const [i, [id, xml]] of Object.entries(spec.charts ?? {}).entries()) {
+    files.push([
+      `word/charts/chart${i + 1}.xml`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${REL}">${xml}</c:chartSpace>`,
+    ]);
+    rels.push(`<Relationship Id="${id}" Type="${REL}/chart" Target="charts/chart${i + 1}.xml"/>`);
   }
   for (const [id, part] of Object.entries(spec.imports ?? {})) {
     files.push(['word/' + part.name, part.text]);

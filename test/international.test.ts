@@ -38,10 +38,46 @@ describe('East Asian lines', () => {
     expect(ys[1] - ys[0]).toBeCloseTo((12 * 332) / 256, 1);
   });
 
-  it("keeps DengXian's own line height on its fallback", async () => {
+  it("keeps DengXian's line height on its fallback", async () => {
+    // Word makes DengXian's lines 1.3 times its own 1659 + 475 of 2048 units, like SimSun's.
     const r = await layout(makeDocx({ styles: simsun(24).replace(/SimSun/g, 'DengXian'), body: p('中文') + p('中文') }));
     const ys = lines(r.pages[0].body).map((l) => l.y);
-    expect(ys[1] - ys[0]).toBeCloseTo((12 * (1659 + 475)) / 2048, 1);
+    expect(ys[1] - ys[0]).toBeCloseTo((12 * 1.3 * (1659 + 475)) / 2048, 1);
+  });
+
+  it("lets SimSun's taller ascent absorb a Latin font's line gap", async () => {
+    // Times New Roman's 0.51pt line gap sits above its own ascent, below SimSun's: the line stays
+    // SimSun's 1.3em, as in Word's tables of contents.
+    const mixed = '<w:p><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/></w:rPr><w:t>Abstract </w:t></w:r><w:r><w:t>中文</w:t></w:r></w:p>';
+    const ys = lines((await layout(makeDocx({ styles: simsun(24), body: mixed + mixed }))).pages[0].body).map((l) => l.y);
+    expect(ys[1] - ys[0]).toBeCloseTo((12 * 332) / 256, 1);
+  });
+
+  it("grows a line to Word's fallback height for characters the East Asian font lacks", async () => {
+    // MS Mincho has no Hangul and no simplified forms like 轻, which Word draws from fallback fonts
+    // in a line about 1.71em tall; its own kanji keep its 1.3em line.
+    const styles = simsun(22).replace(/SimSun/g, 'MS Mincho');
+    const ys = lines((await layout(makeDocx({ styles, body: p('日本') + p('한국') + p('轻量') + p('日本') }))).pages[0].body).map((l) => l.y);
+    expect(ys[2] - ys[1]).toBeCloseTo(11 * (1.28 + 0.43), 1);
+    expect(ys[3] - ys[2]).toBeCloseTo(11 * (0.43 + 258 / 256), 1);
+    expect(ys[1] - ys[0]).toBeCloseTo(11 * (74 / 256 + 1.28), 1);
+  });
+
+  it('draws ASCII in a fixed-pitch East Asian font half an em wide', async () => {
+    // SimSun's ASCII is monospaced at half an em; PMingLiU's is proportional.
+    const at = async (font: string) => chars((await layout(makeDocx({ styles: simsun(24).replace(/SimSun/g, font), body: p('mil') }))).pages[0].body);
+    const fixed = await at('SimSun');
+    expect(xOf(fixed, 'i') - xOf(fixed, 'm')).toBeCloseTo(6, 2);
+    expect(xOf(fixed, 'l') - xOf(fixed, 'i')).toBeCloseTo(6, 2);
+    const proportional = await at('PMingLiU');
+    expect(xOf(proportional, 'i') - xOf(proportional, 'm')).toBeGreaterThan(7);
+  });
+
+  it('draws curly quotes and ellipses in a fixed-pitch East Asian font an em wide', async () => {
+    const cs = chars((await layout(makeDocx({ styles: simsun(24), body: p('“中”…') }))).pages[0].body);
+    expect(xOf(cs, '中') - xOf(cs, '“')).toBeCloseTo(12, 2);
+    expect(xOf(cs, '”') - xOf(cs, '中')).toBeCloseTo(12, 2);
+    expect(xOf(cs, '…') - xOf(cs, '”')).toBeCloseTo(12, 2);
   });
 
   it('centres a line in the document grid lines it takes', async () => {
@@ -54,8 +90,8 @@ describe('East Asian lines', () => {
   });
 
   it("takes one grid line for a line that fits it but for a Latin font's external leading", async () => {
-    // Arial 12 beside SimSun 12 is 15.56pt plus Arial's 0.39pt external leading: the 15.6pt grid
-    // line still holds it.
+    // Arial 12 beside SimSun 12 is 15.56pt, Arial's 0.39pt external leading falling under SimSun's
+    // taller ascent: the 15.6pt grid line holds it.
     const body = '<w:p><w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/></w:rPr><w:t>Title </w:t></w:r><w:r><w:t>中文</w:t></w:r></w:p>';
     const r = await layout(makeDocx({ styles: simsun(24), sectPr: sect('<w:docGrid w:type="lines" w:linePitch="312"/>'), body: body + body }));
     const ys = lines(r.pages[0].body).map((l) => l.y);

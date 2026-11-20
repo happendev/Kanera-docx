@@ -1,7 +1,7 @@
 import type { DocumentInfo, ImageRef, Link } from '../docx/model.js';
 import type { Compression } from '../util/compression.js';
 import type { FontFace } from '../fonts/registry.js';
-import { buildSfnt, subsetTrueType } from '../fonts/subset.js';
+import { buildSfnt, canSubsetTrueType, subsetTrueType } from '../fonts/subset.js';
 import { ImageBudget, type ImageLimits } from '../image/budget.js';
 import { sniffImage, toPdfImage, type PdfImage } from '../image/image.js';
 import type { DrawOp, GlyphOp, Page, PathSeg } from '../layout/types.js';
@@ -372,20 +372,28 @@ function writeFont(pdf: PdfObjects, use: FontUse, index: number, compress: boole
   const upm = font.unitsPerEm;
   const scale = 1000 / upm;
   const psName = (font.names.postscriptName || use.face.familyName.replace(/\s+/g, '')).replace(/[^\x21-\x7e]/g, '');
-  const canSubset = !(font.fsType & 0x100) && !font.isCFF && !!font.table('glyf') && !!font.table('loca');
+  const canSubset = canSubsetTrueType(font);
   const baseFont = canSubset ? subsetTag(index) + '+' + psName : psName;
   const gids = [...use.codesByGlyph.keys()].sort((a, b) => a - b);
 
   let fileKey: string;
   let fileNum: number;
   let subtype: string;
-  const sub = canSubset ? subsetTrueType(font, gids) : null;
-  if (sub) {
-    fileNum = pdf.addStream(`/Length1 ${sub.length}`, sub, compress);
+  let cidToGidMap = '/Identity';
+  if (canSubset) {
+    const { data, glyphIds } = subsetTrueType(font, gids);
+    fileNum = pdf.addStream(`/Length1 ${data.length}`, data, compress);
     fileKey = 'FontFile2';
     subtype = 'CIDFontType2';
+    // Keep the PDF's character codes and CIDs stable, including aliases for shared outlines.
+    if (gids.some((gid) => glyphIds.get(gid) !== gid)) {
+      const map = new Uint8Array(2 * (gids[gids.length - 1] + 1));
+      const entries = new DataView(map.buffer);
+      for (const gid of gids) entries.setUint16(gid * 2, glyphIds.get(gid)!);
+      cidToGidMap = pdf.addStream('', map, compress) + ' 0 R';
+    }
   } else {
-    // CFF outlines and fonts that prohibit subsetting need a complete standalone font program.
+    // CFF and fonts we cannot subset are embedded as standalone font programs.
     let data = font.data;
     if (font.dirOffset !== 0) {
       const tables = new Map<string, Uint8Array>();
@@ -419,7 +427,7 @@ function writeFont(pdf: PdfObjects, use: FontUse, index: number, compress: boole
     `<< /Type /FontDescriptor /FontName ${pdfName(baseFont)} /Flags ${flags} /FontBBox [${num(x0 * scale)} ${num(y0 * scale)} ${num(x1 * scale)} ${num(y1 * scale)}] /ItalicAngle ${num(font.italicAngle)} /Ascent ${num(font.hheaAscender * scale)} /Descent ${num(font.hheaDescender * scale)} /CapHeight ${num((font.capHeight || font.hheaAscender * 0.7) * scale)} /StemV ${use.face.bold ? 120 : 80} /${fileKey} ${fileNum} 0 R >>`,
   );
   const cid = pdf.add(
-    `<< /Type /Font /Subtype /${subtype} /BaseFont ${pdfName(baseFont)} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ${descriptor} 0 R /DW ${num(font.advance(0) * scale)} /W [${w}]${subtype === 'CIDFontType2' ? ' /CIDToGIDMap /Identity' : ''} >>`,
+    `<< /Type /Font /Subtype /${subtype} /BaseFont ${pdfName(baseFont)} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ${descriptor} 0 R /DW ${num(font.advance(0) * scale)} /W [${w}]${subtype === 'CIDFontType2' ? ' /CIDToGIDMap ' + cidToGidMap : ''} >>`,
   );
   const toUnicode = pdf.addStream('', latin1(toUnicodeCMap(use.characters)), compress);
   pdf.set(use.objNum, `<< /Type /Font /Subtype /Type0 /BaseFont ${pdfName(baseFont)} /Encoding ${fontEncoding(pdf, use, compress)} /DescendantFonts [${cid} 0 R] /ToUnicode ${toUnicode} 0 R >>`);

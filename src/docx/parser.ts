@@ -2,6 +2,7 @@ import { MAX_FONT_FACES } from '../fonts/sfnt.js';
 import { fontFor } from '../fonts/script.js';
 import { deobfuscateFont } from '../fonts/odttf.js';
 import { attr, child, children, decodeEntities, descendant, descendants, elements, parseXml, path, resolveAlternateContent, textContent, type XmlElement } from '../util/xml.js';
+import { chartTexts } from './chart.js';
 import { parseDrawing, parseVml, loadImage, type DrawingContext } from './drawing.js';
 import type {
   Block,
@@ -748,6 +749,8 @@ class DocxParser {
         case 'w:drawing': {
           if (!visible()) break;
           const d = parseDrawing(el, this.drawingCtx(pctx));
+          // A chart draws its own text, so its fonts load like the body's.
+          if (d?.chart) for (const t of chartTexts(d.chart)) this.noteFonts({ ...props, fontAscii: t.style.font, fontHAnsi: t.style.font, fontEastAsia: t.style.font, fontCs: t.style.font, bold: t.style.bold, italic: t.style.italic, caps: false, smallCaps: false }, t.text);
           if (d && !d.hidden) para.content.push({ type: 'drawing', drawing: d, props, link: this.currentLink() });
           break;
         }
@@ -1051,6 +1054,9 @@ class DocxParser {
         };
         row.cells.push(cell);
       }
+      // Word starts the text of every cell in a row at the same depth: the row's largest top margin.
+      const rowTop = Math.max(0, ...row.cells.map((c) => c.margins.top));
+      for (const c of row.cells) c.margins.top = rowTop;
       checkTableColumns(col + row.gridAfter);
       maxCols = Math.max(maxCols, col + row.gridAfter);
       rows.push(row);

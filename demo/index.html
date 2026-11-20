@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kanera DOCX to PDF</title>
+    <meta name="description" content="Convert Word documents to PDF in your browser with @happendev/docx2pdf, and compare the result page by page with Microsoft Word's own output." />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="assets/main.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><use href="favicon.svg#mark" /></svg>
+        <span>Kanera <b>DOCX&nbsp;→&nbsp;PDF</b></span>
+      </a>
+      <p class="tagline">Word documents to PDF, in the browser, laid out the way Word lays them out.</p>
+      <a class="gh" href="https://github.com/happendev/kanera-docx">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <label id="drop" class="drop">
+          <input id="file" type="file" accept=".docx,.docm,.dotx,.dotm,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <strong>Convert your own .docx</strong>
+          <span>Drop it here or click to choose. It's converted on this device and never uploaded.</span>
+        </label>
+
+        <details class="options" open>
+          <summary>Options</summary>
+          <div class="field">
+            <label for="opt-font-pack">Font pack</label>
+            <select id="opt-font-pack">
+              <option value="full">Full (fetches faces on demand)</option>
+              <option value="common">Common (smaller asset set)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="opt-platform">Match Word for</label>
+            <select id="opt-platform">
+              <option value="windows">Windows</option>
+              <option value="mac">Mac (0.24pt text grid)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="opt-quality">JPEG quality</label>
+            <select id="opt-quality">
+              <option value="auto">Automatic (80 when it pays)</option>
+              <option value="60">60</option>
+              <option value="90">90</option>
+              <option value="off">Off (keep originals)</option>
+            </select>
+          </div>
+          <label class="check"><input id="opt-embedded" type="checkbox" checked /> Use fonts embedded in the document</label>
+        </details>
+
+        <section class="sample-picker" aria-labelledby="samples-title">
+          <h2 id="samples-title">Benchmark documents</h2>
+          <p class="muted small">Each one comes with Word's own rendering to compare against.</p>
+          <input id="search" type="search" placeholder="Filter samples" aria-label="Filter samples" />
+          <div id="samples" class="samples"></div>
+        </section>
+      </aside>
+
+      <main class="viewer">
+        <div class="viewer-head">
+          <div class="doc-title">
+            <h1 id="doc-name">Loading…</h1>
+            <p id="doc-meta" class="muted small"></p>
+          </div>
+          <div class="actions">
+            <a id="download" class="button primary" aria-disabled="true" href="#">Download PDF</a>
+            <a id="open" class="button" aria-disabled="true" href="#" target="_blank" rel="noopener">Open</a>
+          </div>
+        </div>
+        <ul id="stats" class="stats" aria-label="Conversion statistics"></ul>
+        <div class="toolbar">
+          <div id="views" class="segmented" role="group" aria-label="View">
+            <button type="button" data-view="pages" aria-pressed="true">Our PDF</button>
+            <button type="button" data-view="side" aria-pressed="false">Side by side with Word</button>
+            <button type="button" data-view="overlay" aria-pressed="false">Overlay</button>
+          </div>
+          <label id="overlay-control" class="overlay-control" hidden>
+            <span>Ours</span>
+            <input id="overlay" type="range" min="0" max="100" value="50" aria-label="Word overlay opacity" />
+            <span>Word</span>
+          </label>
+        </div>
+        <div id="status" class="status" role="status" hidden></div>
+        <script>
+          // Module scripts, workers and fetch() don't run from file://, and demo/index.html is only the source.
+          if (location.protocol === 'file:') {
+            const s = document.getElementById('status');
+            s.hidden = false;
+            s.dataset.kind = 'error';
+            s.textContent = 'This page has to be built and served over HTTP: run "pnpm demo:serve" and open http://localhost:8000.';
+            document.getElementById('doc-name').textContent = 'Not served';
+          }
+        </script>
+        <details id="warnings" class="warnings" hidden></details>
+        <div id="pages" class="pages"></div>
+      </main>
+    </div>
+
+    <footer class="site-footer">
+      <code>npm install github:happendev/kanera-docx</code>
+      <span>Apache 2.0 · Bundled fonts keep their own licenses · Sample documents and Word references from the vendored <a href="https://github.com/happendev/kanera-docx/tree/main/benchmarks/word">benchmark</a></span>
+    </footer>
+  </body>
+</html>
