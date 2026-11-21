@@ -305,6 +305,7 @@ The full pack includes every face below; the last column shows the smallest brow
 | Arial Black                              | Archivo Black                    | approximate       | Full   |
 | Comic Sans MS, Chalkboard, Chalkboard SE  | Comic Neue                       | approximate       | Full   |
 | Roboto (Light, Medium)                    | Roboto                           | same font         | Full   |
+| Segoe UI Emoji                           | Noto Color Emoji                 | no                | Full   |
 | Symbol, Wingdings 1–3, Webdings            | mapped to Unicode                | n/a               | Both   |
 
 "Same glyph widths" means the substitute matches the original's advance widths for shared
@@ -323,10 +324,19 @@ original glyphs, supply the original font.
   (23.0 MiB). Node loads their layout tables first and reads the glyph outlines used in the PDF
   asynchronously. Documents with equations use the full fonts to measure glyph bounds. Add other
   regional Noto CJK fonts through `fonts` or `systemFonts`.
+- **Emoji.** Emoji print in colour, as in Word for Mac, from Segoe UI Emoji's colour layers. This
+  applies to a character that is an emoji by default and missing from the run's font, and to any
+  symbol followed by U+FE0F, a skin tone or a joiner. Skin tones, families, flags and other
+  sequences print as one glyph where the font has one. Segoe UI Emoji is used when supplied in
+  `fonts` or found with `systemFonts`; otherwise the bundled Noto Color Emoji stands in, drawn at
+  about the size of Word's Segoe glyphs and spaced to Segoe's widths. A line with emoji is as tall
+  as its text, as in Word for Mac. The colour glyphs are drawn over invisible text, so emoji can
+  still be copied and searched. Any font with COLR colour glyphs and TrueType outlines prints in
+  colour; fonts with only bitmap emoji (CBDT, sbix) are passed over for emoji.
 - **Embedding.** TrueType fonts are subset, with a `ToUnicode` map so text can be copied and
   searched. CFF fonts and fonts that forbid subsetting are embedded whole; fonts that forbid
   embedding are skipped with a warning. Missing bold and italic are synthesised as Word does.
-- **Sizes.** The common browser pack is about 16 MiB and the full pack about 73 MiB.
+- **Sizes.** The common browser pack is about 16 MiB and the full pack about 77 MiB.
 
 The bundled Caladea is the 1.002 release, whose widths match Cambria (later releases changed
 them); it lacks Ș ș Ț ț, some combining accents and superscript four, which come from a fallback.
@@ -343,7 +353,10 @@ Noto CJK static weight-400 instances of the variable
 [Serif](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Serif/Variable/TTF/NotoSerifCJKsc-VF.ttf)
 fonts, the Serif reduced to the glyphs and features the converter uses. Liberation Sans Narrow is
 from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception; its source is in
-[`fonts/sources/liberation-sans-narrow`](fonts/sources/liberation-sans-narrow).
+[`fonts/sources/liberation-sans-narrow`](fonts/sources/liberation-sans-narrow). Noto Color Emoji
+is the 2.057 COLRv1 build of
+[googlefonts/noto-emoji](https://github.com/googlefonts/noto-emoji/tree/fc4ca365e7c20e78278ae702aa20434bfe704c8f)
+as packaged by Fedora (`google-noto-color-emoji-fonts`), unmodified, as `Noto-COLRv1.ttf`.
 
 ## What is supported
 
@@ -417,6 +430,13 @@ from Debian 1.07.6-4 under GPL 2.0 with the font embedding exception; its source
   joins through presentation forms; no Indic shaping and no OpenType ligatures. No Arabic font is
   bundled: pass one in `fonts` (such as Noto Naskh Arabic or Noto Sans Arabic) for a closer look
   than the DejaVu Sans fallback.
+- No font is bundled for Thai, Myanmar, Khmer, Tibetan, Thaana, Ethiopic or the Indic scripts
+  (Devanagari, Bengali, Tamil and others). Supply one in `fonts` or use `systemFonts`; otherwise
+  that text prints as missing glyphs.
+- Without Segoe UI Emoji, emoji print in Noto Color Emoji's designs, which differ from Segoe UI
+  Emoji's, and a country flag prints as a flag where Segoe UI Emoji has two letters. Colour fonts
+  print sweep gradients in one colour and repeating gradients as padded ones; colour glyphs with
+  CFF outlines, SVG or bitmaps print without colour or not at all.
 - Text in vertical sections does not wrap around floating objects.
 - A floating table taller than the space left on its page is laid out inline (Word splits it
   across pages and keeps it floating).

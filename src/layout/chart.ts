@@ -839,9 +839,11 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
   const entries: Entry[] = [];
   const legend = chart.legend;
   if (legend) {
+    const trended = chart.plots.some((p) => isCartesian(p) && p.series.some((s) => s.trendlines?.length));
     for (const p of chart.plots) {
-      // Pies, and a lone series in varied colours, list their categories rather than their series.
-      if (isPie(p) || (p.series.length === 1 && p.varyColors && p.type !== 'radar')) {
+      // Pies, and a lone series in varied colours, list their categories rather than their series,
+      // unless the chart has a trendline to list too.
+      if (isPie(p) || (p.series.length === 1 && p.varyColors && !trended)) {
         const s = p.series[0];
         if (!s) continue;
         s.categories.forEach((c, i) => {
@@ -922,7 +924,8 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
       const w = Math.max(...visible.map(entryW));
       const blockH = visible.length * lineH;
       let x0 = legend.position === 'l' ? left : right - w;
-      let y0 = legend.position === 'tr' ? top : (top + bottom) / 2 - blockH / 2;
+      // A side legend is centred between 11pt in from the top (or below the title) and 11pt up from the bottom.
+      let y0 = legend.position === 'tr' ? top : (top + Y + H - 11) / 2 - blockH / 2;
       if (legend.layout) {
         x0 = X + legend.layout.x * W;
         y0 = Y + legend.layout.y * H;
@@ -1383,13 +1386,25 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     // The web: a ring through the spokes at each major value, and the spokes (the category axis).
     const steps = ticks(scale);
     if (valAx.gridlines) for (const t of steps) ops.push(...stroke(ring(names.map((_, i) => at(i, t))), valAx.gridlines));
-    const spoke = catAx?.line ?? catAx?.gridlines ?? null;
+    const spoke = (catAx && !catAx.deleted ? catAx.line : null) ?? catAx?.gridlines ?? null;
     if (spoke) for (let i = 0; i < n; i++) ops.push(...stroke(seg(cx, cy, ...at(i, scale.max)), spoke));
     for (const s of p.series) {
       const pts = names.map((_, i) => (s.values[i] === null || s.values[i] === undefined ? null : at(i, s.values[i]!)));
       const shown = pts.filter((q): q is [number, number] => q !== null);
       if (p.radarStyle === 'filled') ops.push(...paint(ring(shown), s.shape));
-      else if (s.shape.line && shown.length > 1) ops.push(...stroke(pts.every((q) => q) ? ring(shown) : shown.map((q, k): PathSeg => ({ op: k ? 'L' : 'M', pts: q })), s.shape.line));
+      else if (s.shape.line && shown.length > 1) {
+        const line = s.shape.line;
+        const closed = pts.every((q) => q);
+        // Points in their own colours colour the stretch of line that runs into them. Points that
+        // repeat the series' colour (as varied fills leave them) keep the line unbroken at its corners.
+        const own = (i: number) => s.points.get(i)?.line;
+        if (pts.some((_, i) => own(i) && own(i)!.color !== line.color))
+          pts.forEach((q, i) => {
+            const from = i ? pts[i - 1] : closed ? pts[pts.length - 1] : null;
+            if (q && from) ops.push(...stroke([{ op: 'M', pts: from }, { op: 'L', pts: q }], own(i) ?? line));
+          });
+        else ops.push(...stroke(closed ? ring(shown) : shown.map((q, k): PathSeg => ({ op: k ? 'L' : 'M', pts: q })), line));
+      }
       pts.forEach((q, i) => {
         if (!q) return;
         const own = s.points.get(i);

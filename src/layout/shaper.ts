@@ -1,5 +1,6 @@
+import { asksForEmoji, emojiSequence, isTag, isVariationSelector } from '../fonts/emoji.js';
 import { fontFor } from '../fonts/script.js';
-import type { FontFace, FontRegistry, ResolvedFace } from '../fonts/registry.js';
+import type { FontRegistry, ResolvedFace } from '../fonts/registry.js';
 import type { Link, RunProps } from '../docx/model.js';
 
 export interface ShapedGlyph {
@@ -58,8 +59,15 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
   const scale = props.scale / 100;
   let previousChoice: ReturnType<typeof fontFor> | undefined;
   let primary: ResolvedFace | undefined;
-  for (const ch of text) {
-    let cp = ch.codePointAt(0)!;
+  const chars = Array.from(text);
+  const cps = chars.map((c) => c.codePointAt(0)!);
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    let cp = cps[i];
+    if (cur && (ZERO_WIDTH.has(cp) || isVariationSelector(cp) || isTag(cp))) {
+      cur.glyphs.push({ gid: -1, text: '', cp, advance: 0 });
+      continue;
+    }
     let display = ch;
     let small = false;
     if (!opts.raw && (props.caps || props.smallCaps)) {
@@ -78,25 +86,28 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
       primary = fonts.resolve(choice.family, choice.bold, choice.italic, props.eastAsiaLang);
       previousChoice = choice;
     }
+    // An emoji sequence the font lacks prints from the emoji font, as one glyph where it has one.
+    const emoji = !small && (cp < 0x80 ? cps[i + 1] === 0xfe0f || cps[i + 1] === 0x20e3 : asksForEmoji(cps[i + 1]) || !primary!.face.font.hasGlyph(cp)) ? emojiSequence(cps, i) : 0;
+    const emojiFace = emoji ? fonts.emojiFace(choice.family, choice.bold, choice.italic, primary!) : undefined;
+    if (emojiFace && cps.slice(i, i + emoji).every((c) => isVariationSelector(c) || isTag(c) || c === 0x200d || emojiFace.face.font.hasGlyph(c))) {
+      const look = emojiFace.standIn ?? { scale: 1, drop: 0, advance: 1 };
+      if (!cur || cur.face !== emojiFace || cur.size !== sm.size * look.scale || cur.scaleX !== scale) {
+        cur = newRun(emojiFace, sm.size * look.scale, size, sm.shift, scale, props, link);
+        // The drop moves the glyphs only, not the line's top or bottom.
+        cur.baselineShift -= look.drop * sm.size;
+        cur.ascent += look.drop * sm.size;
+        cur.descent -= look.drop * sm.size;
+        out.push(cur);
+      }
+      shapeEmoji(cps.slice(i, i + emoji), cur, props.spacing);
+      i += emoji - 1;
+      continue;
+    }
     const resolved: ResolvedFace = fonts.faceForChar(choice.family, choice.bold, choice.italic, cp, props.eastAsiaLang, props.drawn, primary);
     const glyphSize = sm.size;
     const sx = scale * (resolved.glyphScale ?? 1);
     if (!cur || cur.face !== resolved || cur.size !== glyphSize || cur.scaleX !== sx) {
-      const face: FontFace = resolved.face;
-      cur = {
-        face: resolved,
-        size: glyphSize,
-        props,
-        glyphs: [],
-        baselineShift: sm.shift + props.position,
-        // Superscript and subscript text sizes the line as if it were neither smaller nor shifted
-        // (Word's rows of x¹ marks line up with plain cells); a w:position raise still counts.
-        ascent: resolved.ascent * size - sm.shift,
-        descent: resolved.descent * size + sm.shift,
-        extLeading: resolved.externalLeading * size,
-        scaleX: sx,
-        link,
-      };
+      cur = newRun(resolved, glyphSize, size, sm.shift, sx, props, link);
       out.push(cur);
     }
     const font = resolved.face.font;
@@ -143,6 +154,58 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
     cur.glyphs.push(prop?.x ? { gid, text, cp, advance, dx: prop.x * glyphSize * sx } : { gid, text, cp, advance });
   }
   return out;
+}
+
+function newRun(face: ResolvedFace, glyphSize: number, size: number, shift: number, scaleX: number, props: RunProps, link?: Link): ShapedRun {
+  return {
+    face,
+    size: glyphSize,
+    props,
+    glyphs: [],
+    baselineShift: shift + props.position,
+    // Superscript and subscript text sizes the line as if it were neither smaller nor shifted
+    // (Word's rows of x¹ marks line up with plain cells); a w:position raise still counts.
+    ascent: face.ascent * size - shift,
+    descent: face.descent * size + shift,
+    extLeading: face.externalLeading * size,
+    scaleX,
+    link,
+  };
+}
+
+/**
+ * Add an emoji sequence to `run`, whose face is an emoji font: the font's ligatures (OpenType ccmp)
+ * join a person and skin tone, or the people of a family, into one glyph. Variation selectors are
+ * passed over in matching, as HarfBuzz and DirectWrite pass over default-ignorable characters, and
+ * a joiner or tag left over draws nothing.
+ */
+function shapeEmoji(seq: number[], run: ShapedRun, spacing: number): void {
+  const font = run.face.face.font;
+  const ligatures = run.face.face.ligatures('ccmp');
+  const look = run.face.standIn;
+  const widen = look ? look.advance / look.scale : 1;
+  const items = seq.flatMap((cp, k) => (isVariationSelector(cp) ? [] : [{ gid: font.glyphId(cp), k }]));
+  for (let p = 0; p < items.length; ) {
+    let glyph = items[p].gid;
+    let next = p + 1;
+    for (const lig of ligatures.get(glyph) ?? []) {
+      if (lig.rest.every((g, r) => items[p + 1 + r]?.gid === g)) {
+        glyph = lig.glyph;
+        next = p + 1 + lig.rest.length;
+        break;
+      }
+    }
+    const cp = seq[items[p].k];
+    const text = String.fromCodePoint(...seq.slice(items[p].k, next < items.length ? items[next].k : seq.length));
+    if (next === p + 1 && (cp === 0x200d || isTag(cp))) run.glyphs.push({ gid: -1, text: '', cp, advance: 0 });
+    else {
+      // A stand-in's glyph is centred in Segoe UI Emoji's advance.
+      const own = (font.advance(glyph) / font.unitsPerEm) * run.size * run.scaleX;
+      const advance = own * widen;
+      run.glyphs.push(widen === 1 ? { gid: glyph, text, cp, advance: advance + spacing } : { gid: glyph, text, cp, advance: advance + spacing, dx: (advance - own) / 2 });
+    }
+    p = next;
+  }
 }
 
 /** Shape a string with the run's primary face only (tab leaders, field placeholders). */

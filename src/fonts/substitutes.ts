@@ -76,7 +76,8 @@ const RULES: Record<string, SubstituteRule> = {
   'gill sans mt': { families: ['selawik', 'liberation sans'], metricCompatible: false },
   'lucida sans unicode': { families: ['dejavu sans'], metricCompatible: false, vmetrics: [1.097, 0.44, 0] },
   'lucida grande': { families: ['dejavu sans'], metricCompatible: false },
-  consolas: { families: ['liberation mono'], metricCompatible: false },
+  // Consolas's cells are 1126 units of 2048 wide, Liberation Mono's 1229.
+  consolas: { families: ['liberation mono'], metricCompatible: false, widths: { 'liberation mono': 1126 / 1229 } },
   'lucida console': { families: ['liberation mono'], metricCompatible: false },
   'book antiqua': { families: ['liberation serif'], metricCompatible: false, vmetrics: [0.923, 0.282, 0] },
   'bookman old style': { families: ['gelasio', 'liberation serif'], metricCompatible: false, vmetrics: [0.942, 0.232, 0] },

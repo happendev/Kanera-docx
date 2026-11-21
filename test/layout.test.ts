@@ -1197,14 +1197,18 @@ describe('fonts', () => {
 
   it('maps symbol-font characters to Unicode and warns about those no font can draw', async () => {
     const sym = (font: string, char: string) => `<w:r><w:sym w:font="${font}" w:char="${char}"/></w:r>`;
-    // Webdings clipboard, Wingdings ➢ (drawn as the older U+27A2 look-alike), Wingdings 3 rightwards
-    // arrow, and a Wingdings 2 code with no Unicode equivalent.
-    const body = `<w:p>${sym('Webdings', 'F0A4')}${sym('Wingdings', 'F0D8')}${sym('Wingdings 3', 'F067')}${sym('Wingdings 2', 'F0FF')}</w:p>`;
+    // Webdings clipboard (drawn from the bundled Noto Color Emoji), Webdings box (U+2B1C, which Noto
+    // Color Emoji has, drawn as the look-alike □ instead), Webdings "no piracy" (in no bundled font), Wingdings
+    // ➢ (drawn as the older U+27A2 look-alike), Wingdings 3 rightwards arrow, and a Wingdings 2 code
+    // with no Unicode equivalent.
+    const body = `<w:p>${sym('Webdings', 'F0A4')}${sym('Webdings', 'F063')}${sym('Webdings', 'F023')}${sym('Wingdings', 'F0D8')}${sym('Wingdings 3', 'F067')}${sym('Wingdings 2', 'F0FF')}</w:p>`;
     const { result, warnings } = await layoutWithWarnings(makeDocx({ styles: ARIAL_STYLES, body }));
     const ops = glyphOps(result.pages[0].body);
-    expect(ops.flatMap((o) => o.texts)).toEqual(['📋', '➢', '→', '']);
+    expect(ops.flatMap((o) => o.texts)).toEqual(['📋', '□', '🕲', '➢', '→', '']);
+    expect(ops.find((o) => o.texts.includes('📋'))?.face.familyName).toBe('Noto Color Emoji');
+    expect(ops.find((o) => o.texts.includes('□'))?.face.familyName).toBe('DejaVu Sans');
     expect(warnings).toEqual([
-      'No font has a glyph for Webdings character U+F0A4 (U+1F4CB); it needs the Webdings font or one with U+1F4CB',
+      'No font has a glyph for Webdings character U+F023 (U+1F572); it needs the Webdings font or one with U+1F572',
       'Wingdings 2 character U+F0FF has no Unicode equivalent; it needs the Wingdings 2 font',
     ]);
   });
@@ -1621,6 +1625,60 @@ describe('charts', () => {
     const east = outline[0].segs[2].pts;
     expect(north[0]).toBeCloseTo(east[0], 3);
     expect(north[1]).toBeLessThan(east[1]);
+  });
+
+  const radarWith = (vary: boolean, ser: string) => `<c:radarChart><c:radarStyle val="marker"/><c:varyColors val="${vary ? 1 : 0}"/>${ser}<c:axId val="1"/><c:axId val="2"/></c:radarChart>`;
+  const lineOf = (rgb: string) => `<c:spPr><a:ln w="19050"><a:solidFill><a:srgbClr val="${rgb}"/></a:solidFill></a:ln></c:spPr>`;
+
+  it("draws each stretch of a radar line in the colour of the point it runs into", async () => {
+    const dPt = `<c:marker><c:symbol val="none"/></c:marker><c:dPt><c:idx val="2"/>${lineOf('00AA00')}</c:dPt>`;
+    const ops = await chartPage(chartWith(radarWith(false, seriesWith(dPt))));
+    // South to East is the point's colour; the other three stretches, closing the ring, the series'.
+    // (Four categories put every stretch on a diagonal; the legend's line key is level.)
+    const stretches = (color: string) => strokes(ops, color).filter((o) => o.segs.length === 2 && ys(o)[0] !== ys(o)[1]);
+    const green = stretches('00AA00');
+    expect(green).toHaveLength(1);
+    expect(green[0].segs.map((s) => s.op)).toEqual(['M', 'L']);
+    expect(ys(green[0])[1]).toBeGreaterThan(ys(green[0])[0]);
+    expect(stretches('0000FF')).toHaveLength(3);
+    // Varied fills leave every point the series' line, which stays one closed ring.
+    const varied = await chartPage(chartWith(radarWith(true, seriesWith('<c:marker><c:symbol val="none"/></c:marker>'))));
+    const rings = strokes(varied, '0000FF').filter((o) => o.segs.at(-1)!.op === 'Z');
+    expect(rings).toHaveLength(1);
+    expect(rings[0].segs.filter((s) => s.op === 'L')).toHaveLength(3);
+  });
+
+  it("draws a radar's spokes from its category axis line unless the axis is deleted, then from its gridlines", async () => {
+    const catAx = (deleted: boolean, extra: string) => `<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="${deleted ? 1 : 0}"/><c:axPos val="b"/>${extra}<c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="CC0000"/></a:solidFill></a:ln></c:spPr><c:crossAx val="2"/><c:crosses val="autoZero"/><c:auto val="1"/></c:catAx>`;
+    const grid = `<c:majorGridlines><c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="00CC00"/></a:solidFill></a:ln></c:spPr></c:majorGridlines>`;
+    const chart = (deleted: boolean) => chartWith(radarWith(false, seriesWith('<c:marker><c:symbol val="none"/></c:marker>'))).replace(/<c:catAx>.*?<\/c:catAx>/, catAx(deleted, grid));
+    const shownAxis = await chartPage(chart(false));
+    expect(strokes(shownAxis, 'CC0000')).toHaveLength(4);
+    expect(strokes(shownAxis, '00CC00')).toHaveLength(0);
+    const deletedAxis = await chartPage(chart(true));
+    expect(strokes(deletedAxis, 'CC0000')).toHaveLength(0);
+    expect(strokes(deletedAxis, '00CC00')).toHaveLength(4);
+  });
+
+  it('lists the categories of a lone radar series in varied colours, but not beside a trendline', async () => {
+    const texts = (ops: DrawOpLike[]) => glyphOps(ops).map((g) => g.texts.join(''));
+    const radar = texts(await chartPage(chartWith(radarWith(true, seriesWith('')))));
+    expect(radar).not.toContain('Sales');
+    for (const c of ['North', 'South', 'East', 'West']) expect(radar.filter((t) => t === c)).toHaveLength(2);
+    const trend = '<c:trendline><c:trendlineType val="linear"/><c:dispRSqr val="0"/><c:dispEq val="0"/></c:trendline>';
+    const varied = (extra: string) => chartWith(`<c:lineChart><c:grouping val="standard"/><c:varyColors val="1"/>${seriesWith(extra)}<c:marker val="1"/><c:axId val="1"/><c:axId val="2"/></c:lineChart>`);
+    expect(texts(await chartPage(varied('')))).not.toContain('Sales');
+    expect(texts(await chartPage(varied(trend)))).toEqual(expect.arrayContaining(['Sales', 'Linear (Sales)']));
+  });
+
+  it('centres a side legend between 11pt below the top and 11pt above the bottom', async () => {
+    const ops = await chartPage(barChart.replace('<c:legendPos val="b"/>', '<c:legendPos val="r"/>'));
+    const clip = ops.find((o): o is Extract<DrawOpLike, { kind: 'clip' }> => o.kind === 'clip')!;
+    const keys = ops.filter((o): o is PathOp => o.kind === 'path' && o.fill === 'FF0000');
+    const key = keys.reduce((a, b) => (Math.min(...b.segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 0))) > Math.min(...a.segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 0))) ? b : a));
+    // Without a title the band runs from 11pt to 11pt, so a lone entry sits at the chart's middle.
+    const mid = (Math.max(...ys(key)) + Math.min(...ys(key))) / 2;
+    expect(mid).toBeCloseTo(clip.y + 1 + (clip.h - 2) / 2, 3);
   });
 });
 

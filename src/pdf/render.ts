@@ -1,10 +1,12 @@
 import type { DocumentInfo, ImageRef, Link } from '../docx/model.js';
 import type { Compression } from '../util/compression.js';
 import type { FontFace } from '../fonts/registry.js';
+import { colorGlyph, hasColorGlyphs } from '../fonts/colr.js';
 import { buildSfnt, canSubsetTrueType, subsetTrueType } from '../fonts/subset.js';
 import { ImageBudget, type ImageLimits } from '../image/budget.js';
 import { adjustImage, dibToPdf, sniffImage, toPdfImage, type PdfImage } from '../image/image.js';
 import type { DrawOp, GlyphOp, Page, PathSeg, ShadeGeometry } from '../layout/types.js';
+import { ColorGlyphForms } from './color-glyph.js';
 import { latin1, num, PdfObjects, pdfName, textString } from './objects.js';
 
 export interface PdfOptions {
@@ -37,6 +39,13 @@ interface ImageUse {
 
 const ITALIC_SKEW = 0.2126; // tan(12°), the slant Word uses for synthetic italics
 
+/** A number for a matrix that scales font units, where three decimals would lose too much. */
+function fine(v: number): string {
+  if (!Number.isFinite(v)) return '0';
+  const r = Math.round(v * 1e7) / 1e7;
+  return r === 0 ? '0' : String(r);
+}
+
 /** Write laid-out pages as a PDF file. */
 export async function renderPdf(pages: Page[], compression: Compression, opts: PdfOptions = {}, warnings: string[] = []): Promise<Uint8Array<ArrayBuffer>> {
   const quality = opts.imageQuality;
@@ -59,6 +68,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
   const compress = opts.compress !== false;
   const grid = opts.paintGrid;
   const snap = (v: number) => (grid ? Math.round(v / grid) * grid : v);
+  const colorForms = new ColorGlyphForms(pdf, compress);
 
   // Bookmark destinations first, so links can point forward.
   pages.forEach((page, pi) => {
@@ -129,6 +139,13 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
     const out: string[] = [];
     const usedFonts = new Set<FontUse>();
     const usedImages = new Set<ImageUse>();
+    // Colour glyph forms on this page: object number → resource name.
+    const usedForms = new Map<number, string>();
+    const formName = (obj: number): string => {
+      let name = usedForms.get(obj);
+      if (!name) usedForms.set(obj, (name = `Cg${usedForms.size + 1}`));
+      return name;
+    };
     const shadings: string[] = [];
     const softMasks: string[] = [];
     const annots: string[] = [];
@@ -156,12 +173,14 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
       const font = op.face.font;
       const toPdfUnits = 1000 / font.unitsPerEm;
       const th = op.scaleX || 1;
+      // A colour font's glyphs draw as forms over invisible text, which keeps the text searchable.
+      const colored = hasColorGlyphs(font) && op.gids.some((g) => colorGlyph(font, g) !== null);
       // Text render mode, horizontal scaling, stroke colour and line width outlive ET, so stroked
-      // (bold or outline) and scaled text saves and restores the graphics state; otherwise every
-      // later run would be stroked or scaled too.
-      const stroked = op.syntheticBold || op.outline;
+      // (bold or outline), invisible and scaled text saves and restores the graphics state;
+      // otherwise every later run would be stroked, invisible or scaled too.
+      const stroked = !colored && (op.syntheticBold || op.outline);
       const alpha = op.alpha !== undefined && op.alpha < 1;
-      const save = alpha || stroked || th !== 1;
+      const save = alpha || stroked || colored || th !== 1;
       if (alpha) out.push(`q /${alphaFor(op.alpha!)} gs`);
       else if (save) out.push('q');
       // On a paint grid only the drawn size snaps; glyphs keep their laid-out positions.
@@ -173,6 +192,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
         // A dash pattern a line or border left set would dash the glyphs' outlines too.
         s += `${color(op.color, true)} ${num(op.size * (op.outline ? 0.02 : 0.03))} w [] 0 d ${op.outline ? 1 : 2} Tr `;
       }
+      if (colored) s += '3 Tr ';
       const x0 = op.x + op.xs[0] + (grid && op.lineX !== undefined ? snap(op.lineX) - op.lineX : 0);
       s += `1 0 ${op.syntheticItalic ? ITALIC_SKEW : 0} 1 ${num(x0)} ${num(Y(grid ? snap(op.y) : op.y))} Tm [`;
       for (let i = 0; i < op.gids.length; i++) {
@@ -188,6 +208,16 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
       }
       s += '] TJ ET';
       out.push(s);
+      if (colored) {
+        const k = size / font.unitsPerEm;
+        const skew = op.syntheticItalic ? ITALIC_SKEW : 0;
+        const y = Y(grid ? snap(op.y) : op.y);
+        for (let i = 0; i < op.gids.length; i++) {
+          const form = colorForms.form(font, op.gids[i], op.color, { plain: true, group: alpha });
+          if (form === null) continue;
+          out.push(`q ${fine(k * th)} 0 ${fine(k * skew)} ${fine(k)} ${num(x0 + op.xs[i] - op.xs[0])} ${num(y)} cm /${formName(form)} Do Q`);
+        }
+      }
       if (save) out.push('Q');
     };
 
@@ -294,7 +324,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
 
     const content = pdf.addStream('', latin1(out.join('\n')), compress);
     const fontRes = [...usedFonts].map((f) => `/${f.resName} ${f.objNum} 0 R`).join(' ');
-    const imgRes = [...usedImages].map((i) => `/${i.resName} ${i.objNum} 0 R`).join(' ');
+    const imgRes = [...[...usedImages].map((i) => `/${i.resName} ${i.objNum} 0 R`), ...[...usedForms].map(([obj, name]) => `/${name} ${obj} 0 R`)].join(' ');
     const gsRes = [...[...alphas].map(([a, n]) => `/${n} << /Type /ExtGState /ca ${a} /CA ${a} >>`), ...softMasks].join(' ');
     const shRes = shadings.join(' ');
     const annotNums = annots.map((a) => pdf.add(a));

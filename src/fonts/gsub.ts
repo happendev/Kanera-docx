@@ -36,6 +36,53 @@ export function singleSubstitutions(gsub: Uint8Array, feature: string, budget: F
   return out;
 }
 
+/** A ligature that replaces its first glyph and the glyphs in `rest` that follow it. */
+export interface Ligature {
+  rest: number[];
+  glyph: number;
+}
+
+/**
+ * The ligatures (GSUB lookup type 4, including those inside type 7 extensions) that an OpenType
+ * feature makes, by first glyph id, longest first. Empty when the table has no such feature or is
+ * malformed.
+ */
+export function ligatureSubstitutions(gsub: Uint8Array, feature: string, budget: FeatureBudget, numGlyphs = 65536): Map<number, Ligature[]> {
+  const out = new Map<number, Ligature[]>();
+  const v = new DataView(gsub.buffer, gsub.byteOffset, gsub.byteLength);
+  const u16 = (o: number) => v.getUint16(o);
+  try {
+    for (const sub of featureSubtables(v, feature, 4, 7, budget)) {
+      if (u16(sub) !== 1) continue;
+      const glyphs = coverage(v, sub + u16(sub + 2), budget);
+      const sets = u16(sub + 4);
+      budget.reserveFeatureWork(sets);
+      for (let i = 0; i < sets && i < glyphs.length; i++) {
+        if (glyphs[i] >= numGlyphs) continue;
+        const set = sub + u16(sub + 6 + 2 * i);
+        const count = u16(set);
+        budget.reserveFeatureWork(count);
+        let list = out.get(glyphs[i]);
+        if (!list) out.set(glyphs[i], (list = []));
+        for (let k = 0; k < count; k++) {
+          const lig = set + u16(set + 2 + 2 * k);
+          const glyph = u16(lig);
+          const components = u16(lig + 2);
+          budget.reserveFeatureWork(components);
+          const rest: number[] = [];
+          for (let c = 1; c < components; c++) rest.push(u16(lig + 2 + 2 * c));
+          if (glyph < numGlyphs && rest.every((g) => g < numGlyphs)) list.push({ rest, glyph });
+        }
+      }
+    }
+  } catch (error) {
+    if (error instanceof FontLimitError) throw error;
+    return new Map();
+  }
+  for (const list of out.values()) list.sort((a, b) => b.rest.length - a.rest.length);
+  return out;
+}
+
 /**
  * The horizontal single adjustments (GPOS lookup type 1, including those inside type 9 extensions)
  * that an OpenType feature makes, by glyph id, in font units: `x` moves the glyph, `advance` changes

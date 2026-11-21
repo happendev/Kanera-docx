@@ -424,4 +424,10 @@ describe('notes, frames and substitutes', () => {
     expect(op.face.familyName).toBe('Gelasio');
     expect(op.scaleX).toBeCloseTo(1.048, 3);
   });
+
+  it("draws Consolas with Liberation Mono narrowed to Consolas's cells", async () => {
+    const op = glyphOps((await layout(makeDocx({ body: p('Code', '', '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/>') }))).pages[0].body)[0];
+    expect(op.face.familyName).toBe('Liberation Mono');
+    expect(op.scaleX).toBeCloseTo(1126 / 1229, 4);
+  });
 });

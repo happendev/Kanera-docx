@@ -20,7 +20,9 @@ import {
   type FontTableHints,
   type GenericFamily,
 } from './substitutes.js';
-import { singleAdjustments, singleSubstitutions, type FeatureBudget } from './gsub.js';
+import { ligatureSubstitutions, singleAdjustments, singleSubstitutions, type FeatureBudget, type Ligature } from './gsub.js';
+import { EMOJI_FAMILIES, EMOJI_STAND_INS, mayPrintAsEmoji, type EmojiStandIn } from './emoji.js';
+import { hasColorGlyphs } from './colr.js';
 import { mapSymbolChar, mathLetter, symbolFontKind, symbolLookalike, type SymbolFontKind } from './symbol-map.js';
 
 export type FontOrigin = 'embedded' | 'user' | 'system' | 'bundled';
@@ -66,7 +68,19 @@ interface CachedFeature<T> {
 type Adjustment = { x: number; advance: number };
 const substitutions = new WeakMap<SfntFont, Map<string, CachedFeature<number>>>();
 const adjustments = new WeakMap<SfntFont, Map<string, CachedFeature<Adjustment>>>();
+const ligatures = new WeakMap<SfntFont, Map<string, CachedFeature<Ligature[]>>>();
 const sampleWidths = new WeakMap<SfntFont, number>();
+
+/** Whether `face` is an emoji font (see EMOJI_FAMILIES). */
+function isEmojiFont(face: FontFace): boolean {
+  return face.families.some((f) => EMOJI_FAMILIES.includes(f));
+}
+
+/** Whether an emoji font can be drawn: in colour (COLR) or by outlines, not only as bitmaps (CBDT, sbix). */
+function drawsEmoji(face: FontFace): boolean {
+  const font = face.font;
+  return hasColorGlyphs(font) || ((font.table('glyf') !== undefined || font.isCFF) && !font.table('CBDT') && !font.table('sbix'));
+}
 
 /** Spaces and hyphens the shaper draws with the face's own space or hyphen when it lacks them, so the
  * text keeps its font (and line metrics) rather than falling back to another. */
@@ -151,6 +165,10 @@ export class FontFace {
     return this.feature('GPOS', name, adjustments, singleAdjustments);
   }
 
+  ligatures(name: string): Map<number, Ligature[]> {
+    return this.feature('GSUB', name, ligatures, ligatureSubstitutions);
+  }
+
   kerning(left: number, right: number): number {
     const value = this.font.kerning(left, right);
     if (this.sharedKerning) {
@@ -210,6 +228,8 @@ export interface ResolvedFace {
   fullWidth?: Map<number, number>;
   /** Glyph size relative to the text's, for a fallback drawn to the width of the font it stands in for. */
   glyphScale?: number;
+  /** For an emoji font standing in for Segoe UI Emoji: how its glyphs are sized, lowered and spaced (see EMOJI_STAND_INS). */
+  standIn?: EmojiStandIn;
   /**
    * Set when a stand-in draws a Japanese font with proportional kana and punctuation: by character,
    * how far (em) to move each glyph and change its advance (OpenType palt).
@@ -244,6 +264,7 @@ export class FontRegistry {
   private paltCache = new WeakMap<FontFace, Map<number, { x: number; advance: number }>>();
   private widthFormCache = new WeakMap<FontFace, { half: Map<number, number>; full: Map<number, number> }>();
   private symbolCache = new Map<string, number>();
+  private emojiCache = new Map<string, ResolvedFace | null>();
   readonly hints = new Map<string, FontTableHints>();
   readonly warnings = new Set<string>();
 
@@ -312,6 +333,7 @@ export class FontRegistry {
     this.resolveCache.clear();
     this.glyphCache.clear();
     this.symbolCache.clear();
+    this.emojiCache.clear();
   }
 
   setHints(family: string, hints: FontTableHints): void {
@@ -456,9 +478,13 @@ export class FontRegistry {
       const kind = primary.symbolMap;
       const missing = [...codePoints].map((cp) => kind ? mapSymbolChar(kind, cp) || cp : cp)
         .filter((cp) => cp >= 32 && !primary.face.font.hasGlyph(cp) && !synthesized(primary.face.font, cp));
+      const lacks = new Set(missing);
+      if (!kind && [...codePoints].some((cp) => mayPrintAsEmoji(cp, codePoints, lacks.has(cp)))) await this.loadEmoji(bold, italic);
       const unfound = await this.loadFallbacks(family, bold, italic, missing, lang);
-      // A dingbat no font has can still be drawn with an older look-alike.
-      const lookalikes = kind ? unfound.map(symbolLookalike).filter((cp): cp is number => cp !== undefined) : [];
+      // A dingbat no font has can still be drawn with an older look-alike, as can one only an emoji
+      // font has: the look-alike is drawn more like the symbol font's glyph (Webdings' box, not ⬜).
+      const lookalikes = kind ? missing.filter((cp) => !this.faces.some((f) => !isEmojiFont(f) && f.font.hasGlyph(cp)))
+        .map(symbolLookalike).filter((cp): cp is number => cp !== undefined) : [];
       if (lookalikes.length) await this.loadFallbacks(family, bold, italic, lookalikes, lang);
       // So can a mathematical letter, as its plain letter in the style it stands for.
       const letters = kind ? [] : unfound.map(mathLetter).filter((m) => m !== undefined);
@@ -473,6 +499,11 @@ export class FontRegistry {
         if (!p.loaded && p.covers?.(0x3042)) await this.loadPending(p);
       }
     }
+  }
+
+  /** Load the first emoji font there is (see emojiFace). */
+  private async loadEmoji(bold: boolean, italic: boolean): Promise<void> {
+    for (const family of EMOJI_FAMILIES) if ((await this.prepareFamily(family, bold, italic)) && this.byFamily.get(family)!.some(drawsEmoji)) return;
   }
 
   /** Load fallback fonts for characters no loaded face has; returns those still missing. */
@@ -656,6 +687,28 @@ export class FontRegistry {
     return result;
   }
 
+  /**
+   * The face that draws an emoji sequence the requested font lacks (see emojiSequence): Segoe UI
+   * Emoji, which Office prints, or a stand-in for it (see EMOJI_FAMILIES). Its line keeps the text
+   * font's height: in Word for Mac's PDFs a line of text with Segoe UI Emoji's emoji is no taller.
+   * Undefined when no emoji font is loaded.
+   */
+  emojiFace(family: string, bold: boolean, italic: boolean, primary: ResolvedFace): ResolvedFace | undefined {
+    if (primary.symbolMap) return undefined;
+    const key = `${family}\u0000${bold ? 1 : 0}${italic ? 1 : 0}`;
+    let out = this.emojiCache.get(key);
+    if (out === undefined) {
+      const drawable = (f: string) => this.byFamily.get(f)?.filter(drawsEmoji) ?? [];
+      const fam = EMOJI_FAMILIES.find((f) => drawable(f).length);
+      const face = fam && this.pickStyle(drawable(fam), bold, italic);
+      const standIn = fam && EMOJI_STAND_INS[fam];
+      const line = { ascent: primary.ascent, descent: primary.descent, externalLeading: primary.externalLeading };
+      out = face ? { ...this.fallback(primary, face, bold, italic), ...line, ...(standIn && { standIn }) } : null;
+      this.emojiCache.set(key, out);
+    }
+    return out ?? undefined;
+  }
+
   /** Width (em) of ARABIC_SAMPLE in `face`, or 0 when it lacks those forms. */
   private arabicSampleWidth(face: FontFace): number {
     let w = sampleWidths.get(face.font);
@@ -784,8 +837,9 @@ export class FontRegistry {
     if (out === undefined) {
       const exact = mapSymbolChar(kind, cp) || cp;
       const alt = symbolLookalike(exact);
-      const drawable = (c: number) => this.faces.some((f) => f.font.hasGlyph(c));
-      out = alt !== undefined && !drawable(exact) && drawable(alt) ? alt : exact;
+      // An emoji font's design is further from the symbol font's glyph than a look-alike is.
+      const drawable = (c: number, emoji = true) => this.faces.some((f) => (emoji || !isEmojiFont(f)) && f.font.hasGlyph(c));
+      out = alt !== undefined && !drawable(exact, false) && drawable(alt) ? alt : exact;
       this.symbolCache.set(key, out);
     }
     return out;

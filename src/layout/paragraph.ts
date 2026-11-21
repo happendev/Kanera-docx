@@ -1189,10 +1189,14 @@ export class ParagraphLayout {
     const props = run.props;
     const lineStart = line.start;
     const font = run.face.face.font;
-    const em = run.size / font.unitsPerEm;
-    const yBase = baseline - run.baselineShift;
-    const asc = run.face.ascent * run.size;
-    const desc = run.face.descent * run.size;
+    // An emoji stand-in's box and lines are Segoe UI Emoji's: at the text's size, on the baseline
+    // its glyphs were moved from.
+    const look = run.face.standIn;
+    const size = look ? run.size / look.scale : run.size;
+    const em = size / font.unitsPerEm;
+    const yBase = baseline - run.baselineShift - (look ? look.drop * size : 0);
+    const asc = run.face.ascent * size;
+    const desc = run.face.descent * size;
     if (props.highlight) back.push({ kind: 'rect', x: x1, y: yBase - asc, w: x2 - x1, h: asc + desc, fill: props.highlight });
     else if (props.shading) back.push({ kind: 'rect', x: x1, y: yBase - asc, w: x2 - x1, h: asc + desc, fill: props.shading });
     const color = props.color ?? '000000';

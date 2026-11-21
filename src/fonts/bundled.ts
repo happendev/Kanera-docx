@@ -1,3 +1,4 @@
+import { coversEmoji } from './emoji.js';
 import { isEastAsian } from './script.js';
 
 /** Lazy loaders use these family names to match the faces in each font's name table. */
@@ -43,6 +44,8 @@ export const FULL_FONTS: BundledFont[] = [
   ...COMMON_FONTS,
   { file: 'NotoSansCJKjp-Regular.ttf', family: 'Noto Sans CJK JP', bold: false, italic: false, weight: 400, covers: isEastAsian },
   { file: 'NotoSerifCJKsc-Regular.ttf', family: 'Noto Serif CJK SC', bold: false, italic: false, weight: 400, covers: isEastAsian },
+  // Google's variable release, unmodified: its default outlines are the Regular weight.
+  { file: 'Noto-COLRv1.ttf', family: 'Noto Color Emoji', bold: false, italic: false, weight: 400, covers: coversEmoji },
   ...four('Liberation Sans Narrow', 'LiberationSansNarrow'),
   ...four('Morrow Mono', 'MorrowMono'),
   ...four('Onward', 'Onward'),
