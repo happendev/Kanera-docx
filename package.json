@@ -1,10 +1,9 @@
 {
   "name": "@kanera/docx2pdf",
   "version": "1.0.0",
-  "description": "Standalone DOCX to PDF renderer in TypeScript. Runs in Node and the browser; no LibreOffice, no native binaries.",
+  "description": "Convert Word documents to PDF, plain text, and Markdown in Node.js or the browser. A TypeScript library and CLI.",
   "type": "module",
   "license": "Apache-2.0",
-  "private": true,
   "sideEffects": false,
   "engines": {
     "node": ">=20"
@@ -44,7 +43,8 @@
   "files": [
     "dist",
     "fonts",
-    "NOTICE"
+    "NOTICE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && esbuild src/util/pako.ts src/image/jpeg-codec.ts src/pdf/svg.ts --bundle --format=esm --platform=browser --target=es2022 --minify --sourcemap --sources-content=false --define:Buffer.from=Uint8Array.from --outbase=src --outdir=dist",
@@ -75,6 +75,24 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/happendev/kanera-docx.git"
-  }
+    "url": "git+https://github.com/happendev/Kanera-docx.git"
+  },
+  "homepage": "https://github.com/happendev/Kanera-docx#readme",
+  "bugs": {
+    "url": "https://github.com/happendev/Kanera-docx/issues"
+  },
+  "keywords": [
+    "docx",
+    "docx-to-pdf",
+    "docx-to-markdown",
+    "word",
+    "pdf",
+    "markdown",
+    "ooxml",
+    "document-conversion",
+    "typescript",
+    "nodejs",
+    "browser",
+    "cli"
+  ]
 }

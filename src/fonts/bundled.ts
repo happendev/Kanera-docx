@@ -44,7 +44,7 @@ export const FULL_FONTS: BundledFont[] = [
   ...COMMON_FONTS,
   { file: 'NotoSansCJKjp-Regular.ttf', family: 'Noto Sans CJK JP', bold: false, italic: false, weight: 400, covers: isEastAsian },
   { file: 'NotoSerifCJKsc-Regular.ttf', family: 'Noto Serif CJK SC', bold: false, italic: false, weight: 400, covers: isEastAsian },
-  // Google's variable release, unmodified: its default outlines are the Regular weight.
+  // Google's COLRv1 release of Noto Color Emoji, unmodified: colour glyphs over TrueType outlines.
   { file: 'Noto-COLRv1.ttf', family: 'Noto Color Emoji', bold: false, italic: false, weight: 400, covers: coversEmoji },
   ...four('Liberation Sans Narrow', 'LiberationSansNarrow'),
   ...four('Morrow Mono', 'MorrowMono'),

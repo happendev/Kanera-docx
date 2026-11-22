@@ -271,12 +271,15 @@ def main():
     standalone = parser.add_mutually_exclusive_group()
     standalone.add_argument('--kanera-only', action='store_true', help='Run Kanera alone on all benchmark fixtures.')
     standalone.add_argument('--minipdf-only', action='store_true', help='Run MiniPdf alone on all benchmark fixtures.')
+    standalone.add_argument('--all', action='store_true', help='Run all comparison engines.')
     parser.add_argument('--minipdf', action='store_true', help='Include MiniPdf in the full comparison.')
     parser.add_argument('--aspose', action='store_true', help='Include the licensed Aspose .NET runner.')
     parser.add_argument('--syncfusion', action='store_true', help='Include the licensed Syncfusion DocIO .NET runner.')
     parser.add_argument('--rust', action='store_true', help='Include the Rust engines dxpdf, rdocx and office2pdf.')
     parser.add_argument('--fresh', action='store_true', help='Start cold conversions even if a warm pass is pending.')
     args = parser.parse_args()
+    if args.all:
+        args.aspose = args.syncfusion = args.minipdf = args.rust = True
     if (args.kanera_only or args.minipdf_only) and (args.aspose or args.syncfusion or args.rust or args.minipdf):
         parser.error('Standalone modes cannot be combined with full-comparison engine flags')
     versions = {'time': version([GNU_TIME, '--version']).splitlines()[0]}

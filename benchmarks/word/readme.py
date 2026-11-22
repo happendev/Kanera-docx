@@ -123,18 +123,44 @@ def refresh_engine_table(text, section, values, name, count):
     return before + '\n' + body + '\n' + after
 
 
-def update_single_engine_readme(root, table, versions, count, engine):
-    values = dict(zip(table[0], table[1], strict=True))
-    converter = values['Converter']
-    if versions.get(engine):
-        converter += ' ' + versions[engine].split()[0]
-
+def update_measured_readme(root, table, versions, count, engines):
     def transform(text):
-        name = 'Kanera' if engine == 'ours' else values['Converter']
-        text = refresh_engine_table(text, 'benchmark-summary', values, name, count)
-        return refresh_engine_table(text, 'benchmark-results', values, converter, count)
+        for engine, row in zip(engines, table[1:], strict=True):
+            values = dict(zip(table[0], row, strict=True))
+            name = values['Converter']
+            converter = name
+            if versions.get(engine):
+                version = versions[engine].split()
+                converter += ' ' + (version[1] if engine == 'libreoffice' and len(version) > 1 else version[0])
+            text = refresh_engine_table(text, 'benchmark-summary', values, 'Kanera' if engine == 'ours' else name, count)
+            text = refresh_engine_table(text, 'benchmark-results', values, converter, count)
+        return text
 
     edit_main_readme(root, transform)
+
+
+def update_suite_scores(root, rows, engines):
+    benchmark = root / 'benchmarks/word/README.md'
+    original = benchmark.read_text(encoding='utf-8')
+    before, body, after = section_parts(original, 'benchmark-breakdown')
+    lines = body.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith('|'))
+    headers, previous, end = read_table(lines, start)
+    groups = defaultdict(list)
+    for row in rows:
+        groups[row['engine'], fixture_suite(row)].append(row['ink_f1'])
+    for row in previous:
+        suite = next(key for key, _, reference in SUITES if reference == row[1])
+        for column, label in enumerate(headers[2:], 2):
+            if label in engines:
+                scores = groups[engines[label], suite]
+                if scores:
+                    row[column] = f'{mean(scores):.1f}%'
+        row[2:] = highlight_best(row[2:], higher_is_better=True)
+    lines[start:end] = markdown_table(headers, previous).splitlines()
+    updated = before + '\n' + '\n'.join(lines).strip('\n') + '\n' + after
+    if updated != original:
+        benchmark.write_text(updated, encoding='utf-8')
 
 
 def fixture_suite(row):
@@ -185,12 +211,12 @@ def update_mini_pdf_breakdown(root, rows, label, kanera_scores):
         benchmark.write_text(updated, encoding='utf-8')
 
 
-def update_accuracy_readme(root, report, run_date):
+def update_accuracy_readme(root, report):
     count = report['documents']
     corpus = report['by_corpus']
     failures = report['conversion_failures']
     body = (
-        f'**Full-corpus ink test.** Last run {run_date} (UTC).\n'
+        '**Full-corpus ink test.**\n'
         f'Kanera scored **{report["accuracy_pct"]:.2f}%** across {count:,} documents\n'
         f'({corpus["huggingface"]["documents"]:,} Hugging Face and {corpus["upstream"]["documents"]:,} vendored, '
         f'{report["reference_pages"]:,} reference pages).\n'
@@ -201,7 +227,7 @@ def update_accuracy_readme(root, report, run_date):
     edit_main_readme(root, lambda text: replace_section(text, 'full-corpus-accuracy', body))
 
 
-def update_readmes(root, rows, table, engines, versions, run_date):
+def update_readmes(root, rows, table, engines, versions):
     public_columns = ('Converter', 'Mean ink overlap', 'Matching page count', 'Failed conversions',
                       'Median cold time', 'Median warm time', 'Warm p95 latency', 'Warm docs/sec',
                       *MEMORY_COLUMNS, 'Total PDF size')
@@ -235,7 +261,6 @@ def update_readmes(root, rows, table, engines, versions, run_date):
         converters.append(name)
     metrics = [metric_cells(results, ordered_engines, column) for column in public_columns[1:]]
     published = zip(converters, *metrics, strict=True)
-    date_line = f'**Last full benchmark run** {run_date} (UTC), {count} documents.'
     overview = '\n\n'.join([
         markdown_table(public_columns, published),
         memory_note,
@@ -263,9 +288,10 @@ def update_readmes(root, rows, table, engines, versions, run_date):
             continue
         counts.append((results[engine]['Converter'], *comparison_counts(per_case['ours'], per_case[engine])))
     details = '\n\n'.join([
-        date_line,
+        f'{count} documents.',
         markdown_table(columns, breakdown),
-        'Per-document ink overlap differences under half a percentage point count as ties.',
+        'The head-to-head counts use the full comparison. Per-document ink overlap differences '
+        'under half a percentage point count as ties.',
         markdown_table(('Compared with', 'Kanera higher', 'Kanera lower', 'Ties'), counts),
     ])
 

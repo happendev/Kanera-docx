@@ -1,0 +1,11 @@
+{
+  "name": "kanera-markdown-benchmark",
+  "private": true,
+  "description": "JavaScript Word-to-Markdown converters compared in the Markdown benchmark",
+  "type": "module",
+  "dependencies": {
+    "mammoth": "1.13.0",
+    "turndown": "7.2.5",
+    "turndown-plugin-gfm": "1.0.2"
+  }
+}

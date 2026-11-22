@@ -5,6 +5,8 @@ import { layoutDocument, type LayoutStats } from './layout/engine.js';
 import type { Compression } from './util/compression.js';
 import { renderPdf } from './pdf/render.js';
 
+export { extractTextWithCompression, type ExtractTextOptions, type ExtractTextResult } from './text/index.js';
+
 /** Word for Mac renders through Quartz, which places text on a 0.24pt (1/300 inch) grid. */
 const MAC_PAINT_GRID = 0.24;
 

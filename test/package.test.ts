@@ -36,8 +36,11 @@ it('ships the full font pack for the CLI and exposes the browser subset after an
       import assert from 'node:assert/strict';
       import { docxToPdf } from '@kanera/docx2pdf';
       import { docxToPdf as nodeDocxToPdf } from '@kanera/docx2pdf/node';
-      import { convertDocx } from '@kanera/docx2pdf/core';
+      import { convertDocx, docxToMarkdown } from '@kanera/docx2pdf/core';
+      import { docxToText } from '@kanera/docx2pdf';
       assert.equal(typeof docxToPdf, 'function');
+      assert.equal(typeof docxToText, 'function');
+      assert.equal(typeof docxToMarkdown, 'function');
       assert.equal(docxToPdf, nodeDocxToPdf);
       assert.equal(typeof convertDocx, 'function');
     `], { cwd: dir, stdio: 'pipe' });
@@ -57,7 +60,7 @@ it('ships the full font pack for the CLI and exposes the browser subset after an
     const pdf = join(dir, 'japanese.pdf');
     writeFileSync(doc, makeDocx({ body: p('日本語') }));
     const original = readFileSync(doc);
-    for (const args of [[doc, '--font'], [doc, pdf, 'extra.pdf']]) {
+    for (const args of [[doc, '--font'], [doc, pdf, 'extra.pdf'], [doc, '-'], [doc, '--headers'], [doc, '--text', '--png', dir]]) {
       expect(spawnSync(process.execPath, [cli, ...args]).status).toBe(2);
     }
     const hardlink = join(dir, 'linked.docx');
@@ -74,6 +77,14 @@ it('ships the full font pack for the CLI and exposes the browser subset after an
       expect(collision.stderr).toMatch(/same file/);
       expect(readFileSync(doc).equals(original)).toBe(true);
     }
+    const markdown = spawnSync(process.execPath, [cli, doc, '--markdown', '-'], { encoding: 'utf8' });
+    expect(markdown.status).toBe(0);
+    expect(markdown.stdout).toBe('日本語\n');
+    const textCollision = spawnSync(process.execPath, [cli, doc, '--text', hardlink], { encoding: 'utf8' });
+    expect(textCollision.status).toBe(1);
+    expect(readFileSync(doc).equals(original)).toBe(true);
+    expect(spawnSync(process.execPath, [cli, doc, '--text']).status).toBe(0);
+    expect(readFileSync(join(dir, 'japanese.txt'), 'utf8')).toBe('日本語\n');
     const full = spawnSync(process.execPath, [cli, doc, pdf], { encoding: 'utf8' });
     expect(full.status).toBe(0);
     expect(full.stderr).toBe('');

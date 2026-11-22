@@ -262,14 +262,14 @@ class Paginator {
   private noteRefText(type: 'footnote' | 'endnote', id: string): string {
     this.contextReads++;
     const n = this.noteNumbers.get(`${type}:${id}`) ?? 1;
-    if (type === 'endnote') return formatNumber(n, 'lowerRoman');
+    if (type === 'endnote') return formatNumber(n, this.doc.settings.endnoteFormat ?? 'lowerRoman');
     return formatNumber(n, this.section?.footnoteFormat ?? 'decimal');
   }
 
   /** Notes are numbered in reference order through the body. */
   private numberNotes(groups: Array<{ section: Section; blocks: Block[] }>): void {
     let fn: number | undefined;
-    let en = 1;
+    let en = this.doc.settings.endnoteStart ?? 1;
     let previousPage: number | undefined;
     for (const { section, blocks } of groups) {
       if (section.footnoteRestart === 'eachSect') fn = undefined;

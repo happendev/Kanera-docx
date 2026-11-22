@@ -88,6 +88,11 @@ export class StyleSheet {
     if (this.defaultParagraphStyle && !paraDefault) this.defaultsPara = { line: 1.15, spaceAfter: 8 };
   }
 
+  /** Style names by style id. */
+  names(): Map<string, string> {
+    return new Map([...this.styles.values()].map((s) => [s.id, s.name]));
+  }
+
   /** The style with this name: built-in styles keep their English names whatever their ids. */
   byName(name: string): StyleDef | undefined {
     const n = name.toLowerCase();

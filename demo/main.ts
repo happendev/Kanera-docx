@@ -1,9 +1,15 @@
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
-import type { ConvertRequest, ConvertResponse } from './convert.worker.js';
+import type { ConvertRequest, ConvertResponse, OutputFormat } from './convert.worker.js';
 import { parseSamples, type Sample } from './samples.js';
 
 type View = 'pages' | 'side' | 'overlay';
+
+const outputs = {
+  pdf: { label: 'PDF', extension: 'pdf', mimeType: 'application/pdf' },
+  text: { label: 'Plain text', extension: 'txt', mimeType: 'text/plain;charset=utf-8' },
+  markdown: { label: 'Markdown', extension: 'md', mimeType: 'text/markdown;charset=utf-8' },
+};
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('./pdf.worker.min.mjs', import.meta.url).href;
 const pdfjsAssets = new URL('./pdfjs/', import.meta.url).href;
@@ -21,6 +27,7 @@ const ui = {
   file: $<HTMLInputElement>('#file'),
   search: $<HTMLInputElement>('#search'),
   samples: $<HTMLDivElement>('#samples'),
+  pdfOptions: $<HTMLDetailsElement>('#pdf-options'),
   fontPack: $<HTMLSelectElement>('#opt-font-pack'),
   platform: $<HTMLSelectElement>('#opt-platform'),
   quality: $<HTMLSelectElement>('#opt-quality'),
@@ -28,6 +35,7 @@ const ui = {
   docName: $<HTMLHeadingElement>('#doc-name'),
   docMeta: $<HTMLParagraphElement>('#doc-meta'),
   stats: $<HTMLUListElement>('#stats'),
+  formats: $<HTMLDivElement>('#formats'),
   views: $<HTMLDivElement>('#views'),
   overlayControl: $<HTMLLabelElement>('#overlay-control'),
   overlay: $<HTMLInputElement>('#overlay'),
@@ -35,6 +43,7 @@ const ui = {
   open: $<HTMLAnchorElement>('#open'),
   warnings: $<HTMLDetailsElement>('#warnings'),
   pages: $<HTMLDivElement>('#pages'),
+  textPreview: $<HTMLPreElement>('#text-preview'),
   status: $<HTMLDivElement>('#status'),
 };
 
@@ -49,22 +58,23 @@ worker.onmessage = (e: MessageEvent<ConvertResponse>) => {
   pending.delete(e.data.id);
 };
 
-function convert(docx: ArrayBuffer): Promise<ConvertResponse> {
+function convert(docx: ArrayBuffer, format: OutputFormat): Promise<ConvertResponse> {
   const id = nextId++;
   const quality = ui.quality.value;
-  const request: ConvertRequest = {
+  const request: ConvertRequest = format === 'pdf' ? {
     id,
     docx,
+    format,
     options: {
       fontPack: ui.fontPack.value as 'full' | 'common',
       wordPlatform: ui.platform.value as 'windows' | 'mac',
       imageQuality: quality === 'auto' ? undefined : quality === 'off' ? false : Number(quality),
       embeddedFonts: ui.embedded.checked,
     },
-  };
+  } : { id, docx, format };
   return new Promise((resolve) => {
     pending.set(id, resolve);
-    worker.postMessage(request);
+    worker.postMessage(request, [docx]);
   });
 }
 
@@ -80,9 +90,11 @@ interface Current {
 let samples: Sample[] = [];
 let samplesReady = false;
 let current: Current | undefined;
+let format: OutputFormat = 'pdf';
 let view: View = 'pages';
+let loadSequence = 0;
 let generation = 0;
-let pdfUrl: string | undefined;
+let outputUrl: string | undefined;
 let docs: PDFDocumentProxy[] = [];
 let tasks: PDFDocumentLoadingTask[] = [];
 let observer: IntersectionObserver | undefined;
@@ -131,10 +143,17 @@ function renderSampleList() {
 async function loadSample(id: string) {
   const sample = samples.find((s) => s.id === id);
   if (!sample) return;
-  setStatus(`Downloading ${sample.title}…`, 'busy');
-  const res = await fetch(sample.docx);
-  if (!res.ok) return setStatus(`Couldn't download the sample (HTTP ${res.status}).`, 'error');
-  current = { name: sample.docx.slice(sample.docx.lastIndexOf('/') + 1), bytes: await res.arrayBuffer(), sample };
+  const load = beginLoad(sample.title, `Downloading ${sample.title}…`);
+  try {
+    const res = await fetch(sample.docx);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const bytes = await res.arrayBuffer();
+    if (load !== loadSequence) return;
+    current = { name: sample.docx.slice(sample.docx.lastIndexOf('/') + 1), bytes, sample };
+  } catch (err) {
+    if (load === loadSequence) setStatus(`Couldn't download the sample (${err}).`, 'error');
+    return;
+  }
   renderSampleList();
   if (matchMedia('(max-width: 900px)').matches && samplesReady) document.querySelector('.viewer')?.scrollIntoView({ behavior: 'smooth' });
   await run();
@@ -145,26 +164,68 @@ async function loadFile(file: File) {
     setStatus(`${file.name} isn't a Word document (.docx).`, 'error');
     return;
   }
-  current = { name: file.name, bytes: await file.arrayBuffer() };
   if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  const load = beginLoad(file.name, `Reading ${file.name}…`);
+  try {
+    const bytes = await file.arrayBuffer();
+    if (load !== loadSequence) return;
+    current = { name: file.name, bytes };
+  } catch (err) {
+    if (load === loadSequence) setStatus(`Couldn't read the file (${err}).`, 'error');
+    return;
+  }
   renderSampleList();
   await run();
+}
+
+function beginLoad(title: string, status: string) {
+  ++generation;
+  current = undefined;
+  clearOutput();
+  ui.docName.textContent = title;
+  ui.docMeta.textContent = '';
+  setStatus(status, 'busy');
+  return ++loadSequence;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Conversion and preview
 
+function clearOutput() {
+  if (outputUrl) URL.revokeObjectURL(outputUrl);
+  outputUrl = undefined;
+  for (const link of [ui.download, ui.open]) {
+    link.removeAttribute('href');
+    link.setAttribute('aria-disabled', 'true');
+  }
+  ui.download.removeAttribute('download');
+  ui.stats.replaceChildren();
+  ui.views.hidden = true;
+  ui.overlayControl.hidden = true;
+  renderWarnings([]);
+  ui.textPreview.hidden = true;
+  ui.textPreview.textContent = '';
+  observer?.disconnect();
+  observer = undefined;
+  ui.pages.replaceChildren();
+  for (const task of tasks) void task.destroy();
+  tasks = [];
+  docs = [];
+}
+
 async function run() {
   if (!current) return;
   const gen = ++generation;
-  const { name, sample } = current;
+  const { name, bytes, sample } = current;
+  const output = outputs[format];
+  clearOutput();
   ui.docName.textContent = sample ? sample.title : name;
   ui.docMeta.textContent = sample
-    ? `${name} · ${kb(current.bytes.byteLength)} · reference by ${sample.reference.app}`
-    : `${name} · ${kb(current.bytes.byteLength)} · your file stays on this device`;
-  setStatus('Converting…', 'busy');
-  // The worker keeps its own copy; keep ours for re-conversion when options change.
-  const result = await convert(current.bytes.slice(0));
+    ? `${name} · ${kb(bytes.byteLength)} · reference by ${sample.reference.app}`
+    : `${name} · ${kb(bytes.byteLength)} · your file stays on this device`;
+  setStatus(`Converting to ${output.label}…`, 'busy');
+  // Transfer a copy so the same document can be converted again when the format or options change.
+  const result = await convert(bytes.slice(0), format);
   if (gen !== generation) return;
   if (!result.ok) {
     setStatus(`Conversion failed: ${result.error}`, 'error');
@@ -172,42 +233,49 @@ async function run() {
   }
   setStatus('');
 
-  if (pdfUrl) URL.revokeObjectURL(pdfUrl);
-  const blob = new Blob([result.pdf], { type: 'application/pdf' });
-  pdfUrl = URL.createObjectURL(blob);
-  const pdfName = name.replace(/\.[^.]+$/, '') + '.pdf';
-  ui.download.href = pdfUrl;
-  ui.download.download = pdfName;
-  ui.open.href = pdfUrl;
+  const blob = new Blob([result.format === 'pdf' ? result.pdf : result.text], { type: output.mimeType });
+  outputUrl = URL.createObjectURL(blob);
+  ui.download.href = outputUrl;
+  ui.download.download = `${name.replace(/\.[^.]+$/, '')}.${output.extension}`;
   ui.download.removeAttribute('aria-disabled');
+  renderWarnings(result.warnings);
+
+  if (result.format !== 'pdf') {
+    renderStats(result, blob.size);
+    ui.textPreview.setAttribute('aria-label', `${output.label} output`);
+    ui.textPreview.textContent = result.text;
+    ui.textPreview.hidden = !result.text;
+    if (!result.text) setStatus('No text found in this document.');
+    return;
+  }
+
+  ui.open.href = outputUrl;
   ui.open.removeAttribute('aria-disabled');
 
   const refPages = sample ? (sample.reference.kind === 'png' ? sample.reference.files.length : undefined) : undefined;
   renderStats(result, blob.size, refPages);
-  renderWarnings(result.warnings);
-  ui.views.hidden = !sample;
 
   const newTasks = [pdfjs.getDocument({ data: new Uint8Array(result.pdf), ...pdfjsOptions() })];
   if (sample?.reference.kind === 'pdf') newTasks.push(pdfjs.getDocument({ url: sample.reference.files[0], ...pdfjsOptions() }));
+  tasks = newTasks;
   let loaded: PDFDocumentProxy[];
   try {
     loaded = await Promise.all(newTasks.map((t) => t.promise));
   } catch (err) {
+    if (gen !== generation) return;
     for (const t of newTasks) void t.destroy();
-    if (gen === generation) setStatus(`Couldn't display the PDF: ${err instanceof Error ? err.message : err}`, 'error');
+    tasks = [];
+    setStatus(`Couldn't display the PDF: ${err instanceof Error ? err.message : err}`, 'error');
     return;
   }
-  if (gen !== generation) {
-    for (const t of newTasks) void t.destroy();
-    return;
-  }
+  if (gen !== generation) return;
   const [ours, refDoc] = loaded;
   const reference: PDFDocumentProxy | string[] | undefined = refDoc ?? sample?.reference.files;
   if (refDoc) renderStats(result, blob.size, refDoc.numPages);
-  for (const t of tasks) void t.destroy();
-  tasks = newTasks;
   docs = loaded;
-  await renderPages(ours, reference);
+  ui.views.hidden = !sample;
+  ui.overlayControl.hidden = !sample || view !== 'overlay';
+  renderPages(ours, reference);
 }
 
 function pdfjsOptions() {
@@ -220,27 +288,32 @@ function pdfjsOptions() {
 }
 
 function renderStats(r: Extract<ConvertResponse, { ok: true }>, size: number, refPages?: number) {
+  const isPdf = r.format === 'pdf';
+  const time = r.ms < 1000 ? `${Math.round(r.ms)} ms` : `${(r.ms / 1000).toFixed(2)} s`;
   const items: [string, string, string?][] = [
-    [r.ms < 1000 ? `${Math.round(r.ms)} ms` : `${(r.ms / 1000).toFixed(2)} s`, 'conversion time', 'Includes downloading any font faces this document needs for the first time.'],
-    [
+    [time, 'conversion time', isPdf ? 'Includes downloading any font faces this document needs for the first time.' : undefined],
+  ];
+  if (isPdf) {
+    items.push([
       `${r.pageCount}${refPages != null ? ` / ${refPages}` : ''}`,
       refPages != null ? 'pages (ours / Word)' : r.pageCount === 1 ? 'page' : 'pages',
-    ],
-    [kb(size), 'PDF size'],
-  ];
-  if (r.fonts.length) {
-    const total = r.fonts.reduce((n, f) => n + f.bytes, 0);
-    items.push([`${r.fonts.length} · ${kb(total)}`, 'font faces fetched', r.fonts.map((f) => f.file).join('\n')]);
+    ], [kb(size), 'PDF size']);
+    if (r.fonts.length) {
+      const total = r.fonts.reduce((n, f) => n + f.bytes, 0);
+      items.push([`${r.fonts.length} · ${kb(total)}`, 'font faces fetched', r.fonts.map((f) => f.file).join('\n')]);
+    } else {
+      items.push(['cached', 'fonts']);
+    }
+    if (r.renderedBreaks) items.push([`${r.matchedBreaks} / ${r.renderedBreaks}`, "Word's page breaks matched", "Page breaks Word recorded in the file (w:lastRenderedPageBreak) that start a page here too."]);
   } else {
-    items.push(['cached', 'fonts']);
+    items.push([size < 1024 ? `${size} B` : kb(size), `${outputs[r.format].label} size`]);
   }
-  if (r.renderedBreaks) items.push([`${r.matchedBreaks} / ${r.renderedBreaks}`, "Word's page breaks matched", "Page breaks Word recorded in the file (w:lastRenderedPageBreak) that start a page here too."]);
   ui.stats.replaceChildren(
     ...items.map(([value, label, title]) => {
       const li = el('li');
       if (title) li.title = title;
       li.append(el('strong', '', value), el('span', '', label));
-      if (refPages != null && label.startsWith('pages')) li.dataset.match = String(r.pageCount === refPages);
+      if (isPdf && refPages != null && label.startsWith('pages')) li.dataset.match = String(r.pageCount === refPages);
       return li;
     }),
   );
@@ -258,22 +331,26 @@ function renderWarnings(warnings: string[]) {
 
 type PageJob = () => Promise<void>;
 
-async function renderPages(ours: PDFDocumentProxy, reference: PDFDocumentProxy | string[] | undefined) {
+function renderPages(ours: PDFDocumentProxy, reference: PDFDocumentProxy | string[] | undefined) {
   observer?.disconnect();
   const jobs = new Map<Element, PageJob>();
-  observer = new IntersectionObserver(
+  const pageObserver = new IntersectionObserver(
     (entries) => {
+      if (observer !== pageObserver) return;
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
         const job = jobs.get(entry.target);
         if (!job) continue;
         jobs.delete(entry.target);
-        observer?.unobserve(entry.target);
-        void job();
+        pageObserver.unobserve(entry.target);
+        void job().catch((err) => {
+          if (observer === pageObserver) setStatus(`Couldn't display a PDF page: ${err instanceof Error ? err.message : err}`, 'error');
+        });
       }
     },
     { rootMargin: '800px 0px' },
   );
+  observer = pageObserver;
 
   const refCount = !reference ? 0 : Array.isArray(reference) ? reference.length : reference.numPages;
   const showRef = view !== 'pages' && refCount > 0;
@@ -308,13 +385,13 @@ async function renderPages(ours: PDFDocumentProxy, reference: PDFDocumentProxy |
       const vp = p.getViewport({ scale: 1 });
       oursSlot.style.aspectRatio = `${vp.width} / ${vp.height}`;
       refSlot?.style.setProperty('aspect-ratio', `${vp.width} / ${vp.height}`);
-    });
+    }).catch(() => undefined);
     if (i < ours.numPages) jobs.set(row, async () => {
       await drawPdfPage(ours, i + 1, oursSlot);
       if (refSlot && i < refCount) await drawReference(reference!, i, refSlot);
     });
     else if (refSlot && i < refCount) jobs.set(row, () => drawReference(reference!, i, refSlot));
-    observer.observe(row);
+    pageObserver.observe(row);
   }
 }
 
@@ -353,13 +430,13 @@ async function drawReference(reference: PDFDocumentProxy | string[], i: number, 
 function setView(next: View, rerender = true) {
   view = next;
   for (const b of ui.views.querySelectorAll<HTMLButtonElement>('button')) b.setAttribute('aria-pressed', String(b.dataset.view === next));
-  ui.overlayControl.hidden = next !== 'overlay';
+  ui.overlayControl.hidden = ui.views.hidden || next !== 'overlay';
   try {
     localStorage.setItem('docx2pdf-demo-view', next);
   } catch {}
   if (rerender && docs[0]) {
     const ref = current?.sample?.reference.kind === 'png' ? current.sample.reference.files : docs[1];
-    void renderPages(docs[0], ref);
+    renderPages(docs[0], ref);
   }
 }
 
@@ -390,7 +467,18 @@ window.addEventListener('drop', (e) => {
 });
 
 ui.search.addEventListener('input', renderSampleList);
-for (const input of [ui.fontPack, ui.platform, ui.quality, ui.embedded]) input.addEventListener('change', () => void run());
+for (const input of [ui.fontPack, ui.platform, ui.quality, ui.embedded]) {
+  input.addEventListener('change', () => { if (format === 'pdf') void run(); });
+}
+ui.formats.addEventListener('click', (e) => {
+  const next = (e.target as HTMLElement).closest('button')?.dataset.format as OutputFormat | undefined;
+  if (!next || next === format) return;
+  format = next;
+  for (const b of ui.formats.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.format === next));
+  ui.download.textContent = `Download ${outputs[next].label}`;
+  ui.open.hidden = ui.pdfOptions.hidden = next !== 'pdf';
+  void run();
+});
 ui.views.addEventListener('click', (e) => {
   const b = (e.target as HTMLElement).closest('button');
   if (b?.dataset.view) setView(b.dataset.view as View);
@@ -432,8 +520,10 @@ async function init() {
     return;
   }
   renderSampleList();
-  if (location.hash.startsWith('#sample=')) routeFromHash();
-  else if (samples[0]) await loadSample(samples[0].id);
+  if (!loadSequence) {
+    if (location.hash.startsWith('#sample=')) routeFromHash();
+    else if (samples[0]) await loadSample(samples[0].id);
+  }
   samplesReady = true;
 }
 

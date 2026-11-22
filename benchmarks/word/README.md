@@ -5,6 +5,11 @@ with Microsoft Word for Mac references and uses all [178 vendored cases](upstrea
 Both sets are verified against SHA-256 hashes. See the [Hugging Face corpus](https://huggingface.co/datasets/arthrod/neurotic_docx_bench-fixtures)
 for attribution and notices about individual files.
 
+MiniPdf published the classic Microsoft 365 Word reference images used for ink scoring.
+The vendored PNGs come from the [pinned MiniPdf benchmark site](https://github.com/mini-software/minipdf-web-page/tree/96c015dffad995f4e03ab07b25c073d424ddb1c5/assets/benchmarks/dotnet/classic/docx).
+The site repository leaves redistribution terms for these images unspecified. The GitHub Pages
+demo build uses the issue samples with Word reference PDFs.
+
 The Hugging Face sample combines 39 documents from `sources_500`, 26 from `en_pairs_500`, and
 35 focused fixtures. The source documents cover text, tables, images, and combinations of those
 elements. We selected by Word reference page count and DOCX features without using converter scores.
@@ -46,12 +51,13 @@ npm ci --prefix benchmarks/word --ignore-scripts
 python3 -m venv out/benchmark-word/venv
 out/benchmark-word/venv/bin/python -m pip install -r benchmarks/word/requirements.txt
 out/benchmark-word/venv/bin/python benchmarks/word/fetch.py
-out/benchmark-word/venv/bin/python benchmarks/word/convert.py
-out/benchmark-word/venv/bin/python benchmarks/word/score.py
+out/benchmark-word/venv/bin/python benchmarks/word/convert.py --all
+out/benchmark-word/venv/bin/python benchmarks/word/score.py --all
 ```
 
-Scoring a completed full comparison updates the benchmark summary near the top of the main README,
-its comparison table, and the breakdown below. The breakdown shows the recorded run date in UTC.
+`--all` requires the [comparison engines](#include-asposewords-for-net) and their licenses where
+applicable. Scoring the full comparison updates the benchmark summary and comparison table in the
+main README and the breakdown below. Bold marks the best comparable values, including ties.
 Scoring uses up to eight processes by default. Use `score.py --jobs 1` to score one case at a
 time, or set a different worker count with `--jobs`. Cold and warm conversion timings are serial.
 
@@ -73,8 +79,26 @@ out/benchmark-word/venv/bin/python benchmarks/word/score.py --kanera-only
 The results go in `out/benchmark-word/kanera-only/`. Add `--gallery` to the scoring command to
 generate the side-by-side screenshots. The full comparison generates a gallery by default and
 accepts `--no-gallery` for a report and CSV without screenshots.
-Scoring a Kanera-only run refreshes the Kanera rows in the main README. The breakdown here
-reflects the last full comparison.
+Scoring a Kanera-only run refreshes the Kanera rows in the main README and the Kanera suite scores
+below.
+
+### Text extraction accuracy
+
+After `pnpm build` and `fetch.py`, this run scores `docxToText` against the text of Word's own
+PDF of each fixture. It needs Node and the Python environment above.
+
+```sh
+out/benchmark-word/venv/bin/python benchmarks/word/text.py
+```
+
+The scorer extracts every fixture with headers and footers into `out/benchmark-word/text/`. It then
+compares the words with those PyMuPDF reads from the Word PDF, as a bag, so reading order does not
+count. Recall is the share of the reference's words that the extracted text has, and precision is
+the share of the extracted words found in the reference. The run prints the median extraction
+time, lists the fixtures with the lowest scores (`--worst N`), and writes per-fixture counts to
+`out/benchmark-word/text-accuracy.json`. Most remaining differences are in the reference, not the
+extraction: comment balloons and deletions printed in markup view, header text and page numbers
+repeated on every page, and words split at superscripts or by PDF glyph mapping.
 
 ### Compare bundled CJK font loading
 
@@ -96,7 +120,7 @@ cmp out/cjk-font-comparison/full.pdf out/cjk-font-comparison/sparse.pdf
 The worker also accepts `--batch jobs.json` in place of the input and output paths. Each job is
 an `[inputPath, outputPath]` pair. It emits times in milliseconds in input order.
 
-On 2026-11-20 with Node 24.18.0, all 278 cold PDFs and all 278 PDFs in each of three warm batches
+With Node 24.18.0, all 278 cold PDFs and all 278 PDFs in each of three warm batches
 matched the pre-change Node build byte for byte. With the automatic JPEG cap active in both builds,
 the maximum cold peak RSS fell from 230.4 to 200.1 MiB. The median cold peak rounded to 84.1 MiB
 in both builds.
@@ -192,7 +216,7 @@ only.
 Ink overlap by suite for the [benchmark comparison](../../README.md#benchmark).
 
 <!-- benchmark-breakdown:start -->
-**Last full benchmark run** 2026-11-20 (UTC), 278 documents.
+278 documents.
 
 | Cases | Reference | @kanera/docx2pdf | EigenPal | LibreOffice | Aspose.Words (.NET) | Syncfusion DocIO (.NET) | dxpdf (Rust) | rdocx (Rust) | office2pdf (Rust) | MiniPdf (.NET) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -201,7 +225,8 @@ Ink overlap by suite for the [benchmark comparison](../../README.md#benchmark).
 | 20 issues | Microsoft 365 Word PDFs | **90.5%** | 71.1% | 53.7% | 49.8% | 51.9% | 31.2% | 18.7% | 32.3% | 31.4% |
 | 8 issues | LibreOffice PDFs | 58.6% | 62.9% | **68.1%** | 49.4% | 48.6% | 24.7% | 26.8% | 42.4% | 36.7% |
 
-Per-document ink overlap differences under half a percentage point count as ties.
+The head-to-head counts use the full comparison. Per-document ink overlap differences under half
+a percentage point count as ties.
 
 | Compared with | Kanera higher | Kanera lower | Ties |
 | --- | ---: | ---: | ---: |
@@ -217,8 +242,8 @@ Per-document ink overlap differences under half a percentage point count as ties
 MiniPdf results come from a standalone run.
 <!-- benchmark-breakdown:end -->
 
-On 2026-11-20, LibreOffice ran as a Flatpak on the host, launched from a container. The timings
-include that launch, and GNU time measured the launcher’s memory. LibreOffice used the host’s
+LibreOffice ran as a Flatpak on the host, launched from a container. The timings include that
+launch, and GNU time measured the launcher’s memory. LibreOffice used the host’s
 Microsoft fonts, including Arial, Aptos and Times New Roman. Aspose and Syncfusion fell back to
 Liberation and DejaVu.
 
@@ -288,7 +313,7 @@ scores 2,650 DOCX files from two sources.
 The runner uses the same 96 DPI ink score as the benchmark, averaging pages within each document
 and giving each document equal weight. Missing and extra pages score zero. A failed conversion
 scores zero, is listed in the report, and makes the command exit with status 1.
-A completed run of both corpora refreshes the full-corpus ink score and run date in the main README.
+A completed run of both corpora refreshes the full-corpus ink score in the main README.
 Each worker reuses a Node process across documents and replaces it after a conversion error or
 timeout. Output pages are rasterized as temporary raw RGB images to avoid PNG compression.
 Rendered reference pages are cached as lossless grayscale PNGs under `out/word-reference-rasters/`.

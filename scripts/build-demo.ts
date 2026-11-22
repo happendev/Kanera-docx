@@ -49,8 +49,8 @@ async function copySamples(): Promise<void> {
   const upstream = join(root, 'benchmarks', 'word', 'upstream');
   const { fixtures } = JSON.parse(await readFile(join(upstream, 'fixtures.json'), 'utf8')) as { fixtures: Fixture[] };
   const samples: Sample[] = [];
-  // The demo compares against Word, so leave out the cases whose reference LibreOffice made.
-  for (const f of fixtures.filter((x) => /\bWord\b/.test(x.reference_application))) {
+  // The classic reference images have no redistribution license. Keep them in the local preview.
+  for (const f of fixtures.filter((x) => /\bWord\b/.test(x.reference_application) && (serve || x.suite === 'issue'))) {
     const dir = `samples/${f.suite}`;
     const docx = `${dir}/${basename(f.docx)}`;
     await cp(join(upstream, f.docx), join(out, docx));
@@ -79,6 +79,8 @@ async function copySamples(): Promise<void> {
 async function copyStatic(): Promise<void> {
   await cp(join(root, 'demo', 'index.html'), join(out, 'index.html'));
   await cp(join(root, 'demo', 'style.css'), join(out, 'style.css'));
+  await cp(join(root, 'LICENSE'), join(out, 'LICENSE.txt'));
+  await cp(join(root, 'NOTICE'), join(out, 'NOTICE.txt'));
   for (const f of ['kanera-logo.svg', 'kanera-icon.svg']) await cp(join(root, 'demo', f), join(out, f));
   // Kanera's typefaces (OFL), self-hosted so the page loads nothing from third parties.
   const faces = [
@@ -90,6 +92,9 @@ async function copyStatic(): Promise<void> {
     ['jetbrains-mono', 'jetbrains-mono-latin-500-normal.woff2'],
   ];
   for (const [pkg, file] of faces) await cp(join(root, 'node_modules', '@fontsource', pkg, 'files', file), join(out, 'ui-fonts', file));
+  for (const pkg of new Set(faces.map(([pkg]) => pkg))) {
+    await cp(join(root, 'node_modules', '@fontsource', pkg, 'LICENSE'), join(out, 'ui-fonts', `${pkg}-LICENSE.txt`));
+  }
   await writeFile(join(out, '.nojekyll'), '');
 }
 
@@ -106,6 +111,7 @@ async function main(): Promise<void> {
   await cp(join(pdfjs, 'cmaps'), join(out, 'assets', 'pdfjs', 'cmaps'), { recursive: true });
   await cp(join(pdfjs, 'standard_fonts'), join(out, 'assets', 'pdfjs', 'standard_fonts'), { recursive: true });
   await cp(join(pdfjs, 'wasm'), join(out, 'assets', 'pdfjs', 'wasm'), { recursive: true });
+  await cp(join(pdfjs, 'LICENSE'), join(out, 'assets', 'pdfjs', 'LICENSE.txt'));
   await copySamples();
   await copyStatic();
 

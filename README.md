@@ -1,15 +1,16 @@
 # Kanera DOCX to PDF
 
-[![Monthly npm downloads](https://img.shields.io/npm/dm/@kanera/docx2pdf)](https://www.npmjs.com/package/@kanera/docx2pdf)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
-[![Browser demo on GitHub Pages](https://img.shields.io/badge/demo-GitHub%20Pages-2ea44f)](https://happendev.github.io/kanera-docx/)
 
 `@kanera/docx2pdf` converts Word documents (`.docx`) to PDF, aiming to put every line, page break,
 image and border where Word puts it. The TypeScript renderer uses Node’s built-in zlib for compression.
 The browser and runtime-neutral core use pako, bundled with the package. Conversion runs without
 LibreOffice, native add-ons or WebAssembly.
 
-Stable and in production use: it converts Word documents in [Kanera](https://github.com/happendev/Kanera).
+Kanera uses this renderer in production. The library also extracts plain text and Markdown from
+Word documents.
+
+[Release notes](CHANGELOG.md) · [Report a conversion issue](https://github.com/happendev/Kanera-docx/issues/new?template=conversion-bug.yml)
 
 <!-- benchmark-summary:start -->
 ### Benchmark at a glance
@@ -35,15 +36,6 @@ Visual match measures how closely text and graphics line up with the reference p
 
 ### Install
 
-While the package is private, install it from GitHub with an account that has repository access.
-Use npm for this command because pnpm 11 can hang on the Git install.
-
-```bash
-npm install github:happendev/kanera-docx
-```
-
-After the first public release, install it from npm.
-
 ```bash
 npm install @kanera/docx2pdf
 ```
@@ -62,19 +54,14 @@ await writeFile('out.pdf', pdf);
 
 ### CLI
 
-Run the CLI from a project where the package is installed. This writes `in.pdf` next to `in.docx`.
-
-```bash
-npx --no-install docx2pdf in.docx
-```
-
-After the public release, you can also run it directly from npm.
+Run the CLI directly from npm. This writes `in.pdf` next to `in.docx`.
 
 ```bash
 npx @kanera/docx2pdf in.docx
 ```
 
-Pass an output path or options as needed.
+In a project with the package installed, use `npx --no-install docx2pdf`. Pass an output path or
+options as needed.
 
 ```bash
 npx --no-install docx2pdf in.docx out.pdf --font BrandSans.ttf --system-fonts
@@ -91,6 +78,14 @@ npx --no-install docx2pdf in.docx --png pages --dpi 200
 The PNGs are rasterised from the converted PDF by `pdftoppm` (Poppler), `mutool` (MuPDF) or
 Ghostscript, whichever is found first on the `PATH`; install one of them to use `--png`.
 
+To extract the text instead, pass `--text` or `--markdown` (`--md`). This writes `in.txt` or
+`in.md`, or prints to standard output when the output is `-`. Add `--headers` to include headers
+and footers, or `--no-notes` to leave out footnotes and endnotes.
+
+```bash
+npx --no-install docx2pdf in.docx --markdown -
+```
+
 ### Page count and warnings
 
 Use `convertDocx` to get conversion warnings along with the PDF and page count.
@@ -103,6 +98,21 @@ const { pdf, pageCount, warnings } = await convertDocx('in.docx');
 
 Tracked changes render as final text, with insertions shown and deletions hidden. The PDF omits
 Word comments.
+
+### Text and Markdown
+
+`docxToText` and `docxToMarkdown` return the document's text without rendering it. They take the
+same inputs as `docxToPdf`, load no fonts and decode no pictures.
+
+```ts
+import { docxToMarkdown, docxToText, extractText } from '@kanera/docx2pdf';
+
+const text = await docxToText('in.docx');
+const markdown = await docxToMarkdown('in.docx', { headersFooters: true });
+const { text: md, warnings } = await extractText('in.docx', { format: 'markdown' });
+```
+
+The [Markdown benchmark](#markdown-benchmark) compares the Markdown with seven other converters.
 
 ## Use
 
@@ -159,8 +169,9 @@ see [Converting untrusted documents](#converting-untrusted-documents).
 
 ### Browser
 
-Conversion runs in the browser. Try the [GitHub Pages demo](https://happendev.github.io/kanera-docx/) or run `pnpm demo:serve` from a checkout with dependencies installed.
-The demo can compare your PDF with Word's output for the included benchmark documents. [Demo source](demo/)
+Conversion runs in the browser. To try the demo locally, run `pnpm demo:serve` from a checkout
+with dependencies installed.
+The demo previews and downloads PDFs, plain text (`.txt`), and Markdown (`.md`). In PDF mode, you can compare the included benchmark documents with Word's output. [Demo source](demo/)
 
 For a bundled app that serves `public/` at the site root, copy the bundled fonts into that folder
 after installing the package.
@@ -254,6 +265,41 @@ all original JPEG streams.
 PNG and supported TIFF
 use lossless PDF compression of their decoded pixels. TIFF is decoded directly into a PDF image
 stream. As with other conversions, existing decoder limits apply.
+
+### Text extraction
+
+The text is what Word shows, in reading order. Tracked insertions are kept and deletions dropped,
+hidden text and field codes are left out, and fields show the result Word last saved. Lists keep
+Word's numbers and bullets, with Symbol and Wingdings characters mapped to Unicode. Text boxes,
+shapes and SmartArt follow the paragraph that anchors them, and a dropped capital rejoins its
+word. Charts give their title and the data cached in the document. Comments are left out.
+
+Plain text puts each paragraph on its own line and each table row on a line with cells separated
+by tabs. Equations are written in linear form, such as `x^2+a/(b+c)`. Note references show as
+`[1]` and the notes follow the body.
+
+Markdown follows GitHub's dialect:
+
+- Heading styles, the Title style and outline levels become `#` headings.
+- Lists are nested by level. Bullets become `-` and numbers such as `1.` and `2)` are kept.
+  Labels that Markdown can't number, such as `a)`, `IV.` and `1.2.3`, are kept as text after a `-`.
+- Bold, italic, strikethrough, superscript and subscript are preserved. Runs in a monospaced font
+  become inline code. Paragraphs entirely in one become a code block. A document set entirely in
+  Courier stays prose.
+- External hyperlinks become links. Pictures become `![alt text](word/media/image1.png)`, where
+  the path is the picture's part in the package.
+- Tables become pipe tables. A single-cell table is unwrapped, and a table with nested tables is
+  written as HTML.
+- Footnotes and endnotes become Markdown footnotes. Equations become LaTeX in `$…$` or `$$` blocks.
+- Quote styles become block quotes, and table-of-contents entries become a nested list.
+
+| Option           | Default  | Meaning                                                                 |
+| ---------------- | -------- | ----------------------------------------------------------------------- |
+| `format`         | `'text'` | `'markdown'` for Markdown (`extractText` only).                          |
+| `headersFooters` | `false`  | Include each distinct header before its section and each footer after it. |
+| `notes`          | `true`   | Include footnotes and endnotes after the body.                           |
+| `images`         | `true`   | Markdown: include picture references.                                    |
+| `archiveLimits`  |          | As for conversion.                                                       |
 
 ## Converting untrusted documents
 
@@ -499,12 +545,49 @@ zero. See the [benchmark README](benchmarks/word/README.md) for the breakdown by
 measurement details, and reproduction steps.
 
 <!-- full-corpus-accuracy:start -->
-**Full-corpus ink test.** Last run 2026-11-20 (UTC).
+**Full-corpus ink test.**
 Kanera scored **90.49%** across 2,650 documents
 (2,472 Hugging Face and 178 vendored, 10,376 reference pages).
 Page counts matched on 2,554 documents. 1 conversion failed.
 [Full corpus accuracy](benchmarks/word/README.md#full-corpus-accuracy).
 <!-- full-corpus-accuracy:end -->
+
+### Markdown benchmark
+
+The [Markdown benchmark](benchmarks/markdown/README.md) converts the same 278 documents to Markdown
+with seven other converters. It renders each converter's Markdown with one CommonMark renderer.
+Words, reading order, bold and italic are scored against Word's own PDF. Headings, lists, tables,
+links and pictures are scored against the document's XML.
+
+<!-- markdown-benchmark:start -->
+| Converter | Markdown accuracy | Text | Order | Headings | Lists | Tables | Bold | Italic | Links | Images | Leaked syntax | Failed |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| @kanera/docx2pdf 1.0.0 | **98.5%** | **98.8%** | **97.6%** | **98.5%** | **99.0%** | **99.3%** | **94.1%** | **97.4%** | **100.0%** | **99.6%** | **1** | **0/278** |
+| Pandoc 3.9 | 95.9% | 98.0% | 96.4% | 90.7% | 94.1% | **99.3%** | 90.2% | 90.7% | 99.1% | 84.8% | 182 | **0/278** |
+| MarkItDown 0.1.9 | 94.8% | 98.1% | 96.2% | 92.5% | 89.3% | 98.5% | 88.7% | 91.8% | 84.3% | 98.7% | 126 | **0/278** |
+| mammoth 1.13.0 + turndown 7.2.5 | 94.8% | 95.2% | 96.1% | 88.7% | 91.9% | 85.5% | 62.5% | 91.4% | 95.7% | 98.7% | 172 | **0/278** |
+| Syncfusion DocIO (.NET) 28.2.4.0 | 91.5% | 90.0% | 95.6% | 89.9% | 73.8% | 98.4% | 75.1% | 87.6% | 90.4% | 87.4% | 221 | 1/278 |
+| LibreOffice 26.8.3.1 | 90.3% | 90.7% | 95.1% | 80.5% | 78.9% | 90.0% | 66.7% | 76.4% | 96.5% | 51.2% | 1252 | 1/278 |
+| Docling 2.151.1 | 89.9% | 97.0% | 95.0% | 98.3% | 90.8% | 91.1% | 79.6% | 86.2% | 92.2% | 0.0% | 280 | **0/278** |
+| Aspose.Words (.NET) 26.11.0.0 | 85.3% | 97.3% | 96.2% | 79.5% | 89.8% | 97.0% | 80.9% | 96.9% | **100.0%** | 53.5% | 166 | **0/278** |
+
+| Converter | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| @kanera/docx2pdf 1.0.0 | **64.0 ms** | **4.0 ms** | **16.0 ms** | **179.3** | **70.4 MiB** | **105.7 MiB** |
+| Pandoc 3.9 | 83.5 ms | 82.0 ms | 151.4 ms | 14.1 | 174.2 MiB | 180.4 MiB |
+| MarkItDown 0.1.9 | 787.0 ms | 168.9 ms | 335.1 ms | 5.9 | 159.8 MiB | 187.7 MiB |
+| mammoth 1.13.0 + turndown 7.2.5 | 153.9 ms | 26.1 ms | 52.1 ms | 40.0 | 97.3 MiB | 179.4 MiB |
+| Syncfusion DocIO (.NET) 28.2.4.0 | 215.3 ms | 24.2 ms | 89.2 ms | 30.8 | 74.3 MiB | 175.1 MiB |
+| LibreOffice 26.8.3.1 | 820.5 ms | 52.4 ms | 151.0 ms | 14.9 | – | – |
+| Docling 2.151.1 | 2747.4 ms | 19.1 ms | 1378.3 ms | 3.2 | 382.1 MiB | 490.7 MiB |
+| Aspose.Words (.NET) 26.11.0.0 | 711.0 ms | 27.9 ms | 223.3 ms | 14.9 | 91.7 MiB | 714.1 MiB |
+
+LibreOffice memory is unavailable because GNU time measured its launcher.
+<!-- markdown-benchmark:end -->
+
+Markdown accuracy is the mean per document of the measures that apply to it. See the
+[Markdown benchmark README](benchmarks/markdown/README.md) for what each measure compares and what
+content is neutral.
 
 ## Development
 
@@ -516,7 +599,7 @@ pnpm build         # dist/
 
 pnpm render in.docx --out out/ --png       # convert, and rasterise with Ghostscript
 pnpm corpus list.txt --root ~/docs         # compare page counts and breaks with Word for many files
-pnpm demo          # build the browser demo into out/demo (deployed to GitHub Pages from main)
+pnpm demo          # build the browser demo into out/demo (GitHub Pages uses main)
 pnpm demo:serve    # serve it on http://localhost:8000 and rebuild on change
 ```
 
@@ -524,14 +607,18 @@ pnpm demo:serve    # serve it on http://localhost:8000 and rebuild on change
 each of Word's recorded page breaks landed. Keep private documents out of this repository.
 
 To prepare an npm release, run `pnpm typecheck`, `pnpm test`, and `npm pack --dry-run`.
-Remove `"private": true` from `package.json` when ready to publish. The manifest sets public
-access for `@kanera/docx2pdf`, and npm builds the package during `prepare` when packing or
-publishing.
+The manifest sets public access for `@kanera/docx2pdf`, and npm runs the build when packing
+or publishing. The browser demo uses GitHub Actions as its Pages source.
 
 Code map: `src/docx` reads the package into a document model (styles, numbering, drawing),
 `src/fonts` parses, substitutes and subsets fonts, `src/layout` breaks lines and paginates into
 positioned drawing operations, and `src/pdf` writes those as PDF. `src/util` holds the ZIP reader,
 compression adapters and XML parser.
+
+## Related projects
+
+- [Kanera XLSX to PDF](https://github.com/happendev/Kanera-xlsx) converts Excel workbooks in Node.js and the browser.
+- [DocFoundry](https://github.com/happendev/DocFoundry) converts Word and Excel files on .NET.
 
 ## License
 

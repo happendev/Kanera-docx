@@ -1,0 +1,11 @@
+# Python Word-to-Markdown converters and the scorer's dependencies.
+# Docling pulls in PyTorch; install the CPU build with
+#   --extra-index-url https://download.pytorch.org/whl/cpu
+docling==2.151.1
+markitdown[docx]==0.1.9
+pypandoc_binary==1.17
+markdown-it-py==4.3.0
+mdit-py-plugins==0.7.0
+rapidfuzz==3.14.6
+pymupdf==2.1
+lxml==6.1.3

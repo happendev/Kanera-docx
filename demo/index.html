@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Kanera DOCX to PDF</title>
-    <meta name="description" content="Convert Word documents to PDF in your browser with @kanera/docx2pdf, and compare the result page by page with Microsoft Word's own output." />
+    <title>Kanera DOCX to PDF, Plain Text, and Markdown</title>
+    <meta name="description" content="Convert Word documents to PDF, plain text, or Markdown in your browser with @kanera/docx2pdf. Compare benchmark PDFs with Microsoft Word's output." />
     <link rel="icon" href="kanera-icon.svg" type="image/svg+xml" />
     <meta name="theme-color" content="#0D1520" />
     <link rel="stylesheet" href="style.css" />
@@ -16,7 +16,7 @@
         <a class="brand" href="https://www.kanera.app/" aria-label="Kanera">
           <img src="kanera-logo.svg" alt="Kanera" width="128" height="30" />
         </a>
-        <span class="product-badge">DOCX&nbsp;→&nbsp;PDF</span>
+        <span class="product-badge">DOCX</span>
         <nav class="nav-links" aria-label="Links">
           <a class="nav-link" href="https://www.kanera.app/">Kanera ↗</a>
           <a class="nav-link gh" aria-label="GitHub" href="https://github.com/happendev/kanera-docx">
@@ -29,11 +29,10 @@
 
     <section class="hero">
       <p class="eyebrow">Open source · v1.0 · Used in <a href="https://www.kanera.app/">Kanera</a></p>
-      <h1>Word documents to PDF, <em>laid out the way Word does.</em></h1>
+      <h1>Word documents to <em>PDF, plain text, or Markdown.</em></h1>
       <p class="lead">
-        The DOCX renderer behind <a href="https://www.kanera.app/">Kanera</a>, in TypeScript for Node and the browser:
-        no LibreOffice, no native binaries. Convert your own file or open a benchmark document and compare it page by
-        page with Microsoft Word's own output.
+        Convert your own file or try a benchmark document. In PDF mode, compare the benchmark output page by page
+        with Microsoft Word's rendering.
       </p>
     </section>
 
@@ -46,8 +45,8 @@
           <span>Drop it here or click to choose. It's converted on this device and never uploaded.</span>
         </label>
 
-        <details class="options" open>
-          <summary>Options</summary>
+        <details id="pdf-options" class="options" open>
+          <summary>PDF options</summary>
           <div class="field">
             <label for="opt-font-pack">Font pack</label>
             <select id="opt-font-pack">
@@ -89,13 +88,18 @@
             <p id="doc-meta" class="muted small"></p>
           </div>
           <div class="actions">
-            <a id="download" class="btn btn-primary" aria-disabled="true" href="#">Download PDF</a>
-            <a id="open" class="btn btn-ghost" aria-disabled="true" href="#" target="_blank" rel="noopener">Open</a>
+            <a id="download" class="btn btn-primary" aria-disabled="true">Download PDF</a>
+            <a id="open" class="btn btn-ghost" aria-disabled="true" target="_blank" rel="noopener">Open</a>
           </div>
         </div>
         <ul id="stats" class="stats" aria-label="Conversion statistics"></ul>
         <div class="toolbar">
-          <div id="views" class="segmented" role="group" aria-label="View">
+          <div id="formats" class="segmented" role="group" aria-label="Output format">
+            <button type="button" data-format="pdf" aria-pressed="true">PDF</button>
+            <button type="button" data-format="text" aria-pressed="false">Plain text</button>
+            <button type="button" data-format="markdown" aria-pressed="false">Markdown</button>
+          </div>
+          <div id="views" class="segmented" role="group" aria-label="PDF view" hidden>
             <button type="button" data-view="pages" aria-pressed="true">Our PDF</button>
             <button type="button" data-view="side" aria-pressed="false">Side by side with Word</button>
             <button type="button" data-view="overlay" aria-pressed="false">Overlay</button>
@@ -119,6 +123,7 @@
         </script>
         <details id="warnings" class="warnings" hidden></details>
         <div id="pages" class="pages"></div>
+        <pre id="text-preview" class="text-preview" tabindex="0" hidden></pre>
       </main>
     </div>
 

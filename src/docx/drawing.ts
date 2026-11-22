@@ -16,7 +16,11 @@ export interface DrawingContext {
   images: Map<string, ImageRef>;
   chartBudget: ChartPointBudget;
   charts: Map<string, Chart | undefined>;
+  /** Record pictures by part name without reading their bytes (text extraction). */
+  skipImageData?: boolean;
 }
+
+const NO_DATA = new Uint8Array(0);
 
 const PRESET_COLORS: Record<string, string> = { black: '000000', white: 'FFFFFF', red: 'FF0000', green: '008000', blue: '0000FF', yellow: 'FFFF00', gray: '808080' };
 
@@ -26,7 +30,7 @@ export function loadImage(ctx: DrawingContext, rid: string | undefined): ImageRe
   if (!rel || rel.external) return undefined;
   const cached = ctx.images.get(rel.target);
   if (cached) return cached;
-  const data = ctx.pkg.bytes(rel.target);
+  const data = ctx.skipImageData ? (ctx.pkg.zip.has(rel.target) ? NO_DATA : null) : ctx.pkg.bytes(rel.target);
   if (!data) return undefined;
   const ref: ImageRef = { id: rel.target, data };
   ctx.images.set(rel.target, ref);
@@ -422,6 +426,8 @@ export function parseDrawing(el: XmlElement, ctx: DrawingContext): Drawing | nul
   }
   const docPr = child(container, 'wp:docPr');
   d.name = docPr?.attrs.name;
+  const alt = docPr?.attrs.descr || docPr?.attrs.title;
+  if (alt) d.alt = alt;
   d.hidden = docPr?.attrs.hidden === '1' || docPr?.attrs.hidden === 'true';
   if (!inline) d.anchor = parseAnchor(container);
   const gd = path(container, 'a:graphic', 'a:graphicData');
@@ -742,6 +748,7 @@ function parseVmlShape(shape: XmlElement, ctx: DrawingContext, top: boolean): Dr
   const height = cssLength(css.height) ?? 0;
   const absolute = css.position === 'absolute';
   const d = baseDrawing('shape', !absolute || !top, width, height);
+  if (shape.attrs.alt) d.alt = shape.attrs.alt;
   d.geometry = shape.name === 'v:oval' ? 'ellipse' : shape.name === 'v:roundrect' ? 'roundRect' : shape.name === 'v:line' ? 'line' : 'rect';
   const typeId = shape.name === 'v:shape' ? shape.attrs.type?.replace(/^#/, '') : undefined;
   const type = typeId ? vmlShapeTypes.get(ctx.pkg)?.get(typeId) : undefined;

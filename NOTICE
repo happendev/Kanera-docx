@@ -2,6 +2,11 @@ Copyright 2026 Happen Software
 
 This product includes software developed by Happen Software.
 
+The classic DOCX benchmark reference images in benchmarks/word/upstream/classic/reference/
+are Microsoft 365 Word renderings published by the MiniPdf project on its benchmark site:
+https://github.com/mini-software/minipdf-web-page/tree/96c015dffad995f4e03ab07b25c073d424ddb1c5/assets/benchmarks/dotnet/classic/docx
+The website repository leaves the redistribution terms for these images unspecified.
+
 The browser and core builds include pako (https://github.com/nodeca/pako).
 (The MIT License)
 

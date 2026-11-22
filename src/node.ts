@@ -4,13 +4,15 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nodeCompression } from './util/node-compression.js';
 import { convertWithCompression, type ConvertOptions, type ConvertResult, type FontProvider } from './core.js';
+import { extractTextWithCompression, type ExtractTextOptions, type ExtractTextResult } from './text/index.js';
 import { CJK_FILES, fontVersion, loadCjkFont } from './fonts/node-cjk.js';
 import { FULL_FONTS } from './fonts/bundled.js';
 import { BundledFontData, type FontSource } from './fonts/registry.js';
 import { collectionSize, isFontCollection, MAX_FONT_FACES, SfntFont } from './fonts/sfnt.js';
 import { buildSfnt } from './fonts/subset.js';
 
-export type { ConvertOptions, ConvertResult, FontSource, LayoutStats } from './core.js';
+export type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontSource, LayoutStats } from './core.js';
+export type { TextFormat } from './text/extract.js';
 
 export interface NodeConvertOptions extends ConvertOptions {
   /**
@@ -196,4 +198,20 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | string, opti
 /** Convert a .docx (bytes or a file path) to PDF bytes. */
 export async function docxToPdf(input: Uint8Array | ArrayBuffer | string, options: NodeConvertOptions = {}): Promise<Uint8Array<ArrayBuffer>> {
   return (await convertDocx(input, options)).pdf;
+}
+
+/** Extract a .docx's (bytes or a file path) text as plain text or Markdown (`format: 'markdown'`), with warnings. */
+export async function extractText(input: Uint8Array | ArrayBuffer | string, options: ExtractTextOptions = {}): Promise<ExtractTextResult> {
+  const data = typeof input === 'string' ? await readFile(input) : input;
+  return extractTextWithCompression(data, options, nodeCompression);
+}
+
+/** A .docx's (bytes or a file path) text as plain text. */
+export async function docxToText(input: Uint8Array | ArrayBuffer | string, options: Omit<ExtractTextOptions, 'format'> = {}): Promise<string> {
+  return (await extractText(input, { ...options, format: 'text' })).text;
+}
+
+/** A .docx's (bytes or a file path) text as GitHub-flavoured Markdown. */
+export async function docxToMarkdown(input: Uint8Array | ArrayBuffer | string, options: Omit<ExtractTextOptions, 'format'> = {}): Promise<string> {
+  return (await extractText(input, { ...options, format: 'markdown' })).text;
 }

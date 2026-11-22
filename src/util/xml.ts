@@ -81,87 +81,149 @@ function keepsWhitespace(name: string): boolean {
   return local === 't' || local === 'instrText' || local === 'delText' || local === 'delInstrText';
 }
 
+// Scratch space for a start tag's attributes (parsing is synchronous, so one pair serves all calls).
+const attrNames: string[] = [];
+const attrValues: string[] = [];
+
+// Attribute maps inherit nothing, as with Object.create(null), but V8 keeps them as compact
+// fast-mode objects; an object from Object.create(null) is a hash table from the start.
+function NoPrototype(): void {}
+NoPrototype.prototype = Object.create(null);
+const AttrMap = NoPrototype as unknown as new () => Record<string, string>;
+
 export function parseXml(src: string): XmlElement {
-  const root: XmlElement = { name: '#document', attrs: {}, children: [] };
-  const stack: XmlElement[] = [root];
-  const nsStack: Array<Record<string, string>> = [Object.assign(Object.create(null), { xml: 'http://www.w3.org/XML/1998/namespace' })];
-  let i = 0;
-  const n = src.length;
+  return new XmlReader(src).parse();
+}
 
-  const resolve = (qname: string, scope: Record<string, string>, isAttr: boolean): string => {
-    const colon = qname.indexOf(':');
-    if (colon < 0) {
-      if (isAttr) return qname;
-      const uri = scope[''];
-      if (uri === undefined) return qname;
-      const canon = Object.hasOwn(NS, uri) ? NS[uri] : undefined;
-      return canon ? `${canon}:${qname}` : qname;
-    }
-    const prefix = qname.slice(0, colon);
-    const local = qname.slice(colon + 1);
-    const uri = scope[prefix];
-    if (uri === undefined) return qname;
-    const canon = Object.hasOwn(NS, uri) ? NS[uri] : undefined;
-    return canon ? `${canon}:${local}` : qname;
-  };
+/** Canonical prefix for a document prefix in this scope; null when unbound or not an OOXML namespace. */
+function canonicalPrefix(prefix: string, scope: Record<string, string>): string | null {
+  const uri = scope[prefix];
+  return uri !== undefined && Object.hasOwn(NS, uri) ? NS[uri] : null;
+}
 
-  while (i < n) {
-    const lt = src.indexOf('<', i);
-    if (lt < 0) {
-      appendText(stack[stack.length - 1], src.slice(i));
-      break;
-    }
-    if (lt > i) appendText(stack[stack.length - 1], src.slice(i, lt));
-    i = lt;
-    const c1 = src.charCodeAt(i + 1);
-    if (c1 === 33 /* ! */) {
-      if (src.startsWith('<!--', i)) {
-        const end = src.indexOf('-->', i + 4);
-        i = end < 0 ? n : end + 3;
-      } else if (src.startsWith('<![CDATA[', i)) {
-        const end = src.indexOf(']]>', i + 9);
-        const text = src.slice(i + 9, end < 0 ? n : end);
-        const parent = stack[stack.length - 1];
-        parent.children.push(text);
-        i = end < 0 ? n : end + 3;
-      } else {
-        // DOCTYPE or other declaration; skip including a possible internal subset.
-        let depth = 0;
-        let j = i + 2;
-        for (; j < n; j++) {
-          const ch = src[j];
-          if (ch === '[') depth++;
-          else if (ch === ']') depth--;
-          else if (ch === '>' && depth <= 0) break;
-        }
-        i = j + 1;
+function resolve(qname: string, scope: Record<string, string>, isAttr: boolean): string {
+  const colon = qname.indexOf(':');
+  if (colon < 0) {
+    if (isAttr) return qname;
+    const canon = canonicalPrefix('', scope);
+    return canon ? `${canon}:${qname}` : qname;
+  }
+  const canon = canonicalPrefix(qname.slice(0, colon), scope);
+  if (canon === null) return qname;
+  // Most documents already use the canonical prefixes: keep the name as it is.
+  if (canon.length === colon && qname.startsWith(canon)) return qname;
+  return canon + qname.slice(colon);
+}
+
+/** mc:Choice's Requires lists document prefixes; rewrite to canonical ones so callers can test support. */
+function canonicalRequires(requires: string, scope: Record<string, string>): string {
+  return requires
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((p) => {
+      const uri = scope[p];
+      return uri === undefined ? p : Object.hasOwn(NS, uri) ? NS[uri] : '#unknown';
+    })
+    .join(' ');
+}
+
+// Resolved names by name as written, per namespace scope. Parts repeat a few dozen names
+// thousands of times, so each is resolved once and every element shares the resulting string.
+interface ScopeNames {
+  elements: Map<string, { name: string; namespaceURI: string | undefined }>;
+  attrs: Map<string, string>;
+}
+
+/**
+ * One parse, with each kind of markup read by its own small method. V8 optimises a function that
+ * has run a few thousand times on a background thread, and the memory that takes grows with the
+ * function: as one large function, the parser added more than 10 MiB to a conversion's peak memory.
+ */
+class XmlReader {
+  private readonly root: XmlElement = { name: '#document', attrs: {}, children: [] };
+  private readonly stack: XmlElement[] = [this.root];
+  private readonly nsStack: Array<Record<string, string>> = [Object.assign(Object.create(null), { xml: 'http://www.w3.org/XML/1998/namespace' })];
+  private readonly scopeNames = new Map<Record<string, string>, ScopeNames>();
+  private namesScope: Record<string, string> | undefined;
+  private names: ScopeNames = { elements: new Map(), attrs: new Map() };
+
+  constructor(private readonly src: string) {}
+
+  parse(): XmlElement {
+    const src = this.src;
+    const n = src.length;
+    let i = 0;
+    while (i < n) {
+      const lt = src.indexOf('<', i);
+      if (lt < 0) {
+        appendText(this.stack[this.stack.length - 1], src.slice(i));
+        break;
       }
-      continue;
+      if (lt > i) appendText(this.stack[this.stack.length - 1], src.slice(i, lt));
+      const c1 = src.charCodeAt(lt + 1);
+      i = c1 === 47 /* / */ ? this.endTag(lt) : c1 === 33 /* ! */ || c1 === 63 /* ? */ ? this.markup(lt) : this.startTag(lt);
     }
-    if (c1 === 63 /* ? */) {
+    const docEl = this.root.children.find((c): c is XmlElement => typeof c !== 'string');
+    if (!docEl) throw new Error('XML: no document element');
+    return docEl;
+  }
+
+  /** A comment, CDATA section, processing instruction or declaration. Returns the index after it. */
+  private markup(i: number): number {
+    const src = this.src;
+    const n = src.length;
+    if (src.charCodeAt(i + 1) === 63 /* ? */) {
       const end = src.indexOf('?>', i + 2);
-      i = end < 0 ? n : end + 2;
-      continue;
+      return end < 0 ? n : end + 2;
     }
-    if (c1 === 47 /* / */) {
-      const end = src.indexOf('>', i + 2);
-      i = end < 0 ? n : end + 1;
-      if (stack.length > 1) {
-        const el = stack.pop()!;
-        nsStack.pop();
-        finishElement(el);
-      }
-      continue;
+    if (src.startsWith('<!--', i)) {
+      const end = src.indexOf('-->', i + 4);
+      return end < 0 ? n : end + 3;
     }
-    if (stack.length > 128) throw new XmlDepthError('XML nesting limit exceeded');
-    // Start tag
+    if (src.startsWith('<![CDATA[', i)) {
+      const end = src.indexOf(']]>', i + 9);
+      this.stack[this.stack.length - 1].children.push(src.slice(i + 9, end < 0 ? n : end));
+      return end < 0 ? n : end + 3;
+    }
+    // DOCTYPE or other declaration; skip including a possible internal subset.
+    let depth = 0;
+    let j = i + 2;
+    for (; j < n; j++) {
+      const ch = src[j];
+      if (ch === '[') depth++;
+      else if (ch === ']') depth--;
+      else if (ch === '>' && depth <= 0) break;
+    }
+    return j + 1;
+  }
+
+  private endTag(i: number): number {
+    const end = this.src.indexOf('>', i + 2);
+    if (this.stack.length > 1) {
+      this.nsStack.pop();
+      finishElement(this.stack.pop()!);
+    }
+    return end < 0 ? this.src.length : end + 1;
+  }
+
+  /** Read a start tag's name and attributes, then add its element. Returns the index after the tag. */
+  private startTag(i: number): number {
+    if (this.stack.length > 128) throw new XmlDepthError('XML nesting limit exceeded');
+    const src = this.src;
+    const n = src.length;
+    // Character tests are written out in the loops: they run for every character of every name.
     let j = i + 1;
-    while (j < n && !isNameEnd(src.charCodeAt(j))) j++;
+    for (; j < n; j++) {
+      const c = src.charCodeAt(j);
+      if (c === 32 || c === 9 || c === 10 || c === 13 || c === 62 /* > */ || c === 47 /* / */) break;
+    }
     const rawName = src.slice(i + 1, j);
-    const rawAttrs: Array<[string, string]> = [];
+    // Attribute names and values, gathered before namespace declarations among them are applied.
+    let count = 0;
+    let declares = false;
     let selfClose = false;
     for (;;) {
-      while (j < n && isSpace(src.charCodeAt(j))) j++;
+      for (let c = src.charCodeAt(j); c === 32 || c === 9 || c === 10 || c === 13; c = src.charCodeAt(++j));
       const ch = src.charCodeAt(j);
       if (ch === 62 /* > */) {
         j++;
@@ -175,68 +237,86 @@ export function parseXml(src: string): XmlElement {
       }
       if (j >= n) break;
       const ns = j;
-      while (j < n && !isNameEnd(src.charCodeAt(j)) && src.charCodeAt(j) !== 61) j++;
+      for (; j < n; j++) {
+        const c = src.charCodeAt(j);
+        if (c === 32 || c === 9 || c === 10 || c === 13 || c === 62 || c === 47 || c === 61 /* = */) break;
+      }
       const an = src.slice(ns, j);
-      while (j < n && isSpace(src.charCodeAt(j))) j++;
+      for (let c = src.charCodeAt(j); c === 32 || c === 9 || c === 10 || c === 13; c = src.charCodeAt(++j));
+      if (an.charCodeAt(0) === 120 /* x */ && (an === 'xmlns' || an.startsWith('xmlns:'))) declares = true;
       if (src.charCodeAt(j) !== 61 /* = */) {
-        rawAttrs.push([an, '']);
+        attrNames[count] = an;
+        attrValues[count++] = '';
         continue;
       }
       j++;
-      while (j < n && isSpace(src.charCodeAt(j))) j++;
+      for (let c = src.charCodeAt(j); c === 32 || c === 9 || c === 10 || c === 13; c = src.charCodeAt(++j));
       const q = src[j];
+      let value: string;
       if (q === '"' || q === "'") {
         const end = src.indexOf(q, j + 1);
-        rawAttrs.push([an, decodeEntities(src.slice(j + 1, end < 0 ? n : end))]);
+        value = src.slice(j + 1, end < 0 ? n : end);
         j = end < 0 ? n : end + 1;
       } else {
         const vs = j;
-        while (j < n && !isSpace(src.charCodeAt(j)) && src.charCodeAt(j) !== 62) j++;
-        rawAttrs.push([an, decodeEntities(src.slice(vs, j))]);
+        for (; j < n; j++) {
+          const c = src.charCodeAt(j);
+          if (c === 32 || c === 9 || c === 10 || c === 13 || c === 62) break;
+        }
+        value = src.slice(vs, j);
       }
+      attrNames[count] = an;
+      attrValues[count++] = value.indexOf('&') < 0 ? value : decodeEntities(value);
     }
-    i = j;
+    this.open(rawName, count, declares, selfClose);
+    return j;
+  }
 
-    const parentScope = nsStack[nsStack.length - 1];
+  /** Add the element whose name and attributes `startTag` read. */
+  private open(rawName: string, count: number, declares: boolean, selfClose: boolean): void {
+    const parentScope = this.nsStack[this.nsStack.length - 1];
     let scope = parentScope;
-    for (const [an, av] of rawAttrs) {
-      if (an === 'xmlns' || an.startsWith('xmlns:')) {
-        if (scope === parentScope) scope = Object.create(parentScope);
-        scope[an === 'xmlns' ? '' : an.slice(6)] = av;
+    if (declares) {
+      for (let k = 0; k < count; k++) {
+        const an = attrNames[k];
+        if (an === 'xmlns' || an.startsWith('xmlns:')) {
+          if (scope === parentScope) scope = Object.create(parentScope) as Record<string, string>;
+          scope[an === 'xmlns' ? '' : an.slice(6)] = attrValues[k];
+        }
       }
     }
-    const attrs: Record<string, string> = Object.create(null);
-    for (const [an, av] of rawAttrs) {
-      if (an === 'xmlns' || an.startsWith('xmlns:')) continue;
-      attrs[resolve(an, scope, true)] = av;
+    if (scope !== this.namesScope) {
+      let found = this.scopeNames.get(scope);
+      if (!found) this.scopeNames.set(scope, (found = { elements: new Map(), attrs: new Map() }));
+      this.names = found;
+      this.namesScope = scope;
     }
-    const name = resolve(rawName, scope, false);
-    if (name === 'mc:Choice' && attrs.Requires) {
-      // Requires lists document prefixes; rewrite to canonical ones so callers can test support.
-      attrs.Requires = attrs.Requires.split(/\s+/)
-        .filter(Boolean)
-        .map((p) => {
-          const uri = scope[p];
-          return uri === undefined ? p : Object.hasOwn(NS, uri) ? NS[uri] : '#unknown';
-        })
-        .join(' ');
+    const names = this.names;
+    const attrs = new AttrMap();
+    for (let k = 0; k < count; k++) {
+      const an = attrNames[k];
+      if (declares && (an === 'xmlns' || an.startsWith('xmlns:'))) continue;
+      let key = names.attrs.get(an);
+      if (key === undefined) names.attrs.set(an, (key = resolve(an, scope, true)));
+      attrs[key] = attrValues[k];
     }
-    const parent = stack[stack.length - 1];
-    const prefixEnd = rawName.indexOf(':');
-    const namespaceURI = scope[prefixEnd < 0 ? '' : rawName.slice(0, prefixEnd)];
-    const el: XmlElement = { name, namespaceURI, attrs, children: [], parent };
-    parent.children.push(el);
-    if (!selfClose) {
-      stack.push(el);
-      nsStack.push(scope);
-    } else {
+    let resolved = names.elements.get(rawName);
+    if (!resolved) {
+      const prefixEnd = rawName.indexOf(':');
+      resolved = { name: resolve(rawName, scope, false), namespaceURI: scope[prefixEnd < 0 ? '' : rawName.slice(0, prefixEnd)] };
+      names.elements.set(rawName, resolved);
+    }
+    const { name, namespaceURI } = resolved;
+    if (name === 'mc:Choice' && attrs.Requires) attrs.Requires = canonicalRequires(attrs.Requires, scope);
+    const el: XmlElement = { name, namespaceURI, attrs, children: [] };
+    this.stack[this.stack.length - 1].children.push(el);
+    if (selfClose) {
       finishElement(el);
+    } else {
+      this.stack.push(el);
+      this.nsStack.push(scope);
     }
   }
-  const docEl = root.children.find((c): c is XmlElement => typeof c !== 'string');
-  if (!docEl) throw new Error('XML: no document element');
-  docEl.parent = undefined;
-  return docEl;
 }
 
 function appendText(el: XmlElement, raw: string): void {
@@ -253,17 +333,22 @@ function finishElement(el: XmlElement): void {
   for (const k of kids) if (typeof k !== 'string') hasElement = true;
   if (!hasElement) {
     if (kids.length > 1) el.children = [kids.join('')];
-    if (!keep && typeof el.children[0] === 'string' && /^\s*$/.test(el.children[0] as string)) el.children = [];
+    if (!keep && typeof el.children[0] === 'string' && isBlank(el.children[0] as string)) el.children = [];
     return;
   }
-  el.children = kids.filter((k) => typeof k !== 'string' || keep || !/^\s*$/.test(k));
+  if (keep) return;
+  let blank = false;
+  for (const k of kids) if (typeof k === 'string' && isBlank(k)) blank = true;
+  if (blank) el.children = kids.filter((k) => typeof k !== 'string' || !isBlank(k));
 }
 
-function isSpace(c: number): boolean {
-  return c === 32 || c === 9 || c === 10 || c === 13;
-}
-function isNameEnd(c: number): boolean {
-  return c === 32 || c === 9 || c === 10 || c === 13 || c === 62 || c === 47 || Number.isNaN(c);
+/** Whitespace only (as /^\s*$/ tests it, for the characters XML allows). */
+function isBlank(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (!(c === 32 || c === 9 || c === 10 || c === 13) && !/\s/.test(s[i])) return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------------------------

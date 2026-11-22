@@ -381,6 +381,18 @@ describe('notes, frames and substitutes', () => {
     expect(second.y - first.y).toBeGreaterThan(8);
   });
 
+  it('numbers endnotes with the format and start in the settings', async () => {
+    const ref = (id: number) => `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:endnoteReference w:id="${id}"/></w:r>`;
+    const note = (id: number, text: string) => `<w:endnote w:id="${id}"><w:p><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:endnoteRef/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:endnote>`;
+    const body = `<w:p><w:r><w:t>Text</w:t></w:r>${ref(1)}${ref(2)}</w:p>`;
+    const endnotes = note(1, 'First note') + note(2, 'Second note');
+    const text = async (settings?: string) => lines((await layout(makeDocx({ endnotes, settings, body }))).pages[0].body).map((l) => l.text);
+    // Superscript labels form lines of their own: the two references, then each note's mark.
+    expect(await text()).toEqual(['iii', 'Text', 'i', ' First note', 'ii', ' Second note']);
+    const settings = '<w:endnotePr><w:numFmt w:val="upperLetter"/><w:numStart w:val="3"/></w:endnotePr>';
+    expect(await text(settings)).toEqual(['CD', 'Text', 'C', ' First note', 'D', ' Second note']);
+  });
+
   it('gives an empty page-anchored framed paragraph no room in a footer', async () => {
     const refs = '<w:footerReference w:type="default" r:id="ftr1"/>';
     const framed = '<w:p><w:pPr><w:framePr w:wrap="around" w:vAnchor="page" w:hAnchor="page" w:x="5000" w:y="15800"/></w:pPr></w:p>';

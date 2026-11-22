@@ -19,7 +19,7 @@ def libreoffice_command(workspace, output, sources):
     ]
 
 
-def batch_times(jobs, workspace, command=libreoffice_command, label='LibreOffice'):
+def batch_times(jobs, workspace, command=libreoffice_command, label='LibreOffice', extension='pdf'):
     """Time each job; a batch that stops early returns times for the jobs it completed."""
     output = workspace / 'pdfs'
     output.mkdir()
@@ -29,7 +29,7 @@ def batch_times(jobs, workspace, command=libreoffice_command, label='LibreOffice
         alias = workspace / f'{index}.docx'
         alias.hardlink_to(source)
         sources.append(alias)
-    targets = {f'{i}.pdf': Path(target) for i, (_, target) in enumerate(jobs)}
+    targets = {f'{i}.{extension}': Path(target) for i, (_, target) in enumerate(jobs)}
     completed = {}
 
     libc = ctypes.CDLL(None, use_errno=True)

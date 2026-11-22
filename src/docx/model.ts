@@ -145,6 +145,10 @@ export interface NumberingLabel {
   picture?: ImageRef;
   /** The list (w:numId) the paragraph belongs to. */
   numId: string;
+  /** The list level (w:ilvl), 0 for the outermost. */
+  level: number;
+  /** The level's number format (w:numFmt): decimal, bullet, lowerLetter, none, ... */
+  format: string;
 }
 
 export interface Link {
@@ -157,6 +161,8 @@ export interface TextInline {
   text: string;
   props: RunProps;
   link?: Link;
+  /** The phonetic reading Word prints above this ruby base text; consecutive inlines share it. */
+  ruby?: { text: string };
 }
 export interface TabInline {
   type: 'tab';
@@ -718,6 +724,8 @@ export interface Drawing {
   chart?: Chart;
   hidden: boolean;
   name?: string;
+  /** Alternative text (wp:docPr descr or title, VML alt). */
+  alt?: string;
   /**
    * A VML horizontal rule (o:hr): aligned on its own line whatever the paragraph's alignment, and
    * when `pct` is set, that share of the text column wide.
@@ -761,6 +769,9 @@ export interface DocSettings {
   adjustLineHeightInTable: boolean;
   footnotePosition: string;
   endnotePosition: string;
+  /** Endnote numbering (w:endnotePr): format and first number. */
+  endnoteFormat?: string;
+  endnoteStart?: number;
   /** Style id of paragraphs without a style (Normal), which Word's table row-end marks also take. */
   defaultParagraphStyle?: string;
   /** The settings carry no revision ids (w:rsids): another tool wrote the file, not Word. */
@@ -781,6 +792,8 @@ export interface DocxDocument {
   background: Color;
   /** Equation layout measures ink bounds directly from glyph outlines. */
   hasMath: boolean;
+  /** Style names by style id (built-in styles keep their English names, such as "heading 1"). */
+  styleNames?: Map<string, string>;
   /** Families referenced anywhere, for font preloading. */
   fontRequests: FontRequest[];
   embeddedFonts: Array<{ family: string; bold: boolean; italic: boolean; data: Uint8Array }>;

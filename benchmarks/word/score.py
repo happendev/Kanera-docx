@@ -19,7 +19,7 @@ from fetch import (BENCHMARK_FIXTURES, HERE, MANIFEST, UPSTREAM, OUTPUT, benchma
                    benchmark_reference, verify_reference)
 from pdf_text import extract as extract_text
 from ink import page_scores, render, render_reference
-from readme import markdown_table, update_mini_pdf_breakdown, update_single_engine_readme, update_readmes
+from readme import markdown_table, update_measured_readme, update_mini_pdf_breakdown, update_readmes, update_suite_scores
 
 ENGINES = {
     'reference': 'Reference',
@@ -369,8 +369,10 @@ def score_outputs(args):
     (output / 'report.md').write_text(summary, encoding='utf-8')
     if include_gallery:
         (output / 'gallery.html').write_text('\n'.join(gallery(table, output)), encoding='utf-8')
-    if standalone:
-        update_single_engine_readme(HERE.parents[1], table, versions, count, standalone)
+    if engines == tuple(ENGINES):
+        update_readmes(HERE.parents[1], rows, table, engines[1:], versions)
+    else:
+        update_measured_readme(HERE.parents[1], table, versions, count, engines[1:])
         if standalone == 'minipdf':
             recorded = OUTPUT / 'results.csv'
             kanera_scores = {}
@@ -379,8 +381,8 @@ def score_outputs(args):
                     kanera_scores = {row['case']: float(row['ink_f1']) for row in csv.DictReader(file)
                                      if row['engine'] == 'ours'}
             update_mini_pdf_breakdown(HERE.parents[1], rows, ENGINES[standalone], kanera_scores)
-    else:
-        update_readmes(HERE.parents[1], rows, table, engines[1:], versions, run_date)
+        else:
+            update_suite_scores(HERE.parents[1], rows, {ENGINES[engine]: engine for engine in engines[1:]})
     print(summary.split('\n## Cases', 1)[0])
 
 
@@ -389,6 +391,7 @@ def main():
     standalone = parser.add_mutually_exclusive_group()
     standalone.add_argument('--kanera-only', action='store_true', help='Score the Kanera-only run.')
     standalone.add_argument('--minipdf-only', action='store_true', help='Score the MiniPdf-only run.')
+    standalone.add_argument('--all', action='store_true', help='Score all comparison engines and refresh all README tables.')
     parser.add_argument('--gallery', action=BooleanOptionalAction,
                         help='Generate the screenshot gallery (default: on for the full comparison).')
     parser.add_argument('--jobs', type=int, default=min(8, cpu_count() or 1),
@@ -398,6 +401,8 @@ def main():
     parser.add_argument('--minipdf', action='store_true', help='Include MiniPdf in the full comparison.')
     parser.add_argument('--rust', action='store_true', help='Include the dxpdf, rdocx and office2pdf runs.')
     args = parser.parse_args()
+    if args.all:
+        args.aspose = args.syncfusion = args.minipdf = args.rust = True
     if (args.kanera_only or args.minipdf_only) and (args.aspose or args.syncfusion or args.rust or args.minipdf):
         parser.error('Standalone modes cannot be combined with full-comparison engine flags')
     if args.jobs < 1:

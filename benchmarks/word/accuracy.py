@@ -401,7 +401,7 @@ def main():
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     if args.corpus == 'all':
-        update_accuracy_readme(HERE.parents[1], report, completed_at.date().isoformat())
+        update_accuracy_readme(HERE.parents[1], report)
     print(f"Accuracy {report['accuracy_pct']:.2f}% across {report['documents']} documents "
           f"and {report['reference_pages']} reference pages ({report['conversion_failures']} conversion failures).")
     if baseline is not None:

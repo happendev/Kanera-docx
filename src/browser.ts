@@ -1,10 +1,11 @@
-import { convertDocx as convertCore } from './index.js';
-import type { ConvertOptions, ConvertResult, FontProvider } from './core.js';
+import { convertDocx as convertCore, extractText as extractCore } from './index.js';
+import type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontProvider } from './core.js';
 import { BundledFontData } from './fonts/registry.js';
 import { isFontCollection } from './fonts/sfnt.js';
 import { COMMON_FONTS, FULL_FONTS } from './fonts/bundled.js';
 
-export type { ConvertOptions, ConvertResult, FontSource, LayoutStats } from './core.js';
+export type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontSource, LayoutStats } from './core.js';
+export type { TextFormat } from './text/extract.js';
 
 /** Files to copy from the package's fonts/ directory for the common browser pack. */
 export const commonFontFiles: readonly string[] = COMMON_FONTS.map(({ file }) => file);
@@ -81,4 +82,19 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, option
 /** Convert a .docx to PDF bytes in the browser. */
 export async function docxToPdf(input: Uint8Array | ArrayBuffer | Blob, options: BrowserConvertOptions = {}): Promise<Uint8Array<ArrayBuffer>> {
   return (await convertDocx(input, options)).pdf;
+}
+
+/** Extract a .docx's text as plain text or Markdown (`format: 'markdown'`), with warnings. */
+export async function extractText(input: Uint8Array | ArrayBuffer | Blob, options: ExtractTextOptions = {}): Promise<ExtractTextResult> {
+  return extractCore(input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : input, options);
+}
+
+/** A .docx's text as plain text. */
+export async function docxToText(input: Uint8Array | ArrayBuffer | Blob, options: Omit<ExtractTextOptions, 'format'> = {}): Promise<string> {
+  return (await extractText(input, { ...options, format: 'text' })).text;
+}
+
+/** A .docx's text as GitHub-flavoured Markdown. */
+export async function docxToMarkdown(input: Uint8Array | ArrayBuffer | Blob, options: Omit<ExtractTextOptions, 'format'> = {}): Promise<string> {
+  return (await extractText(input, { ...options, format: 'markdown' })).text;
 }

@@ -100,8 +100,13 @@ const BUILT_IN_STYLES =
   '<w:styles><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Aptos" w:hAnsi="Aptos"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:rPrDefault>' +
   '<w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="279" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>';
 
-export function parseDocx(data: Uint8Array, inflateRaw: InflateBytes, limits?: ArchiveLimits, embeddedFonts = true): DocxDocument {
-  return new DocxParser(new OpcPackage(data, inflateRaw, limits), embeddedFonts).parse();
+/**
+ * Parse a .docx into the resolved document model. With `textOnly`, the parser skips the work only
+ * rendering needs (embedded fonts, font requests and picture bytes): images keep their part name but
+ * carry no data. Text extraction uses it.
+ */
+export function parseDocx(data: Uint8Array, inflateRaw: InflateBytes, limits?: ArchiveLimits, embeddedFonts = true, textOnly = false): DocxDocument {
+  return new DocxParser(new OpcPackage(data, inflateRaw, limits), embeddedFonts && !textOnly, textOnly).parse();
 }
 
 class DocxParser {
@@ -113,6 +118,8 @@ class DocxParser {
   private settings: DocSettings;
   private defaultNoteProps?: XmlElement;
   private fieldStack: FieldFrame[] = [];
+  /** The phonetic reading (w:rt) of the ruby base being parsed. */
+  private ruby?: { text: string };
   // Each parser has one theme and color mapping for all drawing parts.
   private charts = new Map<string, Chart | undefined>();
   private chartBudget = new ChartPointBudget();
@@ -125,7 +132,7 @@ class DocxParser {
   private prevFooters: HeaderFooterRefs = {};
   private hyperlinkStack: Link[] = [];
 
-  constructor(private readonly pkg: OpcPackage, private readonly readEmbeddedFonts: boolean) {
+  constructor(private readonly pkg: OpcPackage, private readonly readEmbeddedFonts: boolean, private readonly textOnly = false) {
     this.main = this.pkg.mainDocumentPart();
     const settingsRel = this.pkg.relByType(this.main, '/settings');
     const settingsXml = settingsRel ? this.pkg.xml(settingsRel.target) : undefined;
@@ -179,6 +186,8 @@ class DocxParser {
       adjustLineHeightInTable: !!onOff(child(compat, 'w:adjustLineHeightInTable')),
       footnotePosition: child(child(s, 'w:footnotePr'), 'w:pos')?.attrs['w:val'] ?? 'pageBottom',
       endnotePosition: child(child(s, 'w:endnotePr'), 'w:pos')?.attrs['w:val'] ?? 'docEnd',
+      endnoteFormat: child(child(s, 'w:endnotePr'), 'w:numFmt')?.attrs['w:val'] ?? 'lowerRoman',
+      endnoteStart: num(child(child(s, 'w:endnotePr'), 'w:numStart')?.attrs['w:val']) ?? 1,
       generated: !child(s, 'w:rsids'),
       updateFields: !!onOff(child(s, 'w:updateFields')),
     };
@@ -300,6 +309,7 @@ class DocxParser {
       info,
       background: bg ? (hexColor(bg.attrs['w:color']) ?? null) : null,
       hasMath: this.hasMath,
+      styleNames: this.styles.names(),
       fontRequests: [...this.fontRequests.values()],
       embeddedFonts,
       fontHints,
@@ -448,7 +458,7 @@ class DocxParser {
           const numRel = this.pkg.relByType(this.main, '/numbering');
           if (rid && numRel) picture = loadImage(this.drawingCtx({ part: numRel.target }), rid);
         }
-        const label: NumberingLabel = { text, props: labelProps, suffix: lvl.suffix, align: lvl.jc, picture, numId: numId! };
+        const label: NumberingLabel = { text, props: labelProps, suffix: lvl.suffix, align: lvl.jc, picture, numId: numId!, level: ilvl, format: lvl.numFmt };
         para.numbering = label;
         this.noteFonts(labelProps, text);
       }
@@ -690,6 +700,7 @@ class DocxParser {
   }
 
   private noteFonts(props: RunProps, text: string): void {
+    if (this.textOnly) return;
     // Long runs often repeat the same font request for every occurrence of a letter.
     const characters = text.length >= 32 ? new Set(text) : text || ' ';
     for (const ch of characters) {
@@ -722,11 +733,11 @@ class DocxParser {
     this.noteFonts(props, text);
     const link = this.currentLink();
     const last = para.content[para.content.length - 1];
-    if (last && last.type === 'text' && last.props === props && last.link === link) {
+    if (last && last.type === 'text' && last.props === props && last.link === link && last.ruby === this.ruby) {
       last.text += text;
       return;
     }
-    para.content.push({ type: 'text', text, props, link });
+    para.content.push(this.ruby ? { type: 'text', text, props, link, ruby: this.ruby } : { type: 'text', text, props, link });
   }
 
   private parseRun(r: XmlElement, para: Paragraph, pctx: PartContext, styleId: string | undefined, tableOverridesSize: boolean): void {
@@ -885,7 +896,12 @@ class DocxParser {
           break;
         case 'w:ruby': {
           const base = child(el, 'w:rubyBase');
-          if (base) this.parseInlines(base, para, pctx, styleId, tableOverridesSize);
+          if (!base) break;
+          const reading = descendants(child(el, 'w:rt'), 'w:t').map(textContent).join('');
+          const outer = this.ruby;
+          this.ruby = reading ? { text: reading } : undefined;
+          this.parseInlines(base, para, pctx, styleId, tableOverridesSize);
+          this.ruby = outer;
           break;
         }
       }
@@ -901,6 +917,7 @@ class DocxParser {
       images: this.images,
       chartBudget: this.chartBudget,
       charts: this.charts,
+      skipImageData: this.textOnly,
       parseBlocks: (container) => {
         // Text box content is a separate story: field state must not leak in or out.
         const saved = this.fieldStack;

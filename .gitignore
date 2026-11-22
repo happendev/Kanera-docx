@@ -2,10 +2,23 @@ node_modules/
 dist/
 out/
 corpus/
-/benchmarks/word/aspose/bin/
-/benchmarks/word/aspose/obj/
+/benchmarks/**/bin/
+/benchmarks/**/obj/
+/kanera-docx2pdf-*.tgz
 __pycache__/
 *.[lL][iI][cC]
 *.[lL][iI][cC].[xX][mM][lL]
 *.log
 .DS_Store
+
+# Local environment files
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Office and LibreOffice lock files
+~$*
+.~lock.*#
+
+/.claude/scheduled_tasks.lock
