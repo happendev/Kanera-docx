@@ -47,9 +47,13 @@ const countingFetch: typeof fetch = async (input, init) => {
 let pdfQueue = Promise.resolve();
 self.onmessage = (e: MessageEvent<ConvertRequest>) => {
   const request = e.data;
-  if (request.format === 'pdf') pdfQueue = pdfQueue.then(() => convert(request));
-  else void convert(request);
+  if (request.format === 'pdf') pdfQueue = pdfQueue.then(() => convert(request)).catch(reportResponseError);
+  else void convert(request).catch(reportResponseError);
 };
+
+function reportResponseError(err: unknown) {
+  console.error('Could not send the conversion response:', err);
+}
 
 async function convert(request: ConvertRequest) {
   const { id, docx, format } = request;

@@ -12,6 +12,10 @@ Word documents.
 
 [Release notes](CHANGELOG.md) · [Report a conversion issue](https://github.com/happendev/Kanera-docx/issues/new?template=conversion-bug.yml)
 
+<!-- markdown-summary:start -->
+Kanera scored **98.5% Markdown accuracy** across 278 DOCX documents. [Markdown benchmark](#markdown-benchmark)
+<!-- markdown-summary:end -->
+
 <!-- benchmark-summary:start -->
 ### Benchmark at a glance
 
@@ -19,7 +23,7 @@ Word documents.
 
 | Converter | Visual match | Page counts matched | Fresh process | Reused process | Median peak memory |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Kanera | **92.6%** | **273/278** | **100.8 ms** | **7.9 ms** | 84.4 MiB |
+| Kanera | **92.6%** | **273/278** | **92.7 ms** | **5.9 ms** | 75.9 MiB |
 | LibreOffice | 80.3% | 256/278 | 807.2 ms | 58.0 ms | – |
 | EigenPal | 70.9% | 257/278 | 775.1 ms | 257.8 ms | 278.6 MiB |
 | Syncfusion DocIO (.NET) | 56.1% | 246/278 | 568.8 ms | 60.0 ms | 121.8 MiB |
@@ -524,7 +528,7 @@ The [benchmark](benchmarks/word/README.md) compares converters on 278 documents 
 <!-- benchmark-results:start -->
 | Converter | Mean ink overlap | Matching page count | Failed conversions | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS | Total PDF size |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **92.6%** | **273/278** | **0/278** | **100.8 ms** | **7.9 ms** | **82.2 ms** | **50.4** | 84.4 MiB | **200.0 MiB** | **17.67 MiB** |
+| @kanera/docx2pdf 1.0.0 | **92.6%** | **273/278** | **0/278** | **92.7 ms** | **5.9 ms** | **74.0 ms** | **56.6** | 75.9 MiB | **187.3 MiB** | **17.67 MiB** |
 | LibreOffice 26.8.3.1 | 80.3% | 256/278 | **0/278** | 807.2 ms | 58.0 ms | 244.1 ms | 10.5 | – | – | 44.46 MiB |
 | EigenPal 2.39.0 | 70.9% | 257/278 | 1/278 | 775.1 ms | 257.8 ms | 661.0 ms | 3.6 | 278.6 MiB | 578.4 MiB | 21.98 MiB |
 | Syncfusion DocIO (.NET) 28.2.4.0 | 56.1% | 246/278 | 1/278 | 568.8 ms | 60.0 ms | 2507.9 ms | 1.2 | 121.8 MiB | 1128.7 MiB | 18.91 MiB |
@@ -573,7 +577,7 @@ links and pictures are scored against the document's XML.
 
 | Converter | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **64.0 ms** | **4.0 ms** | **16.0 ms** | **179.3** | **70.4 MiB** | **105.7 MiB** |
+| @kanera/docx2pdf 1.0.0 | **58.8 ms** | **3.6 ms** | **16.0 ms** | **193.2** | **70.5 MiB** | **105.5 MiB** |
 | Pandoc 3.9 | 83.5 ms | 82.0 ms | 151.4 ms | 14.1 | 174.2 MiB | 180.4 MiB |
 | MarkItDown 0.1.9 | 787.0 ms | 168.9 ms | 335.1 ms | 5.9 | 159.8 MiB | 187.7 MiB |
 | mammoth 1.13.0 + turndown 7.2.5 | 153.9 ms | 26.1 ms | 52.1 ms | 40.0 | 97.3 MiB | 179.4 MiB |
@@ -594,6 +598,7 @@ content is neutral.
 ```bash
 pnpm install
 pnpm test          # unit and end-to-end tests (uses Ghostscript, when installed, to read the PDFs back)
+pnpm lint          # library, scripts, and browser demo
 pnpm typecheck
 pnpm build         # dist/
 
@@ -606,7 +611,7 @@ pnpm demo:serve    # serve it on http://localhost:8000 and rebuild on change
 `list.txt` holds one `.docx` path per line (relative to `--root`). Set `BREAKS=1` to print where
 each of Word's recorded page breaks landed. Keep private documents out of this repository.
 
-To prepare an npm release, run `pnpm typecheck`, `pnpm test`, and `npm pack --dry-run`.
+To prepare an npm release, run `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `npm pack --dry-run`.
 The manifest sets public access for `@kanera/docx2pdf`, and npm runs the build when packing
 or publishing. The browser demo uses GitHub Actions as its Pages source.
 

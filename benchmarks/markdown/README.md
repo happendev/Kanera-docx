@@ -35,7 +35,7 @@ Every other engine runs with its default options.
 <!-- markdown-speed:start -->
 | Converter | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **64.0 ms** | **4.0 ms** | **16.0 ms** | **179.3** | **70.4 MiB** | **105.7 MiB** |
+| @kanera/docx2pdf 1.0.0 | **58.8 ms** | **3.6 ms** | **16.0 ms** | **193.2** | **70.5 MiB** | **105.5 MiB** |
 | Pandoc 3.9 | 83.5 ms | 82.0 ms | 151.4 ms | 14.1 | 174.2 MiB | 180.4 MiB |
 | MarkItDown 0.1.9 | 787.0 ms | 168.9 ms | 335.1 ms | 5.9 | 159.8 MiB | 187.7 MiB |
 | mammoth 1.13.0 + turndown 7.2.5 | 153.9 ms | 26.1 ms | 52.1 ms | 40.0 | 97.3 MiB | 179.4 MiB |

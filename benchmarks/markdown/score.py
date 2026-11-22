@@ -39,6 +39,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / 'benchmarks' / 'word'))
 from fetch import BENCHMARK_FIXTURES, OUTPUT as WORD_OUTPUT, UPSTREAM_DIR  # noqa: E402
+from readme import edit_main_readme, replace_section  # noqa: E402
 
 OUTPUT = ROOT / 'out' / 'benchmark-markdown'
 MARKDOWN = OUTPUT / 'md'
@@ -732,6 +733,18 @@ def replace_block(path, marker, content):
     path.write_text(f'{before}{start}\n{content}\n{end}{after}', encoding='utf-8')
 
 
+def update_main_readme(text, summary, report):
+    text = replace_section(text, 'markdown-benchmark', report)
+    if 'kanera' in summary:
+        kanera = summary['kanera']
+        headline = (
+            f'Kanera scored **{kanera["accuracy"]:.1%} Markdown accuracy** across '
+            f'{kanera["documents"]:,} DOCX documents. [Markdown benchmark](#markdown-benchmark)'
+        )
+        text = replace_section(text, 'markdown-summary', headline)
+    return text
+
+
 def main():
     parser = ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--engines', help='comma-separated engines to score (default: every engine converted)')
@@ -755,7 +768,7 @@ def main():
     if not args.no_readme and len(engines) > 1:
         replace_block(HERE / 'README.md', 'markdown-accuracy', accuracy)
         replace_block(HERE / 'README.md', 'markdown-speed', speed)
-        replace_block(ROOT / 'README.md', 'markdown-benchmark', f'{accuracy}\n\n{speed}')
+        edit_main_readme(ROOT, lambda text: update_main_readme(text, summary, report.rstrip('\n')))
 
 
 if __name__ == '__main__':

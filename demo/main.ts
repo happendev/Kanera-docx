@@ -105,6 +105,10 @@ function setStatus(text: string, kind: 'busy' | 'error' | '' = '') {
   ui.status.hidden = !text;
 }
 
+function reportDemoError(err: unknown) {
+  setStatus(`Unexpected error: ${err instanceof Error ? err.message : err}`, 'error');
+}
+
 const kb = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 // ---------------------------------------------------------------------------------------------
@@ -191,6 +195,12 @@ function beginLoad(title: string, status: string) {
 // ---------------------------------------------------------------------------------------------
 // Conversion and preview
 
+function destroyTasks(loadingTasks: PDFDocumentLoadingTask[]) {
+  for (const task of loadingTasks) {
+    void task.destroy().catch((err) => console.warn('Could not clean up the PDF preview:', err));
+  }
+}
+
 function clearOutput() {
   if (outputUrl) URL.revokeObjectURL(outputUrl);
   outputUrl = undefined;
@@ -208,7 +218,7 @@ function clearOutput() {
   observer?.disconnect();
   observer = undefined;
   ui.pages.replaceChildren();
-  for (const task of tasks) void task.destroy();
+  destroyTasks(tasks);
   tasks = [];
   docs = [];
 }
@@ -263,7 +273,7 @@ async function run() {
     loaded = await Promise.all(newTasks.map((t) => t.promise));
   } catch (err) {
     if (gen !== generation) return;
-    for (const t of newTasks) void t.destroy();
+    destroyTasks(newTasks);
     tasks = [];
     setStatus(`Couldn't display the PDF: ${err instanceof Error ? err.message : err}`, 'error');
     return;
@@ -445,7 +455,7 @@ function setView(next: View, rerender = true) {
 
 ui.file.addEventListener('change', () => {
   const f = ui.file.files?.[0];
-  if (f) void loadFile(f);
+  if (f) void loadFile(f).catch(reportDemoError);
   ui.file.value = '';
 });
 for (const type of ['dragenter', 'dragover'] as const) {
@@ -463,12 +473,14 @@ for (const type of ['dragleave', 'drop'] as const) {
 }
 window.addEventListener('drop', (e) => {
   const f = e.dataTransfer?.files[0];
-  if (f) void loadFile(f);
+  if (f) void loadFile(f).catch(reportDemoError);
 });
 
 ui.search.addEventListener('input', renderSampleList);
 for (const input of [ui.fontPack, ui.platform, ui.quality, ui.embedded]) {
-  input.addEventListener('change', () => { if (format === 'pdf') void run(); });
+  input.addEventListener('change', () => {
+    if (format === 'pdf') void run().catch(reportDemoError);
+  });
 }
 ui.formats.addEventListener('click', (e) => {
   const next = (e.target as HTMLElement).closest('button')?.dataset.format as OutputFormat | undefined;
@@ -477,7 +489,7 @@ ui.formats.addEventListener('click', (e) => {
   for (const b of ui.formats.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.format === next));
   ui.download.textContent = `Download ${outputs[next].label}`;
   ui.open.hidden = ui.pdfOptions.hidden = next !== 'pdf';
-  void run();
+  void run().catch(reportDemoError);
 });
 ui.views.addEventListener('click', (e) => {
   const b = (e.target as HTMLElement).closest('button');
@@ -500,7 +512,7 @@ window.addEventListener('resize', () => {
 function routeFromHash() {
   const m = /^#sample=(.+)$/.exec(location.hash);
   const id = m ? decodeURIComponent(m[1]) : undefined;
-  if (id && id !== current?.sample?.id) void loadSample(id);
+  if (id && id !== current?.sample?.id) void loadSample(id).catch(reportDemoError);
 }
 window.addEventListener('hashchange', routeFromHash);
 
@@ -527,4 +539,4 @@ async function init() {
   samplesReady = true;
 }
 
-void init();
+void init().catch(reportDemoError);

@@ -610,7 +610,7 @@ function drawMarker(m: NonNullable<ChartSeries['marker']>, x: number, y: number)
   return paint(segs, m.shape);
 }
 
-function labelText(l: ChartLabels, s: ChartSeries, i: number, value: number, percent: number | undefined, category: string): string {
+function labelText(l: ChartLabels, s: ChartSeries, value: number, percent: number | undefined, category: string): string {
   const parts: string[] = [];
   if (l.series) parts.push(s.name);
   if (l.category) parts.push(category);
@@ -1005,7 +1005,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
           const l = s.labels;
           if (l && !l.hidden?.includes(i)) {
             const raw = s.values[i]!;
-            const t = measure(labelText(l, s, i, raw, undefined, cat.labels[i] ?? ''), l.style, env);
+            const t = measure(labelText(l, s, raw, undefined, cat.labels[i] ?? ''), l.style, env);
             const where = l.position ?? (stacked ? 'ctr' : 'outEnd');
             const g = l.style.size * 0.4;
             const end = a1;
@@ -1102,7 +1102,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
           if (s.marker) markerOps.push(...drawMarker(own ? { ...s.marker, shape: { fill: own.fill ?? s.marker.shape.fill, line: own.line ?? s.marker.shape.line } } : s.marker, pt[0], pt[1]));
           const l = s.labels;
           if (l && !l.hidden?.includes(i) && s.values[i] !== null) {
-            const t = measure(labelText(l, s, i, s.values[i]!, undefined, cat.labels[i] ?? ''), l.style, env);
+            const t = measure(labelText(l, s, s.values[i]!, undefined, cat.labels[i] ?? ''), l.style, env);
             const g = (s.marker ? s.marker.size / 2 : 0) + 2;
             const where = l.position ?? 'r';
             if (where === 't') labelOps.push(...place(t, l.style.color, pt[0], pt[1] - g, 0.5, 1));
@@ -1154,7 +1154,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
       ops.push(...paint(slice(ox, oy, r, inner, angle, sweep), shape));
       const l = s.labels;
       if (l && !l.hidden?.includes(i)) {
-        const t = measure(labelText(l, s, i, x, Math.abs(x) / total, s.categories[i] ?? ''), l.style, env);
+        const t = measure(labelText(l, s, x, Math.abs(x) / total, s.categories[i] ?? ''), l.style, env);
         const where = l.position ?? 'bestFit';
         const rr = where === 'outEnd' ? r + 4 : where === 'inEnd' ? r * 0.8 : where === 'ctr' ? (r + inner) / 2 : inner ? (r + inner) / 2 : r * 0.62;
         const lx = ox + Math.cos(mid) * rr;
@@ -1227,7 +1227,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
         const own = s.points.get(i);
         if (s.marker) markerOps.push(...drawMarker(own ? { ...s.marker, shape: { fill: own.fill ?? s.marker.shape.fill, line: own.line ?? s.marker.shape.line } } : s.marker, q[0], q[1]));
         const l = s.labels;
-        if (l && !l.hidden?.includes(i)) labelOps.push(...place(measure(labelText(l, s, i, s.values[i]!, undefined, names[i]), l.style, env), l.style.color, q[0] + (s.marker ? s.marker.size / 2 : 0) + 2, q[1], 0, 0.5));
+        if (l && !l.hidden?.includes(i)) labelOps.push(...place(measure(labelText(l, s, s.values[i]!, undefined, names[i]), l.style, env), l.style.color, q[0] + (s.marker ? s.marker.size / 2 : 0) + 2, q[1], 0, 0.5));
       });
     }
     // The value axis runs up the first spoke, labelled on its left.

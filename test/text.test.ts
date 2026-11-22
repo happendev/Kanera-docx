@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { docxToMarkdown as markdownCore, extractText as extractCore } from '../src/index.js';
 import { docxToMarkdown as markdownInBrowser } from '../src/browser.js';
-import { docxToMarkdown, docxToText, extractText } from '../src/node.js';
+import { docxToMarkdown, docxToText } from '../src/node.js';
 import { makeDocx, p } from './helpers/docx.js';
 import { inlineImage, redPng, sampleDocx } from './helpers/sample.js';
 
@@ -255,14 +255,7 @@ describe('Markdown', () => {
   });
 });
 
-describe('extractText', () => {
-  it('reports skipped content and accepts a file path', async () => {
-    const result = await extractText(makeDocx({ body: p('Hi') }));
-    expect(result).toEqual({ text: 'Hi\n', warnings: [] });
-  });
-
-  it('returns an empty string for an empty document', async () => {
-    expect(await docxToText(makeDocx({ body: '' }))).toBe('');
-    expect(await docxToMarkdown(makeDocx({ body: p('') }))).toBe('');
-  });
+it('returns an empty string for an empty document', async () => {
+  expect(await docxToText(makeDocx({ body: '' }))).toBe('');
+  expect(await docxToMarkdown(makeDocx({ body: p('') }))).toBe('');
 });

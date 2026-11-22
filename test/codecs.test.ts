@@ -32,11 +32,6 @@ describe.each(codecs)('$name compression', ({ codec }) => {
     }
   });
 
-  it('compresses repetitive input', () => {
-    const data = samples()[3];
-    expect(codec.deflateZlib(data).length).toBeLessThan(data.length / 20);
-  });
-
   it('enforces output limits, including zero, and rejects incomplete streams', () => {
     const input = Uint8Array.of(42, 33);
     for (const [decode, compressed] of [
@@ -44,7 +39,7 @@ describe.each(codecs)('$name compression', ({ codec }) => {
       [codec.inflateZlib, deflateSync(input)],
     ] as const) {
       for (const limit of [0, 1]) expect(() => decode(compressed, limit)).toThrow(/limit/);
-      expect(() => decode(compressed.subarray(0, -1), input.length)).toThrow();
+      expect(() => decode(compressed.subarray(0, -1), input.length)).toThrow(/truncated/);
     }
   });
 

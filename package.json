@@ -49,6 +49,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && esbuild src/util/pako.ts src/image/jpeg-codec.ts src/pdf/svg.ts --bundle --format=esm --platform=browser --target=es2022 --minify --sourcemap --sources-content=false --define:Buffer.from=Uint8Array.from --outbase=src --outdir=dist",
     "prepare": "npm run build",
+    "lint": "oxlint src scripts demo",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p demo/tsconfig.json",
     "test": "vitest run",
     "render": "tsx scripts/render.ts",
@@ -63,6 +64,8 @@
     "@types/node": "^22.20.5",
     "esbuild": "0.28.2",
     "jpeg-js": "0.4.4",
+    "oxlint": "1.94.0",
+    "oxlint-tsgolint": "7.0.2008",
     "pako": "3.0.3",
     "pdfjs-dist": "6.4.299",
     "svgpath": "2.6.0",

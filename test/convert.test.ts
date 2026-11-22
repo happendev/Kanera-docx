@@ -86,7 +86,7 @@ describe('convertDocx (node)', () => {
       .toEqual(['-0.5 1.5 -0.5 1.5 -0.5 1.5', '0.805 1.105 0.805 1.105 0.805 1.105', 'none']);
   });
 
-  it('produces a well-formed PDF with embedded subset fonts, images and links', async () => {
+  it('produces a readable PDF with embedded subset fonts, images and links', async () => {
     const result = await convertDocx(sampleDocx());
     expect(result.pageCount).toBe(2);
     // Calibri Light has no metric-compatible open substitute, and says so.
@@ -105,17 +105,15 @@ describe('convertDocx (node)', () => {
     const content = pdfStreams(result.pdf).join('\n');
     expect(content).toMatch(/0\.851 0\.886 0\.953 rg/);
     expect(content).toMatch(/0\.753 0 0 RG/);
-  });
-
-  it.skipIf(!ghostscript)('is readable by Ghostscript with the document text intact', async () => {
-    const { pdf } = await convertDocx(sampleDocx());
-    ghostscriptRenders(pdf);
-    const [one, two] = pdfPagesText(pdf).map((t) => t.replace(/\s+/g, ' '));
-    for (const s of ['Quarterly report', 'Plain, bold, italic, underlined red', 'Grüße — “quoted” € 42 ½ Ωmega', '• First bullet', 'Region', '1,204', 'Visit example.com', 'Footnote text.', 'ACME Corp — Confidential', 'Page 1']) {
-      expect(one).toContain(s);
+    if (ghostscript) {
+      ghostscriptRenders(result.pdf);
+      const [one, two] = pdfPagesText(result.pdf).map((t) => t.replace(/\s+/g, ' '));
+      for (const s of ['Quarterly report', 'Plain, bold, italic, underlined red', 'Grüße — “quoted” € 42 ½ Ωmega', '• First bullet', 'Region', '1,204', 'Visit example.com', 'Footnote text.', 'ACME Corp — Confidential', 'Page 1']) {
+        expect(one).toContain(s);
+      }
+      expect(two).toContain('Second page');
+      expect(two).toContain('Page 2');
     }
-    expect(two).toContain('Second page');
-    expect(two).toContain('Page 2');
   });
 
   it('stops stroking text after a synthesised bold run', async () => {

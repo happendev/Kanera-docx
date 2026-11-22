@@ -1,7 +1,6 @@
 import { nodeCompression } from '../src/util/node-compression.js';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { convertDocx } from '../src/node.js';
 import { convertDocx as browserConvert } from '../src/browser.js';
@@ -462,22 +461,12 @@ function wmfText(face: string, text: string): Uint8Array {
   return new Uint8Array([...placeable, ...header, ...records]);
 }
 
-describe('decoded byte budgets', () => {
-  it('enforces limits on ZIP parts and on the total of distinct parts read', async () => {
-    const doc = makeDocx({ body: p('Budget') });
-    const zip = new ZipArchive(doc, nodeCompression.inflateRaw, { maxTotalBytes: new ZipArchive(doc, nodeCompression.inflateRaw).entries.get('word/document.xml')!.size });
-    expect(zip.read('word/document.xml')).toBe(zip.read('word/document.xml'));
-    expect(() => zip.read('_rels/.rels')).toThrow(/limit/);
-    await expect(convertDocx(doc, { archiveLimits: { maxPartBytes: 64 } })).rejects.toThrow(/limit/);
-  });
-
-  it('rejects a truncated stream and enforces the actual output limit during decoding', () => {
-    const text = new TextEncoder().encode('Quarterly report '.repeat(8));
-    const compressed = deflateRawSync(text);
-    expect(() => nodeCompression.inflateRaw(compressed.subarray(0, compressed.length - 1), text.length)).toThrow(/truncated/);
-    expect(() => nodeCompression.inflateRaw(compressed, text.length - 1)).toThrow(/limit/);
-    expect(nodeCompression.inflateRaw(compressed, text.length)).toEqual(text);
-  });
+it('enforces limits on ZIP parts and on the total of distinct parts read', async () => {
+  const doc = makeDocx({ body: p('Budget') });
+  const zip = new ZipArchive(doc, nodeCompression.inflateRaw, { maxTotalBytes: new ZipArchive(doc, nodeCompression.inflateRaw).entries.get('word/document.xml')!.size });
+  expect(zip.read('word/document.xml')).toBe(zip.read('word/document.xml'));
+  expect(() => zip.read('_rels/.rels')).toThrow(/limit/);
+  await expect(convertDocx(doc, { archiveLimits: { maxPartBytes: 64 } })).rejects.toThrow(/limit/);
 });
 
 describe('charts', () => {

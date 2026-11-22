@@ -221,7 +221,7 @@ Ink overlap by suite for the [benchmark comparison](../../README.md#benchmark).
 | Cases | Reference | @kanera/docx2pdf | EigenPal | LibreOffice | Aspose.Words (.NET) | Syncfusion DocIO (.NET) | dxpdf (Rust) | rdocx (Rust) | office2pdf (Rust) | MiniPdf (.NET) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 150 classic | Microsoft 365 Word page images | **99.1%** | 74.0% | 91.2% | 51.0% | 58.4% | 36.9% | 44.8% | 57.1% | 55.9% |
-| 100 Hugging Face | Word for Mac PDFs | **83.2%** | 66.9% | 70.3% | 54.4% | 54.2% | 37.7% | 39.4% | 40.9% | 28.8% |
+| 100 Hugging Face | Word for Mac PDFs | **86.1%** | 66.9% | 70.3% | 54.4% | 54.2% | 37.7% | 39.4% | 40.9% | 28.8% |
 | 20 issues | Microsoft 365 Word PDFs | **90.5%** | 71.1% | 53.7% | 49.8% | 51.9% | 31.2% | 18.7% | 32.3% | 31.4% |
 | 8 issues | LibreOffice PDFs | 58.6% | 62.9% | **68.1%** | 49.4% | 48.6% | 24.7% | 26.8% | 42.4% | 36.7% |
 
