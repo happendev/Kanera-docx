@@ -1,16 +1,16 @@
-import { convertDocx as convertCore, extractText as extractCore } from './index.js';
-import type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontProvider } from './core.js';
+import { convertDocx as convertCore, convertDocxToImages as imagesCore, extractText as extractCore } from './index.js';
+import type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontProvider, ImageOptions, ImagesResult, PageImage } from './core.js';
 import { BundledFontData } from './fonts/registry.js';
 import { isFontCollection } from './fonts/sfnt.js';
 import { COMMON_FONTS, FULL_FONTS } from './fonts/bundled.js';
 
-export type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontSource, LayoutStats } from './core.js';
+export type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontSource, ImageFormat, ImageOptions, ImagesResult, LayoutStats, PageImage } from './core.js';
 export type { TextFormat } from './text/extract.js';
 
 /** Files to copy from the package's fonts/ directory for the common browser pack. */
 export const commonFontFiles: readonly string[] = COMMON_FONTS.map(({ file }) => file);
 
-export interface BrowserConvertOptions extends ConvertOptions {
+export interface BrowserFontOptions {
   /**
    * URL of a folder serving the package's `fonts/` files. Defaults to the folder next to this
    * module, which works when the package is served as-is (not bundled). With a bundler, copy the
@@ -24,6 +24,10 @@ export interface BrowserConvertOptions extends ConvertOptions {
   fetch?: typeof fetch;
 }
 
+export interface BrowserConvertOptions extends ConvertOptions, BrowserFontOptions {}
+
+export interface BrowserImageOptions extends ImageOptions, BrowserFontOptions {}
+
 const fontCaches = new WeakMap<typeof fetch, Map<string, Promise<BundledFontData | Uint8Array>>>();
 
 function defaultBase(): URL {
@@ -32,9 +36,7 @@ function defaultBase(): URL {
   return new URL(rel, import.meta.url);
 }
 
-/** Convert a .docx to PDF in the browser. Bundled fonts are fetched on demand. */
-export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, options: BrowserConvertOptions = {}): Promise<ConvertResult> {
-  const data = input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : input;
+function fontProviders(options: BrowserFontOptions): FontProvider[] {
   const providers: FontProvider[] = [];
   if (options.fontBaseUrl !== false) {
     const base = options.fontBaseUrl ? new URL(String(options.fontBaseUrl), globalThis.location?.href ?? import.meta.url) : defaultBase();
@@ -76,7 +78,24 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, option
       },
     });
   }
-  return convertCore(data, options, providers);
+  return providers;
+}
+
+/** Convert a .docx to PDF in the browser. Bundled fonts are fetched on demand. */
+export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, options: BrowserConvertOptions = {}): Promise<ConvertResult> {
+  const data = input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : input;
+  return convertCore(data, options, fontProviders(options));
+}
+
+/** Render a .docx's pages as PNG (default) or JPEG images in the browser. Bundled fonts are fetched on demand. */
+export async function convertDocxToImages(input: Uint8Array | ArrayBuffer | Blob, options: BrowserImageOptions = {}): Promise<ImagesResult> {
+  const data = input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : input;
+  return imagesCore(data, options, fontProviders(options));
+}
+
+/** Render a .docx's pages as PNG (default) or JPEG images in the browser. */
+export async function docxToImages(input: Uint8Array | ArrayBuffer | Blob, options: BrowserImageOptions = {}): Promise<PageImage[]> {
+  return (await convertDocxToImages(input, options)).images;
 }
 
 /** Convert a .docx to PDF bytes in the browser. */

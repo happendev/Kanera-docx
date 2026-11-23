@@ -45,8 +45,10 @@ export class ZipArchive {
     this.maxPartBytes = byteLimit(limits.maxPartBytes, 64 * 1024 * 1024);
     this.remainingBytes = byteLimit(limits.maxTotalBytes, 256 * 1024 * 1024);
     let eocd = -1;
+    // Bytes after the record and its comment (often a newline added in transit) are ignored, as
+    // Office and other ZIP readers ignore them; the directory bounds check rejects a false match.
     for (let i = data.length - 22; i >= Math.max(0, data.length - 22 - 65535); i--) {
-      if (u32(data, i) === 0x06054b50 && i + 22 + u16(data, i + 20) === data.length) {
+      if (u32(data, i) === 0x06054b50 && i + 22 + u16(data, i + 20) <= data.length) {
         const hasLocator = i >= 20 && u32(data, i - 20) === 0x07064b50;
         if (!hasLocator && u32(data, i + 16) + u32(data, i + 12) !== i) continue;
         eocd = i;

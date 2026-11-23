@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nodeCompression } from './util/node-compression.js';
-import { convertWithCompression, type ConvertOptions, type ConvertResult, type FontProvider } from './core.js';
+import { convertToImagesWithCompression, convertWithCompression, type ConvertOptions, type ConvertResult, type FontProvider, type ImageOptions, type ImagesResult, type PageImage } from './core.js';
 import { extractTextWithCompression, type ExtractTextOptions, type ExtractTextResult } from './text/index.js';
 import { CJK_FILES, fontVersion, loadCjkFont } from './fonts/node-cjk.js';
 import { FULL_FONTS } from './fonts/bundled.js';
@@ -11,10 +11,10 @@ import { BundledFontData, type FontSource } from './fonts/registry.js';
 import { collectionSize, isFontCollection, MAX_FONT_FACES, SfntFont } from './fonts/sfnt.js';
 import { buildSfnt } from './fonts/subset.js';
 
-export type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontSource, LayoutStats } from './core.js';
+export type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontSource, ImageFormat, ImageOptions, ImagesResult, LayoutStats, PageImage } from './core.js';
 export type { TextFormat } from './text/extract.js';
 
-export interface NodeConvertOptions extends ConvertOptions {
+export interface NodeFontOptions {
   /**
    * Also use fonts installed on this machine (default false, so output does not depend on the
    * host). `true` scans the usual font folders; an array scans those folders instead.
@@ -23,6 +23,10 @@ export interface NodeConvertOptions extends ConvertOptions {
   /** Folder holding the full font pack (defaults to the package's `fonts/`). */
   fontDir?: string;
 }
+
+export interface NodeConvertOptions extends ConvertOptions, NodeFontOptions {}
+
+export interface NodeImageOptions extends ImageOptions, NodeFontOptions {}
 
 const MAX_CACHED_FONTS = 16;
 type CachedFont = BundledFontData | Uint8Array;
@@ -178,9 +182,7 @@ function packageFontDir(): string {
   return fileURLToPath(new URL('../fonts/', import.meta.url));
 }
 
-/** Convert a .docx (bytes or a file path) to PDF, with the bundled fonts available. */
-export async function convertDocx(input: Uint8Array | ArrayBuffer | string, options: NodeConvertOptions = {}): Promise<ConvertResult> {
-  const data = typeof input === 'string' ? await readFile(input) : input;
+async function fontProviders(options: NodeFontOptions): Promise<FontProvider[]> {
   const providers: FontProvider[] = [];
   if (options.systemFonts) {
     const dirs = Array.isArray(options.systemFonts) ? options.systemFonts : DEFAULT_FONT_DIRS();
@@ -192,7 +194,24 @@ export async function convertDocx(input: Uint8Array | ArrayBuffer | string, opti
     });
   }
   providers.push(bundledProvider(options.fontDir));
-  return convertWithCompression(data, options, providers, nodeCompression);
+  return providers;
+}
+
+/** Convert a .docx (bytes or a file path) to PDF, with the bundled fonts available. */
+export async function convertDocx(input: Uint8Array | ArrayBuffer | string, options: NodeConvertOptions = {}): Promise<ConvertResult> {
+  const data = typeof input === 'string' ? await readFile(input) : input;
+  return convertWithCompression(data, options, await fontProviders(options), nodeCompression);
+}
+
+/** Render a .docx's (bytes or a file path) pages as PNG (default) or JPEG images, with the bundled fonts available. */
+export async function convertDocxToImages(input: Uint8Array | ArrayBuffer | string, options: NodeImageOptions = {}): Promise<ImagesResult> {
+  const data = typeof input === 'string' ? await readFile(input) : input;
+  return convertToImagesWithCompression(data, options, await fontProviders(options), nodeCompression);
+}
+
+/** Render a .docx's (bytes or a file path) pages as PNG (default) or JPEG images. */
+export async function docxToImages(input: Uint8Array | ArrayBuffer | string, options: NodeImageOptions = {}): Promise<PageImage[]> {
+  return (await convertDocxToImages(input, options)).images;
 }
 
 /** Convert a .docx (bytes or a file path) to PDF bytes. */

@@ -176,11 +176,11 @@ class RendererWorker:
             self.resources.close()
             self.resources = None
 
-    def convert(self, source, candidate):
+    def convert(self, source, candidate, dpi=None):
         try:
             if self.resources is None:
                 self.start()
-            self.channel.sendall(json.dumps([str(source), str(candidate)]).encode() + b'\n')
+            self.channel.sendall(json.dumps([str(source), str(candidate), dpi]).encode() + b'\n')
             reply = self.responses.readline()
             if not reply:
                 self.diagnostics.seek(0)
@@ -259,7 +259,7 @@ def cached_reference(cache, settings, directory, row, work):
     return pages
 
 
-def score_document(row, corpus, directory, workspace, raster_cache, settings, workers):
+def score_document(row, corpus, directory, workspace, raster_cache, settings, workers, images=False):
     with TemporaryDirectory(dir=workspace) as temporary:
         work = Path(temporary)
         reference = cached_reference(raster_cache, settings, directory, row, work)
@@ -276,10 +276,17 @@ def score_document(row, corpus, directory, workspace, raster_cache, settings, wo
         try:
             worker = workers.get()
             try:
-                worker.convert(directory / row['docx'], candidate)
+                if images:
+                    candidate = work / 'candidate'
+                    worker.convert(directory / row['docx'], candidate, DPI)
+                else:
+                    worker.convert(directory / row['docx'], candidate)
             finally:
                 workers.put(worker)
-            pages = render(candidate, work / 'candidate', raster_format='ppm')
+            if images:
+                pages = sorted(candidate.glob('page-*.png'), key=lambda p: int(p.stem.rsplit('-', 1)[1]))
+            else:
+                pages = render(candidate, work / 'candidate', raster_format='ppm')
         except (RuntimeError, subprocess.SubprocessError) as error:
             result['error'] = str(error)
             return result
@@ -328,6 +335,8 @@ def main():
                         help='Report from a previous run for the percentage-point comparison')
     parser.add_argument('--jobs', type=int, default=min(8, cpu_count() or 1),
                         help='Concurrent conversions (default: %(default)s)')
+    parser.add_argument('--images', action='store_true',
+                        help="Score the built-in page images instead of Poppler's rendering of the PDFs")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error('--jobs must be positive')
@@ -381,7 +390,8 @@ def main():
         by_corpus = {}
         for corpus, (directory, documents) in corpora.items():
             score = partial(score_document, corpus=corpus, directory=directory, workspace=workspace,
-                            raster_cache=raster_cache, settings=settings, workers=workers)
+                            raster_cache=raster_cache, settings=settings, workers=workers,
+                            images=args.images)
             scored = sorted(process_all(score, documents, args.jobs, f'Scored {corpus}'),
                             key=lambda row: row['id'])
             results.extend(scored)
@@ -391,6 +401,7 @@ def main():
         'completed_at': completed_at.isoformat(),
         'sources': sources,
         'metric': METRIC,
+        'candidate': 'page images' if args.images else 'pdf',
         'environment': environment,
         **summarize(results),
         'by_corpus': by_corpus,
@@ -400,7 +411,7 @@ def main():
         report['change_pp'] = report['accuracy_pct'] - baseline['accuracy_pct']
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
-    if args.corpus == 'all':
+    if args.corpus == 'all' and not args.images:
         update_accuracy_readme(HERE.parents[1], report)
     print(f"Accuracy {report['accuracy_pct']:.2f}% across {report['documents']} documents "
           f"and {report['reference_pages']} reference pages ({report['conversion_failures']} conversion failures).")

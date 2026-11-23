@@ -34,11 +34,13 @@ it('ships the full font pack for the CLI and exposes the browser subset after an
     expect(JSON.parse(browserFiles)).toEqual(COMMON_FONTS.map(({ file }) => file));
     execFileSync(process.execPath, ['--input-type=module', '-e', `
       import assert from 'node:assert/strict';
-      import { docxToPdf } from '@kanera/docx2pdf';
+      import { docxToImages, docxToPdf } from '@kanera/docx2pdf';
       import { docxToPdf as nodeDocxToPdf } from '@kanera/docx2pdf/node';
-      import { convertDocx, docxToMarkdown } from '@kanera/docx2pdf/core';
+      import { convertDocx, convertDocxToImages, docxToMarkdown } from '@kanera/docx2pdf/core';
       import { docxToText } from '@kanera/docx2pdf';
       assert.equal(typeof docxToPdf, 'function');
+      assert.equal(typeof docxToImages, 'function');
+      assert.equal(typeof convertDocxToImages, 'function');
       assert.equal(typeof docxToText, 'function');
       assert.equal(typeof docxToMarkdown, 'function');
       assert.equal(docxToPdf, nodeDocxToPdf);
@@ -60,9 +62,23 @@ it('ships the full font pack for the CLI and exposes the browser subset after an
     const pdf = join(dir, 'japanese.pdf');
     writeFileSync(doc, makeDocx({ body: p('日本語') }));
     const original = readFileSync(doc);
-    for (const args of [[doc, '--font'], [doc, pdf, 'extra.pdf'], [doc, '-'], [doc, '--headers'], [doc, '--text', '--png', dir]]) {
+    for (const args of [
+      [doc, '--font'], [doc, pdf, 'extra.pdf'], [doc, '-'], [doc, '--headers'], [doc, '--text', '--png', dir],
+      [doc, '--dpi', '96'], [doc, '--png', dir, '--quality', '80'], [doc, '--png', dir, '--jpeg', dir], [doc, pdf, '--png', dir],
+      [doc, '--png', dir, '--pages', '2-1'], [doc, '--png', dir, '--image-quality', '80'],
+    ]) {
       expect(spawnSync(process.execPath, [cli, ...args]).status).toBe(2);
     }
+    const pngDir = join(dir, 'pages');
+    const png = spawnSync(process.execPath, [cli, doc, '--png', pngDir, '--dpi', '36'], { encoding: 'utf8' });
+    expect(png.status).toBe(0);
+    const pngFile = readFileSync(join(pngDir, 'japanese-1.png'));
+    expect(pngFile.subarray(1, 4).toString('latin1')).toBe('PNG');
+    expect(pngFile.readUInt32BE(16)).toBe(298);
+    const jpeg = spawnSync(process.execPath, [cli, doc, '--jpeg', pngDir, '--quality', '70', '--pages', '1'], { encoding: 'utf8' });
+    expect(jpeg.status).toBe(0);
+    expect([...readFileSync(join(pngDir, 'japanese-1.jpg')).subarray(0, 2)]).toEqual([0xff, 0xd8]);
+    expect(spawnSync(process.execPath, [cli, doc, '--png', pngDir, '--pages', '2']).status).toBe(1);
     const hardlink = join(dir, 'linked.docx');
     linkSync(doc, hardlink);
     const aliases = [doc, hardlink];

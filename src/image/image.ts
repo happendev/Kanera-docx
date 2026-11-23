@@ -95,7 +95,7 @@ export async function toPdfImage(
 function be32(d: Uint8Array, o: number): number {
   return ((d[o] << 24) | (d[o + 1] << 16) | (d[o + 2] << 8) | d[o + 3]) >>> 0;
 }
-function le32s(d: Uint8Array, o: number): number {
+export function le32s(d: Uint8Array, o: number): number {
   return d[o] | (d[o + 1] << 8) | (d[o + 2] << 16) | (d[o + 3] << 24);
 }
 function le16(d: Uint8Array, o: number): number {
@@ -164,7 +164,7 @@ function predictedRgb(width: number, height: number, rgb: Uint8Array, compressio
 // ---------------------------------------------------------------------------------------------
 // PNG
 
-interface PngInfo {
+export interface PngInfo {
   width: number;
   height: number;
   bitDepth: number;
@@ -175,7 +175,7 @@ interface PngInfo {
   idat: Uint8Array;
 }
 
-function readPng(d: Uint8Array, budget: ImageBudget): PngInfo {
+export function readPng(d: Uint8Array, budget: ImageBudget): PngInfo {
   if (d.length < 33 || be32(d, 4) !== 0x0d0a1a0a || be32(d, 8) !== 13 || be32(d, 12) !== 0x49484452)
     throw new Error('PNG: invalid header');
   const width = be32(d, 16);
@@ -327,7 +327,7 @@ const ADAM7 = [
   [0, 1, 1, 2],
 ];
 
-function decodeAdam7(info: PngInfo, compression: Compression): Uint8Array {
+export function decodeAdam7(info: PngInfo, compression: Compression): Uint8Array {
   const { width, height, bitDepth, colorType, palette, trns } = info;
   const channels = colorType === 2 ? 3 : colorType === 0 ? 1 : colorType === 3 ? 1 : colorType === 4 ? 2 : 4;
   const bitsPP = channels * bitDepth;
@@ -366,7 +366,7 @@ function decodeAdam7(info: PngInfo, compression: Compression): Uint8Array {
   return out;
 }
 
-function unfilter(f: number, line: Uint8Array, prev: Uint8Array, bpp: number): void {
+export function unfilter(f: number, line: Uint8Array, prev: Uint8Array, bpp: number): void {
   const n = line.length;
   switch (f) {
     case 0:
@@ -407,7 +407,7 @@ function sample(line: Uint8Array, index: number, bitDepth: number): number {
   return v;
 }
 
-function writePixel(
+export function writePixel(
   out: Uint8Array,
   o: number,
   line: Uint8Array,
@@ -598,7 +598,7 @@ async function reencodeJpeg(data: Uint8Array, width: number, height: number, qua
 // ---------------------------------------------------------------------------------------------
 // GIF (first frame)
 
-function decodeGif(d: Uint8Array, budget: ImageBudget): { width: number; height: number; data: Uint8Array } | null {
+export function decodeGif(d: Uint8Array, budget: ImageBudget): { width: number; height: number; data: Uint8Array } | null {
   const width = le16(d, 6);
   const height = le16(d, 8);
   if (d.length < 13) throw new Error('GIF: truncated header');
@@ -753,6 +753,12 @@ function lzwDecode(data: Uint8Array, minCode: number, pixels: number): Uint8Arra
 // BMP
 
 export function dibToPdf(header: Uint8Array, pixels: Uint8Array, compression: Compression, budget: ImageBudget): PdfImage | null {
+  const dib = decodeDib(header, pixels, budget);
+  return dib ? rgbToPdf(dib.width, dib.height, dib.rgb, dib.alpha, compression) : null;
+}
+
+/** A DIB's pixels as RGB, with an alpha plane when some pixels are translucent. */
+export function decodeDib(header: Uint8Array, pixels: Uint8Array, budget: ImageBudget): { width: number; height: number; rgb: Uint8Array; alpha?: Uint8Array } | null {
   const headerSize = le32s(header, 0);
   const width = le32s(header, 4);
   const rawH = le32s(header, 8);
@@ -807,5 +813,5 @@ export function dibToPdf(header: Uint8Array, pixels: Uint8Array, compression: Co
   }
   // Writers often leave the alpha of opaque pixels at zero, so, as browsers do, an image with no visible pixel is opaque.
   const translucent = alpha && alpha.some((a) => a !== 0) && alpha.some((a) => a !== 255);
-  return rgbToPdf(width, height, out, translucent ? alpha : undefined, compression);
+  return { width, height, rgb: out, alpha: translucent ? alpha : undefined };
 }

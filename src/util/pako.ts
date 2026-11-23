@@ -11,11 +11,18 @@ function inflate(data: Uint8Array, limit: number, raw: boolean, sink?: ChunkSink
   return decoder.result;
 }
 
+/** zlib through the platform's native CompressionStream (at its default level). */
+async function nativeDeflate(data: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([data as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream('deflate'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
 export const pakoCompression: Compression = {
   inflateRaw: (data, limit) => inflate(data, limit, true),
   inflateZlib: (data, limit) => inflate(data, limit, false),
   inflateZlibStream(data, limit, sink) {
     inflate(data, limit, false, sink);
   },
-  deflateZlib: deflate,
+  deflateZlib: (data, level) => deflate(data, level === undefined ? undefined : { level }),
+  deflateZlibAsync: typeof CompressionStream === 'function' && typeof Response === 'function' ? nativeDeflate : undefined,
 };

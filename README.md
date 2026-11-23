@@ -71,16 +71,14 @@ options as needed.
 npx --no-install docx2pdf in.docx out.pdf --font BrandSans.ttf --system-fonts
 ```
 
-To get page images instead of a PDF, pass `--png` with a directory. This writes `pages/in-1.png`,
-`pages/in-2.png` and so on, with page numbers zero-padded to the same width so they sort in order.
-`--dpi` sets the resolution (default 150).
+To get page images instead of a PDF, pass `--png` or `--jpeg` with a directory. This writes
+`pages/in-1.png`, `pages/in-2.png` and so on, with page numbers zero-padded to the same width so
+they sort in order. `--dpi` sets the resolution (default 150), `--pages` picks pages such as `1-3,5`,
+and `--quality` sets the JPEG quality (default 90).
 
 ```bash
 npx --no-install docx2pdf in.docx --png pages --dpi 200
 ```
-
-The PNGs are rasterised from the converted PDF by `pdftoppm` (Poppler), `mutool` (MuPDF) or
-Ghostscript, whichever is found first on the `PATH`; install one of them to use `--png`.
 
 To extract the text instead, pass `--text` or `--markdown` (`--md`). This writes `in.txt` or
 `in.md`, or prints to standard output when the output is `-`. Add `--headers` to include headers
@@ -117,6 +115,25 @@ const { text: md, warnings } = await extractText('in.docx', { format: 'markdown'
 ```
 
 The [Markdown benchmark](#markdown-benchmark) compares the Markdown with seven other converters.
+
+### Page images
+
+`docxToImages` draws pages as PNG or JPEG images from the same layout as the PDF, without
+rendering a PDF or calling an outside rasteriser. `convertDocxToImages` also returns the page count
+and warnings. Both take the layout and font options of `convertDocx`, and run in Node and the browser.
+
+```ts
+import { writeFile } from 'node:fs/promises';
+import { docxToImages } from '@kanera/docx2pdf';
+
+for (const { page, data } of await docxToImages('in.docx', { dpi: 150 })) {
+  await writeFile(`page-${page}.png`, data);
+}
+const [cover] = await docxToImages('in.docx', { format: 'jpeg', quality: 85, pages: [1] });
+```
+
+Each image has its `page` number, `width`, `height` and encoded `data`. Scored against Word's
+pages the way the [benchmark](#benchmark) scores PDFs, the images match as closely as the PDF does.
 
 ## Use
 
@@ -251,6 +268,10 @@ const { pdf } = await convertDocx(bytes, { fonts: [{ data: regular }, { data: bo
 | `info`          | all     | from doc | PDF title, author, subject, keywords, dates.                         |
 | `compress`      | all     | `true`   | Deflate PDF content streams.                                         |
 | `wordPlatform`  | all     | `'windows'` | Set to `'mac'` to match Word for Mac's PDFs, which draw text sizes, baselines and line starts on a 0.24pt grid (11pt text comes out at 11.04pt). Layout is the same. CLI: `--mac`. |
+| `format`        | images  | `'png'`  | `'png'` or `'jpeg'`.                                                 |
+| `dpi`           | images  | `150`    | Image resolution in dots per inch. CLI: `--dpi`.                     |
+| `quality`       | images  | `90`     | JPEG quality from 1 to 100. CLI: `--quality`.                        |
+| `pages`         | images  | all      | Page numbers to draw, from 1. CLI: `--pages 1-3,5`.                  |
 | `systemFonts`   | Node    | `false`  | `true` or a list of folders to scan for `.ttf`/`.otf`/`.ttc`.        |
 | `fontPack`      | browser | `'full'` | Set to `'common'` to use the smaller browser pack.                      |
 | `fontDir`       | Node    | package  | Folder holding the full pack.                                        |

@@ -207,6 +207,9 @@ describe('conversion limits', () => {
     zip.writeUInt16LE(comment.length, zip.length - 2);
     const archive = new ZipArchive(Buffer.concat([zip, comment]), nodeCompression.inflateRaw);
     expect(Array.from(archive.read('dir/é.txt')!)).toEqual([7]);
+    // Bytes after the end record and its comment, such as a newline added in transit, are ignored.
+    const padded = new ZipArchive(Buffer.concat([zip, comment, Buffer.from('\n')]), nodeCompression.inflateRaw);
+    expect(Array.from(padded.read('dir/é.txt')!)).toEqual([7]);
   });
 
   it('applies the feature budget to substitution and adjustment tables', () => {
