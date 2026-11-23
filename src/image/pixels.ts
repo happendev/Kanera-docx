@@ -4,6 +4,7 @@
 import type { Compression } from '../util/compression.js';
 import { ImageBudget } from './budget.js';
 import { decodeAdam7, decodeDib, decodeGif, le32s, readPng, sniffImage, unfilter, writePixel, type PngInfo } from './image.js';
+import { decodeJpegPixels } from './jpeg-decoder.js';
 import { decodeTiff } from './tiff.js';
 
 /** Straight (not premultiplied) RGBA pixels. */
@@ -86,6 +87,31 @@ function fromRgb(img: { width: number; height: number; rgb: Uint8Array; alpha?: 
   return { width: img.width, height: img.height, data, opaque: !alpha };
 }
 
+/** Whether this machine stores the low byte of a word first, so RGBA pixels write as one word. */
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+/**
+ * RGBA words for every sample value of a palette or grey PNG of up to 8 bits, as `writePixel`
+ * makes them, and whether any of them is not opaque.
+ */
+function pixelTable(info: PngInfo): { rgba: Uint32Array; clear: boolean } {
+  const { bitDepth, colorType, palette, trns } = info;
+  const rgba = new Uint32Array(1 << bitDepth);
+  const line = new Uint8Array(1);
+  const px = new Uint8Array(4);
+  const view = new Uint32Array(px.buffer);
+  let clear = false;
+  for (let v = 0; v < rgba.length; v++) {
+    // The value as the line's first sample.
+    line[0] = v << (8 - bitDepth);
+    px.fill(0);
+    writePixel(px, 0, line, 0, bitDepth, colorType, palette, trns);
+    rgba[v] = view[0];
+    if (px[3] !== 255) clear = true;
+  }
+  return { rgba, clear };
+}
+
 function applyAdjust(px: Pixmap, { slope, offset }: ColorAdjust): void {
   const table = new Uint8Array(256);
   for (let v = 0; v < 256; v++) table[v] = Math.round(Math.min(1, Math.max(0, slope * (v / 255) + offset)) * 255);
@@ -107,6 +133,9 @@ function decodePng(info: PngInfo, compression: Compression): Pixmap {
   const raw = compression.inflateZlib(info.idat, height * (stride + 1));
   if (raw.length !== height * (stride + 1)) throw new Error('PNG: truncated scanlines');
   const out = new Uint8Array(width * height * 4);
+  const words = LITTLE_ENDIAN ? new Uint32Array(out.buffer) : null;
+  // Palette and grey pixels (up to 8 bits) through a table of whole RGBA words.
+  const table = words && bitDepth <= 8 && (colorType === 3 || colorType === 0) ? pixelTable(info) : null;
   let prev: Uint8Array = new Uint8Array(stride);
   let opaque = true;
   for (let y = 0; y < height; y++) {
@@ -115,7 +144,27 @@ function decodePng(info: PngInfo, compression: Compression): Pixmap {
     unfilter(raw[at], line, prev, bpp);
     prev = line;
     let o = y * width * 4;
-    if (bitDepth === 8 && colorType === 6) {
+    if (table && words) {
+      const w0 = y * width;
+      if (bitDepth === 8) for (let x = 0; x < width; x++) words[w0 + x] = table.rgba[line[x]];
+      else {
+        const perByte = 8 / bitDepth;
+        const mask = (1 << bitDepth) - 1;
+        for (let x = 0; x < width; x++) {
+          const shift = 8 - bitDepth * ((x % perByte) + 1);
+          words[w0 + x] = table.rgba[(line[(x / perByte) | 0] >> shift) & mask];
+        }
+      }
+      if (opaque && table.clear) for (let x = 0; x < width; x++) if (out[o + x * 4 + 3] !== 255) opaque = false;
+    } else if (bitDepth === 8 && colorType === 2 && !trns && words) {
+      for (let x = 0, s = 0, w = y * width; x < width; x++, s += 3, w++) words[w] = (line[s] | (line[s + 1] << 8) | (line[s + 2] << 16) | 0xff000000) >>> 0;
+    } else if (bitDepth === 8 && colorType === 4 && words) {
+      for (let x = 0, s = 0, w = y * width; x < width; x++, s += 2, w++) {
+        const a = line[s + 1];
+        words[w] = (line[s] * 0x010101 + a * 0x1000000) >>> 0;
+        if (a !== 255) opaque = false;
+      }
+    } else if (bitDepth === 8 && colorType === 6) {
       out.set(line, o);
       if (opaque) for (let i = 3; i < stride; i += 4) if (line[i] !== 255) opaque = false;
     } else if (bitDepth === 8 && colorType === 2 && !trns) {
@@ -144,6 +193,12 @@ async function decodeJpeg(data: Uint8Array, budget: ImageBudget): Promise<{ pixe
   const size = jpegFrame(data);
   if (!size || !size.width || !size.height) return null;
   if (!budget.tryReserve(size.width, size.height)) throw new Error('Image pixel limit exceeded');
+  try {
+    const img = decodeJpegPixels(data);
+    return { pixels: { width: img.width, height: img.height, data: img.data, opaque: true }, components: size.components };
+  } catch {
+    // Kinds the decoder leaves out, such as unusual sampling factors, fall back to jpeg-js.
+  }
   const { decode } = await import('./jpeg-codec.js');
   const img = decode(data, {
     useTArray: true,

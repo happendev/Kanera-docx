@@ -90,6 +90,7 @@ export async function renderImages(pages: Page[], compression: Compression, opts
   const out: PageImage[] = new Array(indexes.length);
   // Pages compressing while later ones are drawn, where compression can run alongside.
   const pending: Promise<void>[] = [];
+  const spare: Uint8Array<ArrayBuffer>[] = [];
   let canvas: Canvas | null = null;
   try {
     for (const [k, i] of indexes.entries()) {
@@ -101,13 +102,18 @@ export async function renderImages(pages: Page[], compression: Compression, opts
         out[k] = { page: i + 1, width, height, data: jpegFile(width, height, canvas.data, canvas.lo, canvas.hi, opts.quality ?? 90, dpi) };
         continue;
       }
-      const rows = pngScanlines(width, height, canvas.data, canvas.lo, canvas.hi);
+      const size = (width * 3 + 1) * height;
+      // Scanline buffers go back to `spare` once compressed, for the next page of the same size.
+      const reuse = spare.findIndex((b) => b.length === size);
+      const rows = pngScanlines(width, height, canvas.data, canvas.lo, canvas.hi, reuse >= 0 ? spare.splice(reuse, 1)[0] : new Uint8Array(size));
       if (!compression.deflateZlibAsync) {
         out[k] = { page: i + 1, width, height, data: pngFile(width, height, compression.deflateZlib(rows, PNG_DEFLATE_LEVEL), dpi, compression.crc32) };
+        spare.push(rows);
         continue;
       }
       const job = compression.deflateZlibAsync(rows, PNG_DEFLATE_LEVEL).then((deflated) => {
         out[k] = { page: i + 1, width, height, data: pngFile(width, height, deflated, dpi, compression.crc32) };
+        if (spare.length <= MAX_PENDING) spare.push(rows);
       });
       // Rejections surface when the job is awaited below.
       job.catch(() => {});

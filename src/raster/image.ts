@@ -243,21 +243,142 @@ function resample(px: Pixmap, dw: number, dh: number, rx0: number, ry0: number, 
   const smooth = dw >= px.width && dh >= px.height && Math.floor(dw / px.width) < 4 && Math.floor(dh / px.height) < 4;
   const xt = taps(px.width, dw, rx0, rx1, flipX, smooth);
   const yt = taps(px.height, dh, ry0, ry1, flipY, smooth);
+  if (px.opaque && (dw < px.width || dh < px.height)) return boxScale(px, xt, yt, rw, rh, dw < px.width, dh < px.height);
+  const across = rowScaler(px, xt, rw);
+  const out = new Uint8Array(rw * rh * 4);
+  const stride = rw * 4;
+  const yw = yt.weights;
+  const acc = new Float64Array(stride);
+  if (dh < px.height) {
+    // Shrinking down, each source row adds to one destination row, so rows are scaled across one at a time.
+    const line = new Float32Array(stride);
+    for (let j = 0; j < rh; j++) {
+      const n = yt.count[j];
+      const wi0 = yt.at[j];
+      for (let k = 0; k < n; k++) {
+        across(yt.first[j] + k, line, 0);
+        const w = yw[wi0 + k];
+        if (k === 0) for (let i = 0; i < stride; i++) acc[i] = line[i] * w;
+        else for (let i = 0; i < stride; i++) acc[i] += line[i] * w;
+      }
+      store(out, j * stride, acc, stride);
+    }
+    return { width: rw, height: rh, data: out };
+  }
   let sy0 = px.height;
   let sy1 = 0;
   for (let i = 0; i < rh; i++) {
     sy0 = Math.min(sy0, yt.first[i]);
     sy1 = Math.max(sy1, yt.first[i] + yt.count[i]);
   }
+  // Rows across first, as each feeds several destination rows.
+  const rows = new Float32Array((sy1 - sy0) * stride);
+  for (let sy = sy0; sy < sy1; sy++) across(sy, rows, (sy - sy0) * stride);
+  for (let j = 0; j < rh; j++) {
+    const n = yt.count[j];
+    const base = (yt.first[j] - sy0) * stride;
+    const wi0 = yt.at[j];
+    for (let k = 0; k < n; k++) {
+      const w = yw[wi0 + k];
+      const p = base + k * stride;
+      if (k === 0) for (let i = 0; i < stride; i++) acc[i] = rows[p + i] * w;
+      else for (let i = 0; i < stride; i++) acc[i] += rows[p + i] * w;
+    }
+    store(out, j * stride, acc, stride);
+  }
+  return { width: rw, height: rh, data: out };
+}
+
+/**
+ * Opaque pixels shrunk along at least one axis as Poppler's Splash does (scaleImageYdXd, YdXu
+ * and YuXd): each box's byte sum times 2^23 / its size, rounded down to an integer, then shifted
+ * back, so a box's average can come out one below its exact value. Growing axes repeat pixels.
+ */
+function boxScale(px: Pixmap, xt: Taps, yt: Taps, rw: number, rh: number, shrinkX: boolean, shrinkY: boolean): Premultiplied {
   const src = px.data;
   const sw = px.width;
-  const opaque = px.opaque;
-  // Rows across first, premultiplied as they are read.
-  const rows = new Float32Array((sy1 - sy0) * rw * 4);
+  let cx0 = sw;
+  let cx1 = 0;
+  for (let i = 0; i < rw; i++) {
+    cx0 = Math.min(cx0, xt.first[i]);
+    cx1 = Math.max(cx1, xt.first[i] + xt.count[i]);
+  }
+  const cols = cx1 - cx0;
+  // Each source column's sum over the destination row's source rows.
+  const sums = new Int32Array(cols * 3);
+  // Growing across, each source column's value, repeated into the destination.
+  const values = shrinkX ? null : new Uint8Array(cols * 3);
+  const out = new Uint8Array(rw * rh * 4);
+  const { first, count } = xt;
+  for (let j = 0, o = 0; j < rh; j++) {
+    const ystep = shrinkY ? yt.count[j] : 1;
+    const sy = yt.first[j];
+    for (let k = 0; k < ystep; k++) {
+      let p = ((sy + k) * sw + cx0) * 4;
+      if (k === 0) {
+        for (let c = 0; c < cols * 3; c += 3, p += 4) {
+          sums[c] = src[p];
+          sums[c + 1] = src[p + 1];
+          sums[c + 2] = src[p + 2];
+        }
+      } else {
+        for (let c = 0; c < cols * 3; c += 3, p += 4) {
+          sums[c] += src[p];
+          sums[c + 1] += src[p + 1];
+          sums[c + 2] += src[p + 2];
+        }
+      }
+    }
+    if (values) {
+      const d = Math.floor(0x800000 / ystep);
+      for (let c = 0; c < cols * 3; c++) values[c] = (sums[c] * d) >> 23;
+      for (let i = 0; i < rw; i++, o += 4) {
+        const c = (first[i] - cx0) * 3;
+        out[o] = values[c];
+        out[o + 1] = values[c + 1];
+        out[o + 2] = values[c + 2];
+        out[o + 3] = 255;
+      }
+      continue;
+    }
+    for (let i = 0; i < rw; i++, o += 4) {
+      const n = count[i];
+      // Below 2^31: a box of n pixels sums to at most 255 · n, and d · n is at most 2^23.
+      const d = Math.floor(0x800000 / (ystep * n));
+      let c = (first[i] - cx0) * 3;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (const end = c + n * 3; c < end; c += 3) {
+        r += sums[c];
+        g += sums[c + 1];
+        b += sums[c + 2];
+      }
+      out[o] = (r * d) >> 23;
+      out[o + 1] = (g * d) >> 23;
+      out[o + 2] = (b * d) >> 23;
+      out[o + 3] = 255;
+    }
+  }
+  return { width: rw, height: rh, data: out };
+}
+
+/** Destination bytes from summed premultiplied values, truncated as Poppler's integer arithmetic does. */
+function store(out: Uint8Array, o: number, acc: Float64Array, n: number): void {
+  for (let i = 0; i < n; i++) {
+    const v = acc[i];
+    out[o + i] = v < 0 ? 0 : v > 255 ? 255 : (v + 1e-3) | 0;
+  }
+}
+
+/** Scales source row `sy` across into `dst` at `o`, premultiplied, through the taps `xt`. */
+function rowScaler(px: Pixmap, xt: Taps, rw: number): (sy: number, dst: Float32Array, o: number) => void {
+  const src = px.data;
+  const sw = px.width;
   const { count, first, at, weights } = xt;
-  for (let sy = sy0; sy < sy1; sy++) {
+  const opaque = px.opaque;
+  return (sy, dst, o) => {
     const so = sy * sw * 4;
-    let o = (sy - sy0) * rw * 4;
     for (let i = 0; i < rw; i++, o += 4) {
       let r = 0;
       let g = 0;
@@ -284,37 +405,12 @@ function resample(px: Pixmap, dw: number, dh: number, rx0: number, ry0: number, 
           al += src[p + 3] * w;
         }
       }
-      rows[o] = r;
-      rows[o + 1] = g;
-      rows[o + 2] = b;
-      rows[o + 3] = al;
+      dst[o] = r;
+      dst[o + 1] = g;
+      dst[o + 2] = b;
+      dst[o + 3] = al;
     }
-  }
-  const out = new Uint8Array(rw * rh * 4);
-  const stride = rw * 4;
-  const yw = yt.weights;
-  for (let j = 0; j < rh; j++) {
-    const n = yt.count[j];
-    const base = (yt.first[j] - sy0) * stride;
-    const wi0 = yt.at[j];
-    let o = j * stride;
-    if (n === 1) {
-      // One source row: scale it alone.
-      const w = yw[wi0];
-      for (let i = 0; i < stride; i++, o++) {
-        const v = rows[base + i] * w;
-        // Truncated, as Poppler's integer arithmetic does.
-        out[o] = v < 0 ? 0 : v > 255 ? 255 : (v + 1e-3) | 0;
-      }
-      continue;
-    }
-    for (let i = 0; i < stride; i++, o++) {
-      let v = 0;
-      for (let k = 0, p = base + i; k < n; k++, p += stride) v += rows[p] * yw[wi0 + k];
-      out[o] = v < 0 ? 0 : v > 255 ? 255 : (v + 1e-3) | 0;
-    }
-  }
-  return { width: rw, height: rh, data: out };
+  };
 }
 
 /** Composite premultiplied pixels with their top-left at (x0, y0), through the canvas clip. */

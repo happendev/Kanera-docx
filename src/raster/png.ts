@@ -18,16 +18,21 @@ function tableCrc32(d: Uint8Array): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-/** Filtered scanlines of an RGB image, ready for zlib. Pixels outside each row's [lo, hi) are white. */
-export function pngScanlines(width: number, height: number, rgb: Uint8Array, lo: Int32Array, hi: Int32Array): Uint8Array {
+/**
+ * Filtered scanlines of an RGB image, ready for zlib, written to `out` when given (any contents,
+ * `(width * 3 + 1) * height` bytes). Pixels outside each row's [lo, hi) are white.
+ */
+export function pngScanlines(width: number, height: number, rgb: Uint8Array, lo: Int32Array, hi: Int32Array, out = new Uint8Array((width * 3 + 1) * height)): Uint8Array<ArrayBuffer> {
   const stride = width * 3;
-  const out = new Uint8Array((stride + 1) * height);
   for (let y = 0; y < height; y++) {
     const o = y * (stride + 1);
-    if (lo[y] < hi[y]) out.set(rgb.subarray(y * stride, y * stride + stride), o + 1);
-    else {
+    if (lo[y] < hi[y]) {
+      out[o] = 0;
+      out.set(rgb.subarray(y * stride, y * stride + stride), o + 1);
+    } else {
       out[o] = 1;
       out[o + 1] = out[o + 2] = out[o + 3] = 255;
+      out.fill(0, o + 4, o + stride + 1);
     }
   }
   return out;

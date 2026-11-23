@@ -38,6 +38,8 @@ interface GlyphMask {
   w: number;
   h: number;
   data: Uint8Array;
+  /** Each row's covered columns, as [first, past the last) pairs: [0, 0) for an empty row. */
+  spans: Int32Array;
 }
 
 /** Draws colour glyphs (fonts with COLR tables), where a renderer supports them. */
@@ -126,13 +128,13 @@ export class TextPainter {
             const ix = Math.floor(tx);
             const iy = Math.floor(ty);
             const mask = this.mask(fills, font, gid, scale, Math.floor((tx - ix) * steps) * quarters, Math.floor((ty - iy) * steps) * quarters, false);
-            if (mask) this.canvas.blit(mask.data, mask.w, mask.h, ix + mask.x, iy + mask.y, rgb, alpha);
+            if (mask) this.canvas.blit(mask.data, mask.w, mask.h, ix + mask.x, iy + mask.y, rgb, alpha, false, mask.spans);
             continue;
           }
           const ix = Math.floor(ox);
           const fx = fractional ? Math.min(SUBPIXELS - 1, Math.floor((ox - ix) * SUBPIXELS)) : 0;
           const mask = this.mask(fills, font, gid, scale, fx, 0, false);
-          if (mask) this.canvas.blit(mask.data, mask.w, mask.h, ix + mask.x, Math.floor(oy) + mask.y, rgb, alpha);
+          if (mask) this.canvas.blit(mask.data, mask.w, mask.h, ix + mask.x, Math.floor(oy) + mask.y, rgb, alpha, false, mask.spans);
           continue;
         }
         let ix = Math.floor(ox);
@@ -149,10 +151,10 @@ export class TextPainter {
         }
         if (fill) {
           const mask = this.mask(fills, font, gid, scale, fx, fy, true);
-          if (mask) this.canvas.blit(mask.data, mask.w, mask.h, ix + mask.x, iy + mask.y, rgb, alpha, true);
+          if (mask) this.canvas.blit(mask.data, mask.w, mask.h, ix + mask.x, iy + mask.y, rgb, alpha, true, mask.spans);
         }
         const mask = this.mask(strokes, font, gid, scale, fx, fy, true, strokeWidth, state.join);
-        if (mask) this.canvas.blit(mask.data, mask.w, mask.h, ix + mask.x, iy + mask.y, rgb, alpha, true);
+        if (mask) this.canvas.blit(mask.data, mask.w, mask.h, ix + mask.x, iy + mask.y, rgb, alpha, true, mask.spans);
         continue;
       }
       const m = concat([k * th, 0, k * skew, -k, x, y], ctm);
@@ -204,11 +206,11 @@ export class TextPainter {
     if (mask !== undefined) return mask;
     mask = this.render(font, gid, [m[0], m[1], m[2], m[3], fx / SUBPIXELS, fy / SUBPIXELS], vector, strokeWidth, join);
     if (mask) {
-      this.bytes += mask.data.length + 64;
+      this.bytes += mask.data.length + mask.spans.length * 4 + 64;
       if (this.bytes > MAX_CACHE_BYTES) {
         // Start afresh; the sets stay, emptied, for the runs that hold them.
         for (const byFace of this.cache.values()) for (const s of byFace.values()) s.clear();
-        this.bytes = mask.data.length + 64;
+        this.bytes = mask.data.length + mask.spans.length * 4 + 64;
       }
     }
     set.set(key, mask);
@@ -254,7 +256,17 @@ export class TextPainter {
       else if (vector) for (let x = from; x < to; x++) data[o + x] = (row[x] * 255 + 0.5) | 0;
       else for (let x = from; x < to; x++) data[o + x] = Math.min(255, (row[x] * 256) | 0);
     });
-    return { x: x0, y: y0, w, h, data };
+    const spans = new Int32Array(h * 2);
+    for (let y = 0; y < h; y++) {
+      const o = y * w;
+      let a = 0;
+      let b = w;
+      while (a < w && !data[o + a]) a++;
+      while (b > a && !data[o + b - 1]) b--;
+      spans[y * 2] = a;
+      spans[y * 2 + 1] = b;
+    }
+    return { x: x0, y: y0, w, h, data, spans };
   }
 }
 

@@ -17,6 +17,9 @@ export function drawShade(canvas: Canvas, op: ShadeOp, ctm: Matrix): void {
     rgb[i * 3 + 1] = (v >> 8) & 255;
     rgb[i * 3 + 2] = v & 255;
   });
+  // Each sample's change to the next, exact as the samples are whole numbers.
+  const step = new Float32Array(n * 3);
+  for (let i = 0; i < (n - 1) * 3; i++) step[i] = rgb[i + 3] - rgb[i];
   // Opacity samples are 8-bit in the PDF's soft mask too.
   const alphas = op.alphas ? Float32Array.from(op.alphas, (a) => Math.round(Math.max(0, Math.min(1, a)) * 255) / 255) : null;
   const g = op.geometry;
@@ -62,42 +65,99 @@ export function drawShade(canvas: Canvas, op: ShadeOp, ctm: Matrix): void {
   const axial = g.type === 'axial';
 
   const alpha = op.alpha !== undefined && op.alpha < 1 ? Math.max(0, op.alpha) : 1;
+  // An axial position that a step along the row (or down a column) leaves alone, as each user-space
+  // coordinate either stays put or counts for nothing: one colour per row, or the same row each time.
+  const flatRows = axial && (adx === 0 || inv[0] === 0) && (ady === 0 || inv[1] === 0);
+  const sameRows = axial && (adx === 0 || inv[2] === 0) && (ady === 0 || inv[3] === 0);
+  let last: Float32Array | null = null;
+  let lastX0 = 0;
+  let lastX1 = 0;
+  // Upright, x in user space follows the column and y the row, so the position's x term (u² when
+  // radial) is worked out once per column and its y term once per row, in the same arithmetic.
+  const separable = !ring && inv[1] === 0 && inv[2] === 0;
+  let cols = new Float64Array(0);
+  let colX0 = 0;
+  let colX1 = -1;
   canvas.shade(null, false, region, (y, x0, x1, out) => {
+    if (sameRows && last && x0 === lastX0 && x1 === lastX1) {
+      out.set(last.subarray(0, (x1 - x0) * 4));
+      return;
+    }
     // Pixel centres in user space, stepping along the row.
     const yc = y + 0.5;
     let px = inv[0] * (x0 + 0.5) + inv[2] * yc + inv[4];
     let py = inv[1] * (x0 + 0.5) + inv[3] * yc + inv[5];
     const sx = inv[0];
     const sy = inv[1];
-    for (let x = x0, o = 0; x < x1; x++, o += 4, px += sx, py += sy) {
+    const end = flatRows ? Math.min(x1, x0 + 1) : x1;
+    let rowTerm = 0;
+    if (separable) {
+      if (x0 !== colX0 || x1 !== colX1) {
+        if (cols.length < x1 - x0) cols = new Float64Array(x1 - x0);
+        let cx0 = px;
+        for (let k = 0; k < end - x0; k++, cx0 += sx) {
+          if (axial) cols[k] = (cx0 - ax) * adx;
+          else {
+            const u = (cx0 - cx) / rx;
+            cols[k] = u * u;
+          }
+        }
+        colX0 = x0;
+        colX1 = x1;
+      }
+      if (axial) rowTerm = (py - ay) * ady;
+      else {
+        const v = (py - cy) / ry;
+        rowTerm = v * v;
+      }
+    }
+    for (let x = x0, o = 0; x < end; x++, o += 4, px += sx, py += sy) {
       let t: number;
-      if (axial) t = (px - ax) * adx + (py - ay) * ady;
+      if (separable) t = axial ? cols[x - x0] + rowTerm : Math.sqrt(cols[x - x0] + rowTerm);
+      else if (axial) t = (px - ax) * adx + (py - ay) * ady;
       else if (ring) t = ring(px, py);
       else {
         const u = (px - cx) / rx;
         const v = (py - cy) / ry;
         t = Math.sqrt(u * u + v * v);
       }
-      if (Number.isNaN(t)) {
+      if (t !== t) {
         out[o + 3] = 0;
         continue;
       }
-      t = t < 0 ? 0 : t > 1 ? 1 : t;
-      const s = t * (n - 1);
-      const i = Math.min(n - 2, Math.floor(s));
-      if (i < 0) {
+      if (n === 1) {
         out[o] = rgb[0];
         out[o + 1] = rgb[1];
         out[o + 2] = rgb[2];
         out[o + 3] = alphas ? alphas[0] : 1;
         continue;
       }
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const s = t * (n - 1);
+      let i = s | 0;
+      if (i > n - 2) i = n - 2;
       const f = s - i;
       const p = i * 3;
-      out[o] = rgb[p] + (rgb[p + 3] - rgb[p]) * f;
-      out[o + 1] = rgb[p + 1] + (rgb[p + 4] - rgb[p + 1]) * f;
-      out[o + 2] = rgb[p + 2] + (rgb[p + 5] - rgb[p + 2]) * f;
+      out[o] = rgb[p] + step[p] * f;
+      out[o + 1] = rgb[p + 1] + step[p + 1] * f;
+      out[o + 2] = rgb[p + 2] + step[p + 2] * f;
       out[o + 3] = alphas ? alphas[i] + (alphas[i + 1] - alphas[i]) * f : 1;
+    }
+    if (flatRows) {
+      const [r, g, b, a] = out;
+      for (let o = 4; o < (x1 - x0) * 4; o += 4) {
+        out[o] = r;
+        out[o + 1] = g;
+        out[o + 2] = b;
+        out[o + 3] = a;
+      }
+    }
+    if (sameRows) {
+      const n = (x1 - x0) * 4;
+      if (!last || last.length < n) last = new Float32Array(n);
+      last.set(out.subarray(0, n));
+      lastX0 = x0;
+      lastX1 = x1;
     }
   }, alpha);
 }

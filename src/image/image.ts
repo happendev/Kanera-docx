@@ -377,21 +377,31 @@ export function unfilter(f: number, line: Uint8Array, prev: Uint8Array, bpp: num
     case 2:
       for (let i = 0; i < n; i++) line[i] = (line[i] + prev[i]) & 255;
       return;
-    case 3:
-      for (let i = 0; i < n; i++) line[i] = (line[i] + (((i >= bpp ? line[i - bpp] : 0) + prev[i]) >> 1)) & 255;
+    case 3: {
+      const head = Math.min(bpp, n);
+      for (let i = 0; i < head; i++) line[i] = (line[i] + (prev[i] >> 1)) & 255;
+      for (let i = bpp; i < n; i++) line[i] = (line[i] + ((line[i - bpp] + prev[i]) >> 1)) & 255;
       return;
-    case 4:
-      for (let i = 0; i < n; i++) {
-        const a = i >= bpp ? line[i - bpp] : 0;
+    }
+    case 4: {
+      // With no pixel to the left, the predictor is the one above.
+      const head = Math.min(bpp, n);
+      for (let i = 0; i < head; i++) line[i] = (line[i] + prev[i]) & 255;
+      for (let i = bpp; i < n; i++) {
+        const a = line[i - bpp];
         const b = prev[i];
-        const c = i >= bpp ? prev[i - bpp] : 0;
-        const p = a + b - c;
-        const pa = Math.abs(p - a);
-        const pb = Math.abs(p - b);
-        const pc = Math.abs(p - c);
+        const c = prev[i - bpp];
+        // |p - a|, |p - b| and |p - c| for p = a + b - c.
+        let pa = b - c;
+        let pb = a - c;
+        let pc = pa + pb;
+        if (pa < 0) pa = -pa;
+        if (pb < 0) pb = -pb;
+        if (pc < 0) pc = -pc;
         line[i] = (line[i] + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 255;
       }
       return;
+    }
     default:
       throw new Error(`PNG: bad filter ${f}`);
   }

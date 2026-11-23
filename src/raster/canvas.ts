@@ -377,7 +377,7 @@ export class Canvas {
    * Composite a coverage mask (0–255, `mw` × `mh`) with its top-left pixel at (dx, dy): a glyph,
    * or with `vector` a vector-drawn shape (clipped as vector paint is).
    */
-  blit(mask: Uint8Array, mw: number, mh: number, dx: number, dy: number, rgb: number, alpha: number, vector = false): void {
+  blit(mask: Uint8Array, mw: number, mh: number, dx: number, dy: number, rgb: number, alpha: number, vector = false, spans?: Int32Array): void {
     const c = this.clip;
     const x0 = Math.max(dx, c.x0);
     const y0 = Math.max(dy, c.y0);
@@ -394,10 +394,13 @@ export class Canvas {
     const l = vector && c.e0 < 1 ? c.x0 : -1;
     const r1 = vector && c.e1 < 1 ? c.x1 - 1 : -1;
     for (let y = y0; y < y1; y++) {
-      let o = (y * width + x0) * 3;
-      let m = (y - dy) * mw + (x0 - dx);
+      // Only the row's covered columns, where the mask says which they are.
+      const xa = spans ? Math.max(x0, dx + spans[(y - dy) * 2]) : x0;
+      const xb = spans ? Math.min(x1, dx + spans[(y - dy) * 2 + 1]) : x1;
+      let o = (y * width + xa) * 3;
+      let m = (y - dy) * mw + (xa - dx);
       const co = clipMask ? (y - c.my) * c.mw - c.mx : 0;
-      for (let x = x0; x < x1; x++, o += 3, m++) {
+      for (let x = xa; x < xb; x++, o += 3, m++) {
         const v = mask[m];
         if (!v) continue;
         let a = v * k;
