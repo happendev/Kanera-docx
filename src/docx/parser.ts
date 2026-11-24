@@ -3,9 +3,9 @@ import { fontFor } from '../fonts/script.js';
 import { deobfuscateFont } from '../fonts/odttf.js';
 import { isMetafile, metafileText } from '../image/metafile.js';
 import { attr, child, children, decodeEntities, descendant, descendants, elements, parseXml, path, resolveAlternateContent, textContent, type XmlElement } from '../util/xml.js';
-import { ChartPointBudget, chartTexts } from './chart.js';
-import { parseDrawing, parseVml, loadImage, type DrawingContext } from './drawing.js';
-import { mathTexts, parseOmml, type MathContext } from './math.js';
+import { ChartPointBudget, chartTexts } from '../ooxml/chart.js';
+import { parseDrawing, parseVml, loadImage, type DrawingContext } from '../ooxml/drawing.js';
+import { mathTexts, parseOmml, type MathContext } from '../ooxml/math.js';
 import type {
   Block,
   Border,
@@ -29,11 +29,11 @@ import type {
   Table,
   TableCell,
   TableRow,
-} from './model.js';
+} from '../ooxml/model.js';
 import { Numbering } from './numbering.js';
 import type { InflateBytes } from '../util/compression.js';
 import type { ArchiveLimits } from '../util/zip.js';
-import { OpcPackage } from './package.js';
+import { OpcPackage } from '../ooxml/package.js';
 import {
   DEFAULT_RUN,
   finalizePara,
@@ -55,10 +55,10 @@ import {
   type TableBordersDelta,
   type TableLook,
   type TcDelta,
-} from './props.js';
+} from '../ooxml/props.js';
 import { StyleSheet } from './styles.js';
-import { DEFAULT_THEME, parseTheme, type Theme } from './theme.js';
-import { emu, hexColor, measure, num, onOff, parseBorder, twip, twipAttr } from './values.js';
+import { DEFAULT_THEME, parseTheme, type Theme } from '../ooxml/theme.js';
+import { emu, hexColor, measure, num, onOff, parseBorder, twip, twipAttr } from '../ooxml/values.js';
 
 function checkTableColumns(count: number): void {
   if (!Number.isSafeInteger(count) || count < 0 || count > 256) throw new Error('Table column limit exceeded');

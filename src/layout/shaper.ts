@@ -1,7 +1,7 @@
-import { asksForEmoji, emojiSequence, isTag, isVariationSelector } from '../fonts/emoji.js';
+import { asksForEmoji, EMOJI_KEEPS_LINE, emojiSequence, isTag, isVariationSelector } from '../fonts/emoji.js';
 import { fontFor } from '../fonts/script.js';
 import type { FontRegistry, ResolvedFace } from '../fonts/registry.js';
-import type { Link, RunProps } from '../docx/model.js';
+import type { Link, RunProps } from '../ooxml/model.js';
 
 export interface ShapedGlyph {
   /** -1 for zero-width characters that draw nothing. */
@@ -88,15 +88,17 @@ export function shapeText(text: string, props: RunProps, fonts: FontRegistry, li
     }
     // An emoji sequence the font lacks prints from the emoji font, as one glyph where it has one.
     const emoji = !small && (cp < 0x80 ? cps[i + 1] === 0xfe0f || cps[i + 1] === 0x20e3 : asksForEmoji(cps[i + 1]) || !primary!.face.font.hasGlyph(cp)) ? emojiSequence(cps, i) : 0;
-    const emojiFace = emoji ? fonts.emojiFace(choice.family, choice.bold, choice.italic, primary!) : undefined;
+    const emojiFace = emoji ? fonts.emojiFace(choice.family, choice.bold, choice.italic, primary!, props.drawn) : undefined;
     if (emojiFace && cps.slice(i, i + emoji).every((c) => isVariationSelector(c) || isTag(c) || c === 0x200d || emojiFace.face.font.hasGlyph(c))) {
       const look = emojiFace.standIn ?? { scale: 1, drop: 0, advance: 1 };
       if (!cur || cur.face !== emojiFace || cur.size !== sm.size * look.scale || cur.scaleX !== scale) {
         cur = newRun(emojiFace, sm.size * look.scale, size, sm.shift, scale, props, link);
-        // The drop moves the glyphs only, not the line's top or bottom.
         cur.baselineShift -= look.drop * sm.size;
-        cur.ascent += look.drop * sm.size;
-        cur.descent -= look.drop * sm.size;
+        // In Word the drop moves the glyphs only, not the line's top or bottom.
+        if (EMOJI_KEEPS_LINE) {
+          cur.ascent += look.drop * sm.size;
+          cur.descent -= look.drop * sm.size;
+        }
         out.push(cur);
       }
       shapeEmoji(cps.slice(i, i + emoji), cur, props.spacing);

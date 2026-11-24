@@ -3,13 +3,18 @@ import { crc32, makeDocx, p } from './docx.js';
 
 /** A 4x2 opaque red PNG. */
 export function redPng(): Uint8Array {
+  return solidPng([255, 0, 0]);
+}
+
+/** A 4×2 PNG in one colour. */
+export function solidPng(rgb: readonly [number, number, number]): Uint8Array {
   const chunk = (type: string, data: number[]) => {
     const body = [...type].map((c) => c.charCodeAt(0)).concat(data);
     const crc = crc32(new Uint8Array(body));
     const len = data.length;
     return [len >>> 24, (len >>> 16) & 255, (len >>> 8) & 255, len & 255, ...body, crc >>> 24, (crc >>> 16) & 255, (crc >>> 8) & 255, crc & 255];
   };
-  const raw = [0, ...Array(4).fill([255, 0, 0]).flat(), 0, ...Array(4).fill([255, 0, 0]).flat()];
+  const raw = [0, ...Array(4).fill(rgb).flat(), 0, ...Array(4).fill(rgb).flat()];
   return new Uint8Array([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     ...chunk('IHDR', [0, 0, 0, 4, 0, 0, 0, 2, 8, 2, 0, 0, 0]),

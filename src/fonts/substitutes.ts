@@ -7,7 +7,15 @@
  * The remaining entries are the closest open fonts by design and width.
  */
 
+import { APP, FONT_NAME_VARIANTS, MISSING_FONT } from '../profile.js';
+
 export type GenericFamily = 'serif' | 'sans' | 'mono' | 'cjk' | 'symbol';
+
+// Name matching for PostScript and web font names; see squeezedRule.
+let squeezedRules: Map<string, SubstituteRule> | undefined;
+const squeezedCache = new Map<string, SubstituteRule | undefined>();
+const STYLE_TAIL = /(regular|roman|book|normal|medium|light|thin|italic|oblique|it|(?:demi|semi|extra|ultra)?bold|demi|heavy|black)$/;
+const HEAVY = /^((?:demi|semi|extra|ultra)?bold|demi|heavy|black)$/;
 
 interface SubstituteRule {
   families: string[];
@@ -15,6 +23,13 @@ interface SubstituteRule {
   metricCompatible: boolean;
   /** Class for names that the generic heuristics would misidentify. */
   generic?: GenericFamily;
+  /** The substitutes' bold faces stand in (for a semibold weight the substitutes lack). */
+  bold?: boolean;
+  /**
+   * The name is one face's, not a family's (AvenirNextLTPro-Medium): the application has no bold
+   * face for it, so bold text is that face made bold.
+   */
+  singleFace?: boolean;
   /** Families of a different width tried after `families`, which never count as metric-compatible. */
   close?: string[];
   /**
@@ -22,12 +37,31 @@ interface SubstituteRule {
    * widths match but whose own vertical metrics differ, so line heights still match Word.
    */
   vmetrics?: [number, number, number];
-  /** By substitute family, how much wider the original sets text: the substitute is drawn that much wider to keep Word's line breaks. */
+  /**
+   * The original's Windows (GDI) line metrics, which Excel and PowerPoint lay it out by, where they
+   * differ from `vmetrics` (Word's) or only they are known. `substituteFamilies` gives them as
+   * `vmetrics` outside Word (the profile's `APP`).
+   */
+  winVmetrics?: [number, number, number];
+  /**
+   * By substitute family, how much wider the original sets text: the substitute is drawn that much
+   * wider to keep Word's line breaks. A key with ' bold', ' italic' or ' bold italic' after the
+   * family applies to that style only.
+   */
   widths?: Record<string, number>;
+  /** Widths measured on PowerPoint's PDFs that Word's don't bear out, added to `widths` outside Word (the profile's `APP`). */
+  winWidths?: Record<string, number>;
+  /**
+   * A macOS font that Windows lacks: an application on Windows draws it in the profile's
+   * `MISSING_FONT` when it has one (PowerPoint's PDFs draw Avenir Next in Calibri).
+   */
+  mac?: boolean;
 }
 
 // Line metrics (`vmetrics`) of the Office and web fonts below are those Word reports for them in its
-// PDFs; with them a substitute of another width still breaks pages where Word does. The closest
+// PDFs; with them a substitute of another width still breaks pages where Word does. `winVmetrics`
+// are their Windows (GDI) metrics, the OS/2 winAscent and winDescent Excel sizes rows by, read from
+// the fonts embedded in Excel's and PowerPoint's PDFs where the test corpora have them. The closest
 // widths come first: Tahoma is about as wide as Liberation Sans, not DejaVu Sans.
 
 // Preserve Aptos's typographic line metrics even when a close substitute has different advances.
@@ -43,7 +77,7 @@ const RULES: Record<string, SubstituteRule> = {
   // Word for Mac adds macOS Helvetica's 0.2 em line gap above the text: a single line is 1.2 em,
   // not Arial's 1.15. Helvetica Neue's lines are 1.2 em too.
   helvetica: { families: ['liberation sans', 'arimo'], metricCompatible: true, vmetrics: [0.77, 0.23, 0.2] },
-  'helvetica neue': { families: ['liberation sans', 'arimo'], metricCompatible: false, vmetrics: [0.952, 0.213, 0.035] },
+  'helvetica neue': { families: ['liberation sans', 'arimo'], metricCompatible: false, mac: true, vmetrics: [0.952, 0.213, 0.035] },
   'arial unicode ms': { families: ['liberation sans', 'dejavu sans'], metricCompatible: false, vmetrics: [1.069, 0.271, 0] },
   // Word's Arial Narrow has a taller line than the open font despite matching advances.
   'arial narrow': { families: ['liberation sans narrow'], close: ['liberation sans'], metricCompatible: true, vmetrics: [1916 / 2048, 434 / 2048, 0] },
@@ -53,9 +87,11 @@ const RULES: Record<string, SubstituteRule> = {
   'courier new': { families: ['liberation mono', 'cousine'], metricCompatible: true },
   courier: { families: ['liberation mono', 'cousine'], metricCompatible: true },
   georgia: { families: ['gelasio'], metricCompatible: true, vmetrics: [1878 / 2048, 449 / 2048, 0] },
-  'segoe ui': { families: ['selawik'], metricCompatible: true },
+  // Selawik has no italic: Segoe UI Italic sets 2.5% narrower than its slanted upright (measured
+  // on PowerPoint's PDFs, as are the other `winWidths` below).
+  'segoe ui': { families: ['selawik'], metricCompatible: true, winWidths: { 'selawik italic': 0.975 } },
   'segoe ui light': { families: ['selawik light'], close: ['selawik'], metricCompatible: true },
-  'segoe ui semibold': { families: ['selawik semibold'], close: ['selawik'], metricCompatible: true },
+  'segoe ui semibold': { families: ['selawik semibold'], close: ['selawik'], metricCompatible: true, winWidths: { 'selawik semibold': 0.986 } },
   'segoe ui semilight': { families: ['selawik semilight'], close: ['selawik'], metricCompatible: true },
   'segoe ui black': { families: ['selawik'], metricCompatible: false, generic: 'sans', vmetrics: [2210 / 2048, 514 / 2048, 0] },
   // An Office cloud font for Arabic and Latin; its Arabic is drawn by a fallback at Dubai's width (see ARABIC_WIDTHS).
@@ -67,23 +103,28 @@ const RULES: Record<string, SubstituteRule> = {
   'aptos narrow': { families: ['morrow sans narrow'], close: ['liberation sans narrow', 'liberation sans'], metricCompatible: true, vmetrics: APTOS_LINE_METRICS },
   'aptos light': { families: ['morrow sans light'], close: ['selawik light', 'selawik'], metricCompatible: true, vmetrics: APTOS_LINE_METRICS },
   'aptos mono': { families: ['morrow mono'], close: ['liberation mono'], metricCompatible: true },
-  verdana: { families: ['dejavu sans'], metricCompatible: false, vmetrics: [2059 / 2048, 430 / 2048, 0] },
+  verdana: { families: ['dejavu sans'], metricCompatible: false, vmetrics: [2059 / 2048, 430 / 2048, 0], winWidths: { 'dejavu sans bold': 0.992 } },
   tahoma: { families: ['liberation sans'], metricCompatible: false, vmetrics: [2049 / 2048, 423 / 2048, 0] },
   'trebuchet ms': { families: ['roboto', 'liberation sans'], metricCompatible: false, vmetrics: [1923 / 2048, 455 / 2048, 0] },
   // Century Gothic was drawn on ITC Avant Garde's widths, as is TeX Gyre Adventor (in the full
   // pack). Word's line metrics apply whichever face stands in.
-  'century gothic': { families: ['tex gyre adventor'], close: ['liberation sans'], metricCompatible: true, vmetrics: [2060 / 2048, 451 / 2048, 0] },
+  'century gothic': { families: ['tex gyre adventor'], close: ['liberation sans'], metricCompatible: true, vmetrics: [2060 / 2048, 451 / 2048, 0], winVmetrics: [1989 / 2048, 451 / 2048, 0] },
   'gill sans mt': { families: ['selawik', 'liberation sans'], metricCompatible: false },
   'lucida sans unicode': { families: ['dejavu sans'], metricCompatible: false, vmetrics: [1.097, 0.44, 0] },
   'lucida grande': { families: ['dejavu sans'], metricCompatible: false },
   // Consolas's cells are 1126 units of 2048 wide, Liberation Mono's 1229.
-  consolas: { families: ['liberation mono'], metricCompatible: false, widths: { 'liberation mono': 1126 / 1229 } },
+  consolas: { families: ['liberation mono'], metricCompatible: false, winVmetrics: [1884 / 2048, 514 / 2048, 0], widths: { 'liberation mono': 1126 / 1229 } },
   'lucida console': { families: ['liberation mono'], metricCompatible: false },
   'book antiqua': { families: ['liberation serif'], metricCompatible: false, vmetrics: [0.923, 0.282, 0] },
   'bookman old style': { families: ['gelasio', 'liberation serif'], metricCompatible: false, vmetrics: [0.942, 0.232, 0] },
   garamond: { families: ['liberation serif'], metricCompatible: false, vmetrics: [0.862, 0.263, 0] },
   'palatino linotype': { families: ['gelasio', 'liberation serif'], metricCompatible: false, vmetrics: [1.05, 0.299, 0] },
-  'franklin gothic book': { families: ['liberation sans'], metricCompatible: false },
+  'franklin gothic book': { families: ['liberation sans'], metricCompatible: false, winVmetrics: [1877 / 2048, 445 / 2048, 0] },
+  'franklin gothic demi': { families: ['liberation sans'], metricCompatible: false, generic: 'sans', winVmetrics: [1877 / 2048, 445 / 2048, 0] },
+  'tw cen mt': { families: ['liberation sans narrow', 'liberation sans'], metricCompatible: false, generic: 'sans', winVmetrics: [1753 / 2048, 477 / 2048, 0] },
+  'arial nova': { families: ['liberation sans', 'arimo'], metricCompatible: false, generic: 'sans', winVmetrics: [2011 / 2048, 466 / 2048, 0] },
+  grandview: { families: ['liberation sans'], metricCompatible: false, generic: 'sans', winVmetrics: [2036 / 2048, 422 / 2048, 0] },
+  'grandview display': { families: ['liberation sans'], metricCompatible: false, generic: 'sans', winVmetrics: [2036 / 2048, 422 / 2048, 0] },
   'open sans': { families: ['open sans', 'selawik'], metricCompatible: false, vmetrics: [1.069, 0.293, 0] },
   univers: { families: ['liberation sans'], metricCompatible: false },
   // Century has Century Schoolbook's widths (TeX Gyre Schola's), on average 4.8% wider than
@@ -102,14 +143,18 @@ const RULES: Record<string, SubstituteRule> = {
   bahnschrift: { families: ['gleis'], close: ['roboto'], metricCompatible: true },
   'bahnschrift condensed': { families: ['gleis condensed'], close: ['liberation sans narrow'], metricCompatible: true },
   'bahnschrift semi condensed': { families: ['gleis semicondensed'], close: ['liberation sans narrow'], metricCompatible: true },
+  // Gleis has no semibold or light weights: the nearest stand in.
+  'bahnschrift semibold': { families: ['gleis'], close: ['roboto'], metricCompatible: false, generic: 'sans', bold: true },
+  'bahnschrift light': { families: ['gleis'], close: ['roboto light', 'roboto'], metricCompatible: false, generic: 'sans' },
+  'bahnschrift semilight': { families: ['gleis'], close: ['roboto'], metricCompatible: false, generic: 'sans' },
   candara: { families: ['taper'], close: ['carlito'], metricCompatible: true },
   'candara light': { families: ['taper light'], close: ['taper', 'carlito'], metricCompatible: true },
   'cascadia code': { families: ['cascadia mono', 'dejavu sans mono', 'liberation mono'], metricCompatible: false },
   'cascadia mono': { families: ['cascadia code', 'dejavu sans mono', 'liberation mono'], metricCompatible: false },
   'comic sans ms': { families: ['comic neue'], metricCompatible: false, vmetrics: [1.102, 0.292, 0] },
-  constantia: { families: ['fidela'], close: ['gelasio', 'liberation serif'], metricCompatible: true, generic: 'serif' },
+  constantia: { families: ['fidela'], close: ['gelasio', 'liberation serif'], metricCompatible: true, generic: 'serif', widths: { gelasio: 0.99, 'gelasio italic': 0.94, 'gelasio bold': 0.926, 'gelasio bold italic': 0.912 } },
   // Word's Corbel lines are 1.208 em (Word for Mac's PDFs), Carlito's 1.221.
-  corbel: { families: ['lintel'], close: ['carlito'], metricCompatible: true, vmetrics: [0.95, 0.258, 0] },
+  corbel: { families: ['lintel'], close: ['carlito'], metricCompatible: true, vmetrics: [0.95, 0.258, 0], winVmetrics: [1950 / 2048, 550 / 2048, 0], winWidths: { 'carlito bold': 1.031, 'carlito italic': 0.975 } },
   'franklin gothic medium': { families: ['leyden medium'], close: ['libre franklin', 'roboto'], metricCompatible: true },
   gabriola: { families: ['seraphine'], close: ['cormorant', 'liberation serif'], metricCompatible: true, generic: 'serif' },
   impact: { families: ['anvil'], close: ['oswald', 'liberation sans narrow'], metricCompatible: true },
@@ -121,7 +166,7 @@ const RULES: Record<string, SubstituteRule> = {
   'segoe ui variable display': { families: ['selawik'], metricCompatible: false },
   'segoe ui variable small': { families: ['selawik'], metricCompatible: false },
   'segoe ui variable text': { families: ['selawik'], metricCompatible: false },
-  'segoe ui symbol': { families: ['dejavu sans', 'noto sans symbols2', 'noto sans symbols'], metricCompatible: false },
+  'segoe ui symbol': { families: ['dejavu sans', 'noto sans symbols2', 'noto sans symbols'], metricCompatible: false, winVmetrics: [2210 / 2048, 514 / 2048, 0] },
   sitka: { families: ['baranof text', 'source serif 4', 'liberation serif'], metricCompatible: false, generic: 'serif' },
   'sitka text': { families: ['baranof text'], close: ['source serif 4', 'liberation serif'], metricCompatible: true, generic: 'serif' },
   'sitka heading': { families: ['baranof heading'], close: ['source serif 4', 'liberation serif'], metricCompatible: true, generic: 'serif' },
@@ -129,31 +174,35 @@ const RULES: Record<string, SubstituteRule> = {
 
   // macOS families. Menlo and DejaVu Sans Mono share Bitstream Vera ancestry; Monaco also
   // needs a fixed pitch substitute even when the document has no font table.
-  menlo: { families: ['dejavu sans mono', 'liberation mono'], metricCompatible: false, generic: 'mono' },
-  monaco: { families: ['dejavu sans mono', 'liberation mono'], metricCompatible: false, generic: 'mono' },
-  'sf mono': { families: ['dejavu sans mono', 'liberation mono'], metricCompatible: false },
-  'american typewriter': { families: ['bitter', 'gelasio', 'liberation serif'], metricCompatible: false, generic: 'serif' },
-  avenir: { families: ['onward', 'outfit', 'roboto'], metricCompatible: false },
-  'avenir next': { families: ['onward', 'outfit', 'roboto'], metricCompatible: false },
-  'avenir next condensed': { families: ['roboto condensed', 'liberation sans narrow'], metricCompatible: false },
+  menlo: { families: ['dejavu sans mono', 'liberation mono'], metricCompatible: false, mac: true, generic: 'mono' },
+  monaco: { families: ['dejavu sans mono', 'liberation mono'], metricCompatible: false, mac: true, generic: 'mono' },
+  'sf mono': { families: ['dejavu sans mono', 'liberation mono'], metricCompatible: false, mac: true },
+  'american typewriter': { families: ['bitter', 'gelasio', 'liberation serif'], metricCompatible: false, mac: true, generic: 'serif' },
+  avenir: { families: ['onward', 'outfit', 'roboto'], metricCompatible: false, mac: true },
+  // Avenir's regular weight, a macOS font that Word for Mac embeds as itself: its own rule keeps the
+  // font table's alternate (often Tw Cen MT or Corbel) from standing in. Line metrics from its PDFs;
+  // Windows has no Avenir, so Excel and PowerPoint keep Onward's own.
+  'avenir book': { families: ['onward', 'outfit', 'roboto'], metricCompatible: false, mac: true, vmetrics: [1, 0.366, 0], winVmetrics: [1972 / 2048, 512 / 2048, 0] },
+  'avenir next': { families: ['onward', 'outfit', 'roboto'], metricCompatible: false, mac: true },
+  'avenir next condensed': { families: ['roboto condensed', 'liberation sans narrow'], metricCompatible: false, mac: true },
   'avenir next lt pro': { families: ['onward'], close: ['outfit', 'roboto'], metricCompatible: true },
-  baskerville: { families: ['libre baskerville', 'liberation serif'], metricCompatible: false },
-  'bodoni 72': { families: ['libre bodoni', 'bodoni moda', 'liberation serif'], metricCompatible: false, generic: 'serif' },
-  chalkboard: { families: ['comic neue'], metricCompatible: false },
-  'chalkboard se': { families: ['comic neue'], metricCompatible: false },
-  didot: { families: ['gfs didot', 'libre bodoni', 'liberation serif'], metricCompatible: false, generic: 'serif' },
-  'din alternate': { families: ['gleis', 'roboto'], metricCompatible: false },
-  'din condensed': { families: ['gleis condensed', 'liberation sans narrow'], metricCompatible: false },
-  futura: { families: ['jost', 'onward', 'roboto'], metricCompatible: false },
-  geneva: { families: ['dejavu sans', 'liberation sans'], metricCompatible: false, vmetrics: [1, 0.25, 0.08] },
-  'gill sans': { families: ['rill', 'cabin', 'selawik'], metricCompatible: false },
-  'helvetica neue condensed': { families: ['liberation sans narrow', 'roboto condensed'], metricCompatible: false },
-  'hoefler text': { families: ['eb garamond', 'liberation serif'], metricCompatible: false, generic: 'serif' },
-  optima: { families: ['urw classico', 'selawik'], metricCompatible: false },
-  palatino: { families: ['p052', 'crimson pro', 'liberation serif'], metricCompatible: false },
-  'sf pro': { families: ['roboto', 'liberation sans'], metricCompatible: false },
-  'sf pro display': { families: ['roboto', 'liberation sans'], metricCompatible: false },
-  'sf pro text': { families: ['roboto', 'liberation sans'], metricCompatible: false },
+  baskerville: { families: ['libre baskerville', 'liberation serif'], metricCompatible: false, mac: true },
+  'bodoni 72': { families: ['libre bodoni', 'bodoni moda', 'liberation serif'], metricCompatible: false, mac: true, generic: 'serif' },
+  chalkboard: { families: ['comic neue'], metricCompatible: false, mac: true },
+  'chalkboard se': { families: ['comic neue'], metricCompatible: false, mac: true },
+  didot: { families: ['gfs didot', 'libre bodoni', 'liberation serif'], metricCompatible: false, mac: true, generic: 'serif' },
+  'din alternate': { families: ['gleis', 'roboto'], metricCompatible: false, mac: true },
+  'din condensed': { families: ['gleis condensed', 'liberation sans narrow'], metricCompatible: false, mac: true },
+  futura: { families: ['jost', 'onward', 'roboto'], metricCompatible: false, mac: true },
+  geneva: { families: ['dejavu sans', 'liberation sans'], metricCompatible: false, mac: true, vmetrics: [1, 0.25, 0.08] },
+  'gill sans': { families: ['rill', 'cabin', 'selawik'], metricCompatible: false, mac: true },
+  'helvetica neue condensed': { families: ['liberation sans narrow', 'roboto condensed'], metricCompatible: false, mac: true },
+  'hoefler text': { families: ['eb garamond', 'liberation serif'], metricCompatible: false, mac: true, generic: 'serif' },
+  optima: { families: ['urw classico', 'selawik'], metricCompatible: false, mac: true },
+  palatino: { families: ['p052', 'crimson pro', 'liberation serif'], metricCompatible: false, mac: true },
+  'sf pro': { families: ['roboto', 'liberation sans'], metricCompatible: false, mac: true },
+  'sf pro display': { families: ['roboto', 'liberation sans'], metricCompatible: false, mac: true },
+  'sf pro text': { families: ['roboto', 'liberation sans'], metricCompatible: false, mac: true },
 
   // Bullets in these fonts are drawn from Unicode fonts; the line still gets the original's
   // height (Word's PDFs report Symbol's ascent as 1.005 em, taller than Calibri's).
@@ -317,7 +366,35 @@ export function unstyledFamily(normalized: string): string {
 function fontRule(normalized: string): SubstituteRule | undefined {
   if (Object.hasOwn(RULES, normalized)) return RULES[normalized];
   const unstyled = unstyledFamily(normalized);
-  return Object.hasOwn(RULES, unstyled) ? RULES[unstyled] : undefined;
+  if (Object.hasOwn(RULES, unstyled)) return RULES[unstyled];
+  if (!FONT_NAME_VARIANTS) return undefined;
+  if (!squeezedCache.has(normalized)) squeezedCache.set(normalized, squeezedRule(normalized));
+  return squeezedCache.get(normalized);
+}
+
+// PostScript and web font names run the family's words together, often with a weight after them
+// ("AvenirNextLTPro-Demi", "AvenirNextLTW01RegularRegular"), and macOS names a weight after the
+// family ("Avenir Next Demi Bold"). Such a name finds its family's rule with the spaces and
+// punctuation squeezed out and the weight and style words dropped from its end. A heavy weight
+// takes the substitutes' bold faces; any other names a single face, which bold text makes bold
+// (PowerPoint strokes AvenirNextLTPro-Medium rather than use Avenir Next's bold). Its tables sit at
+// the top of the file, as module setup already calls fontRule.
+function squeezedRule(normalized: string): SubstituteRule | undefined {
+  squeezedRules ??= new Map(Object.entries(RULES).map(([name, rule]) => [name.replace(/[^a-z0-9]/g, ''), rule]));
+  // Linotype's web fonts: "Avenir Next LT W01" is Avenir Next LT Pro.
+  let key = normalized.replace(/[^a-z0-9]/g, '').replace(/ltw\d\d/, 'ltpro').replace(/w\d\d(?=[a-z]*$)/, '');
+  let heavy = false;
+  let styled = false;
+  for (let i = 0; i < 4 && key; i++) {
+    const rule = squeezedRules.get(key);
+    if (rule) return heavy && !rule.bold ? { ...rule, bold: true } : styled && !heavy ? { ...rule, singleFace: true } : rule;
+    const tail = STYLE_TAIL.exec(key);
+    if (!tail || tail.index === 0) return undefined;
+    heavy ||= HEAVY.test(tail[0]);
+    styled = true;
+    key = key.slice(0, tail.index);
+  }
+  return undefined;
 }
 
 // Line metrics (ascent, descent, line gap in em) of the common East Asian system fonts. Their
@@ -365,9 +442,18 @@ export function halfWidthLatin(family: string): boolean {
  * Whether a family's name selects a bold face: "Arial Bold", or a Japanese HG font named for its
  * weight (B bold, E and EB extra bold, UB ultra bold: HG創英角ｺﾞｼｯｸUB, HGPｺﾞｼｯｸE).
  */
+/**
+ * Whether `family` names a single face that bold text makes bold rather than replacing it with
+ * a bold face. Not a font the application lacks and draws in `MISSING_FONT`, whose bold it uses.
+ */
+export function singleFace(family: string): boolean {
+  const rule = fontRule(normalizeFamily(family));
+  return rule?.singleFace === true && !(rule.mac && MISSING_FONT);
+}
+
 export function boldByName(family: string): boolean {
   const n = normalizeFamily(family);
-  return /\bbold\b/.test(n) || /^(hg|ｈｇ)\S*?(ub|eb|e|b)(-pro)?$/.test(n);
+  return /\bbold\b/.test(n) || /^(hg|ｈｇ)\S*?(ub|eb|e|b)(-pro)?$/.test(n) || fontRule(n)?.bold === true;
 }
 
 /**
@@ -436,7 +522,16 @@ export function cjkFallbackLine(family: string, cp: number): [number, number, nu
 /** Families tried, in order, for a missing font; `compatible` are those with the same widths. */
 export function substituteFamilies(family: string): { families: string[]; compatible: string[]; vmetrics?: [number, number, number]; widths?: Record<string, number> } | null {
   const rule = fontRule(normalizeFamily(family));
-  return rule ? { families: [...rule.families, ...(rule.close ?? [])], compatible: rule.metricCompatible ? rule.families : [], vmetrics: rule.vmetrics, widths: rule.widths } : null;
+  if (!rule) return null;
+  if (rule.mac && MISSING_FONT) {
+    const missing = substituteFamilies(MISSING_FONT);
+    // Calibri itself comes first, for a caller that supplies it.
+    if (missing) return { ...missing, families: [MISSING_FONT, ...missing.families] };
+  }
+  const windows = APP !== 'word';
+  const vmetrics = (windows && rule.winVmetrics) || rule.vmetrics;
+  const widths = windows && rule.winWidths ? { ...rule.widths, ...rule.winWidths } : rule.widths;
+  return { families: [...rule.families, ...(rule.close ?? [])], compatible: rule.metricCompatible ? rule.families : [], vmetrics, widths };
 }
 
 export interface FontTableHints {

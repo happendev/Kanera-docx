@@ -14,11 +14,13 @@ import { A4_SECT, makeDocx, p } from './helpers/docx.js';
 import { glyphOps, layout, lines, pageText } from './helpers/layout.js';
 import { anchoredImage, inlineImage, redPng } from './helpers/sample.js';
 import { formatNumber } from '../src/layout/chart.js';
-import { applyColorMods } from '../src/docx/values.js';
+import { applyColorMods } from '../src/ooxml/values.js';
 import type { DrawOp as DrawOpLike, PathOp, ShadeOp } from '../src/layout/types.js';
 import { convertDocx } from '../src/node.js';
-import type { DrawingInline, Paragraph } from '../src/docx/model.js';
+import type { DrawingInline, Paragraph } from '../src/ooxml/model.js';
 import { ghostscript, ghostscriptPixels, pdfStreams } from './helpers/pdf.js';
+import { decodeDib } from '../src/image/image.js';
+import { ImageBudget } from '../src/image/budget.js';
 
 const ARIAL_STYLES =
   '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>';
@@ -87,6 +89,38 @@ describe('line height and spacing', () => {
     const ys = lines(r.pages[0].body).map((l) => l.y);
     // Arial's 0.36pt external leading is the only addition to the 50pt picture.
     expect(ys[1] - ys[0]).toBeCloseTo(ARIAL_11 + 50, 0);
+  });
+
+  describe('a line holding only pictures', () => {
+    const media = { img1: { name: 'red.png', data: redPng() } };
+    const em = (units: number) => units / 2048;
+    // The picture's height (pt) in a run of `run` half-points, under a mark of `mark` half-points.
+    const pictureLine = async (h: number, run: number, mark: number, spacing = '') => {
+      const pic = inlineImage('img1', 20, h).replace('<w:r><w:drawing>', `<w:r><w:rPr><w:sz w:val="${run}"/></w:rPr><w:drawing>`);
+      const body = p('Above') + `<w:p><w:pPr>${spacing}<w:rPr><w:sz w:val="${mark}"/></w:rPr></w:pPr>${pic}</w:p>` + p('Below');
+      const ys = lines((await layout(makeDocx({ styles: ARIAL_STYLES, body, media }))).pages[0].body).map((l) => l.y);
+      return ys[1] - ys[0] - ARIAL_11;
+    };
+
+    it("is as tall as its pictures' run text, not the mark's", async () => {
+      // A 2pt picture in a 12pt run under an 8pt mark: the run's text height, and the mark's line gap.
+      expect(await pictureLine(2, 24, 16)).toBeCloseTo(em(1854 + 434) * 12 + em(67) * 8, 1);
+    });
+
+    it("scales the shorter of the run's and the mark's text heights by multiple spacing", async () => {
+      const half = '<w:spacing w:line="360" w:lineRule="auto"/>';
+      // A 10pt run under a 14pt mark adds half the run's height; a 14pt run under a 10pt mark half the mark's.
+      expect(await pictureLine(50, 20, 28, half)).toBeCloseTo(50 + em(67) * 14 + 0.5 * (em(1854 + 434) * 10 + em(67) * 14), 1);
+      expect(await pictureLine(50, 28, 20, half)).toBeCloseTo(50 + em(67) * 10 + 0.5 * (em(1854 + 434) * 10 + em(67) * 10), 1);
+    });
+
+    it('sits its pictures at the bottom of the line, with no descent below them', async () => {
+      // A 4pt picture in an 11pt line: the next line's ascent and line gap are all that lie below it.
+      const body = p('Above') + `<w:p>${inlineImage('img1', 20, 4)}</w:p>` + p('Below');
+      const page = (await layout(makeDocx({ styles: ARIAL_STYLES, body, media }))).pages[0];
+      const img = page.body.find((o) => o.kind === 'image');
+      expect(img && img.y + img.h).toBeCloseTo(lines(page.body)[1].y - em(1854 + 67) * 11, 1);
+    });
   });
 
   it('does not lay out an empty paragraph whose mark is hidden', async () => {
@@ -960,6 +994,48 @@ describe('floating objects', () => {
     expect(tipY - area.y).toBeCloseTo((80 * (-7904 - 3163)) / 21600, 1);
   });
 
+  it("draws a shape's theme shadow blurred, at 300 dpi, under the shape and its outline, as Word does", async () => {
+    const theme =
+      '<a:fmtScheme name="Office"><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst>' +
+      '<a:outerShdw blurRad="40000" dist="23000" dir="5400000" rotWithShape="0"><a:srgbClr val="000000"><a:alpha val="35000"/></a:srgbClr></a:outerShdw>' +
+      '</a:effectLst></a:effectStyle></a:effectStyleLst></a:fmtScheme>';
+    const shape = (rot: string) =>
+      '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="635000"/><a:graphic><a:graphicData>' +
+      `<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr><a:xfrm${rot}><a:off x="0" y="0"/><a:ext cx="1270000" cy="635000"/></a:xfrm><a:prstGeom prst="rect"/>` +
+      '<a:solidFill><a:srgbClr val="FF0000"/></a:solidFill><a:ln w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></wps:spPr>' +
+      '<wps:style><a:lnRef idx="1"><a:srgbClr val="000000"/></a:lnRef><a:fillRef idx="1"><a:srgbClr val="FF0000"/></a:fillRef><a:effectRef idx="2"><a:srgbClr val="000000"/></a:effectRef><a:fontRef idx="minor"/></wps:style>' +
+      '<wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>';
+    const draw = async (rot = '') => {
+      const ops = (await layout(makeDocx({ theme, body: shape(rot) }))).pages[0].body;
+      const at = ops.findIndex((o) => o.kind === 'image' && o.image.id.startsWith('shadow-'));
+      const fill = ops.find((o): o is PathOp => o.kind === 'path' && o.fill === 'FF0000')!;
+      return { ops, at, image: ops[at] as Extract<DrawOpLike, { kind: 'image' }>, fill };
+    };
+    const { ops, at, image, fill } = await draw();
+    // Behind the shape, and not cut out from under it.
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(ops.indexOf(fill)).toBeGreaterThan(at);
+    expect(ops.slice(0, at).some((o) => o.kind === 'clip')).toBe(false);
+    const xs = fill.segs.flatMap((q) => q.pts.filter((_, i) => i % 2 === 0));
+    const ys = fill.segs.flatMap((q) => q.pts.filter((_, i) => i % 2 === 1));
+    // 1.81pt down; reaching the 3.15pt blur past the 1pt outline's outer edge.
+    expect(image.x).toBeCloseTo(Math.min(...xs) - 0.5 - 3.15, 2);
+    expect(image.y).toBeCloseTo(Math.min(...ys) + 1.811 - 0.5 - 3.15, 2);
+    const dib = decodeDib(image.image.data, image.image.dibBits!, new ImageBudget())!;
+    expect(dib.width).toBe(Math.ceil((100 + 1 + 6.3) * (300 / 72)));
+    // 35% black inside; half of it on the outline's outer edge.
+    const row = Math.floor(dib.height / 2) * dib.width;
+    expect(dib.alpha![row + Math.floor(dib.width / 2)]).toBe(89);
+    const edge = Math.round(3.15 * (300 / 72));
+    expect(dib.alpha![row + edge]).toBeGreaterThan(35);
+    expect(dib.alpha![row + edge]).toBeLessThan(55);
+    // A shape turned a quarter keeps its shadow below it on the page: in its own turned frame, to its right.
+    const turned = await draw(' rot="5400000"');
+    const local = turned.image.y - Math.min(...turned.fill.segs.flatMap((q) => q.pts.filter((_, i) => i % 2 === 1)));
+    expect(local).toBeCloseTo(-0.5 - 3.15, 2);
+    expect(turned.image.x - Math.min(...turned.fill.segs.flatMap((q) => q.pts.filter((_, i) => i % 2 === 0)))).toBeCloseTo(1.811 - 0.5 - 3.15, 2);
+  });
+
   it('fits a text box set to resize to its text to the text, whatever height it was saved at', async () => {
     const box = (bodyPr: string) =>
       '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="1397000"/><a:graphic><a:graphicData>' +
@@ -1641,11 +1717,15 @@ describe('charts', () => {
     expect(green[0].segs.map((s) => s.op)).toEqual(['M', 'L']);
     expect(ys(green[0])[1]).toBeGreaterThan(ys(green[0])[0]);
     expect(stretches('0000FF')).toHaveLength(3);
-    // Varied fills leave every point the series' line, which stays one closed ring.
+    // Varied colours give each point of the chart's lone series its own automatic colour, line and
+    // all (as Excel prints them), so each stretch takes its point's colour and no ring is left.
     const varied = await chartPage(chartWith(radarWith(true, seriesWith('<c:marker><c:symbol val="none"/></c:marker>'))));
-    const rings = strokes(varied, '0000FF').filter((o) => o.segs.at(-1)!.op === 'Z');
-    expect(rings).toHaveLength(1);
-    expect(rings[0].segs.filter((s) => s.op === 'L')).toHaveLength(3);
+    const paths = varied.filter((o): o is PathOp => o.kind === 'path' && !o.fill && !!o.stroke);
+    expect(paths.filter((o) => o.stroke === '0000FF' && o.segs.at(-1)!.op === 'Z')).toHaveLength(0);
+    // Four stretches in four colours (the spokes, also diagonal, share the axis colour).
+    const legs = paths.filter((o) => o.segs.length === 2 && ys(o)[0] !== ys(o)[1]);
+    const count = (color: string | null | undefined) => legs.filter((o) => o.stroke === color).length;
+    expect(new Set(legs.map((o) => o.stroke).filter((c) => count(c) === 1)).size).toBe(4);
   });
 
   it("draws a radar's spokes from its category axis line unless the axis is deleted, then from its gridlines", async () => {

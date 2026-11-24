@@ -7,7 +7,9 @@ import { loadOutlines, needsOutlineLoad } from '../fonts/outline.js';
 import type { SfntFont } from '../fonts/sfnt.js';
 import { ImageBudget, type ImageLimits } from '../image/budget.js';
 import { sniffImage } from '../image/image.js';
-import type { Pixmap } from '../image/pixels.js';
+import { JpegScanLimit } from '../image/jpeg-decoder.js';
+import { encodeJpeg } from '../image/jpeg-encoder.js';
+import { UnreadableJpeg, type Pixmap } from '../image/pixels.js';
 import type { DrawOp, ImageOp, Page, PathSeg } from '../layout/types.js';
 import type { Compression } from '../util/compression.js';
 import { Canvas, type RasterStyle } from './canvas.js';
@@ -15,7 +17,6 @@ import { ColrPainter } from './color-glyph.js';
 import { drawForm } from './form.js';
 import { concat, flattenSegs, isAxisAligned, meanScale, Polylines, type Matrix } from './geometry.js';
 import { ImagePainter } from './image.js';
-import { jpegFile } from './jpeg.js';
 import { pngFile, pngScanlines } from './png.js';
 import { drawShade } from './shade.js';
 import { dashCount, dashCoverage, dashPolylines, MAX_DASHES, strokeOutline, type Cap, type Join, type StrokeStyle } from './stroke.js';
@@ -87,6 +88,9 @@ export async function renderImages(pages: Page[], compression: Compression, opts
   await preloadOutlines(indexes.map((i) => pages[i]));
   const style = opts.style ?? 'poppler';
   const painter = new PagePainter(compression, new ImageBudget(opts.imageLimits), warnings, opts.paintGrid);
+  // The pixel limits apply to the pictures of each page: unlike the PDF writer, which embeds JPEGs
+  // as they are, page images decode every picture, and a deck of photos passes the total.
+  const pageBudget = () => new ImageBudget(opts.imageLimits);
   const out: PageImage[] = new Array(indexes.length);
   // Pages compressing while later ones are drawn, where compression can run alongside.
   const pending: Promise<void>[] = [];
@@ -97,9 +101,9 @@ export async function renderImages(pages: Page[], compression: Compression, opts
       const { width, height } = sizes[k];
       if (canvas && canvas.width === width && canvas.height === height) canvas.reset();
       else canvas = new Canvas(width, height, style);
-      await painter.draw(pages[i], canvas, scale);
+      await painter.draw(pages[i], canvas, scale, pageBudget());
       if (opts.format === 'jpeg') {
-        out[k] = { page: i + 1, width, height, data: jpegFile(width, height, canvas.data, canvas.lo, canvas.hi, opts.quality ?? 90, dpi) };
+        out[k] = { page: i + 1, width, height, data: encodeJpeg(width, height, canvas.data, opts.quality ?? 90, { lo: canvas.lo, hi: canvas.hi, dpi }) };
         continue;
       }
       const size = (width * 3 + 1) * height;
@@ -164,7 +168,9 @@ type Drawable = { form: string } | { pixmap: Pixmap };
 class PagePainter {
   private readonly images: ImagePainter;
   private readonly forms = new Map<string, string | null>();
-  private readonly resolved = new Map<string, Drawable | null>();
+  /** Forms and failures by image; 'raster' for a picture the image painter decodes. */
+  private readonly resolved = new Map<string, Drawable | null | 'raster'>();
+  private readonly skipped = new Set<string>();
   private readonly text = new TextPainter(new ColrPainter());
   private readonly flat = new Polylines();
   private readonly outline = new Polylines();
@@ -180,7 +186,8 @@ class PagePainter {
     this.images = new ImagePainter(compression, budget);
   }
 
-  async draw(page: Page, canvas: Canvas, scale: number): Promise<void> {
+  async draw(page: Page, canvas: Canvas, scale: number, budget: ImageBudget): Promise<void> {
+    this.images.budget = budget;
     let ctm: Matrix = [scale, 0, 0, scale, 0, 0];
     const state: TextState = { join: 'miter' };
     const stack: Saved[] = [];
@@ -424,6 +431,8 @@ class PagePainter {
   private async resolve(ref: ImageRef): Promise<Drawable | null> {
     const key = ref.svg ? `${ref.id}\0${ref.svg.id}` : ref.id;
     const known = this.resolved.get(key);
+    // Decoded pictures stay in the image painter's cache, which may drop them.
+    if (known === 'raster') return this.pixmap(ref);
     if (known !== undefined) return known;
     let out: Drawable | null = null;
     const isSvg = !ref.dibBits && (/\.svg$/i.test(ref.id) || sniffImage(ref.data) === 'svg');
@@ -437,15 +446,41 @@ class PagePainter {
     } else {
       try {
         const pixmap = await this.images.load(ref);
-        if (pixmap) out = { pixmap };
-        else this.warnings.push(`Image ${ref.id} uses an unsupported format and was skipped`);
+        if (pixmap) {
+          this.resolved.set(key, 'raster');
+          return { pixmap };
+        }
+        this.warnings.push(`Image ${ref.id} uses an unsupported format and was skipped`);
       } catch (e) {
-        if (!(e instanceof Error && e.message === 'Image pixel limit exceeded')) throw e;
-        this.warnings.push(`Image ${ref.id} exceeds the image pixel limits and was skipped`);
+        if (e instanceof JpegScanLimit) this.warnings.push(`Image ${ref.id} is a JPEG with more than ${e.limit} scans and was skipped`);
+        else if (e instanceof UnreadableJpeg) this.warnings.push(`Image ${ref.id} is a JPEG that could not be decoded and was skipped`);
+        else if (e instanceof Error && e.message === 'Image pixel limit exceeded') {
+          // Another page's budget may still have room for it.
+          this.overLimit(ref);
+          return null;
+        } else throw e;
       }
     }
     this.resolved.set(key, out);
     return out;
+  }
+
+  /** A picture decoded before, decoded again if the cache dropped it. */
+  private async pixmap(ref: ImageRef): Promise<Drawable | null> {
+    try {
+      const pixmap = await this.images.load(ref);
+      return pixmap ? { pixmap } : null;
+    } catch (e) {
+      if (!(e instanceof Error && e.message === 'Image pixel limit exceeded')) throw e;
+      this.overLimit(ref);
+      return null;
+    }
+  }
+
+  private overLimit(ref: ImageRef): void {
+    if (this.skipped.has(ref.id)) return;
+    this.skipped.add(ref.id);
+    this.warnings.push(`Image ${ref.id} exceeds the image pixel limits and was skipped`);
   }
 
   private async image(canvas: Canvas, op: ImageOp, ctm: Matrix): Promise<void> {

@@ -4,7 +4,7 @@
  * PDFs; CJK text is drawn with the bundled Noto Sans CJK.
  */
 import { describe, expect, it } from 'vitest';
-import type { Paragraph, TextInline } from '../src/docx/model.js';
+import type { Paragraph, TextInline } from '../src/ooxml/model.js';
 import { formatNumber } from '../src/docx/numbering.js';
 import { parseDocx } from '../src/docx/parser.js';
 import { arabicForms, bidiClass, bidiLevels, visualOrder } from '../src/layout/bidi.js';

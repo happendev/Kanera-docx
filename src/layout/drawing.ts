@@ -1,10 +1,11 @@
-import type { Drawing, LineStyle, RunProps } from '../docx/model.js';
-import { DEFAULT_RUN } from '../docx/props.js';
+import type { Drawing, LineStyle, RunProps } from '../ooxml/model.js';
+import { DEFAULT_RUN } from '../ooxml/props.js';
 import { arc } from '../util/arc.js';
 import { layoutBlocks, type BoxEnv } from './box.js';
 import { renderChart } from './chart.js';
 import { gradientOps } from './gradient.js';
 import { metafileOps } from './metafile.js';
+import { shadowOps } from './shadow.js';
 import { shapeText } from './shaper.js';
 import { appendOps, translateOps, type DrawOp, type GlyphOp, type PathSeg } from './types.js';
 import { uprightEastAsian } from './vertical.js';
@@ -357,8 +358,8 @@ function lineDash(line: LineStyle): number[] | undefined {
 }
 
 /**
- * Draw a drawing whose extent's top-left corner is at (x, y). Effect extents (shadows, glow) sit
- * outside this box and are not drawn.
+ * Draw a drawing whose extent's top-left corner is at (x, y). Of the effects that reach outside
+ * this box (its effect extent), only an outer shadow is drawn.
  */
 export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): DrawOp[] {
   if (d.hidden) return [];
@@ -378,6 +379,7 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
     // A custom shape whose subpaths are all unfilled has nothing to fill or clip to.
     const path = shape?.length ? shape : null;
     const fill = isLine ? null : d.fill;
+    if (d.shadow) appendOps(ops, drawingShadow(d, path, !!(fill?.color || fill?.gradient) || !!d.image, x, y, w, h, m, env));
     if (fill?.gradient && path) ops.push(...gradientOps(path, fill.gradient, fill.alpha));
     else if (fill?.color && path) ops.push({ kind: 'path', segs: path, fill: fill.color, fillAlpha: fill.alpha < 1 ? fill.alpha : undefined, stroke: null });
     // Metafiles play back as vector drawing; anything they cannot express stays a picture.
@@ -408,6 +410,31 @@ export function renderDrawing(d: Drawing, x: number, y: number, env: BoxEnv): Dr
   }
   if (m) ops.push({ kind: 'restore' });
   return ops;
+}
+
+/**
+ * A shape's outer shadow, behind it: of its fill (`path`, or a picture's box) when `filled`, and its
+ * outline. Inside the turn `m`, a shadow that doesn't turn with the shape keeps its offset on the page.
+ */
+function drawingShadow(d: Drawing, path: PathSeg[] | null, filled: boolean, x: number, y: number, w: number, h: number, m: number[] | null, env: BoxEnv): DrawOp[] {
+  const s = d.shadow!;
+  let { dx, dy } = s;
+  if (m && !s.rotWithShape) {
+    const [a, b, c, e] = m;
+    const det = a * e - b * c;
+    if (det) [dx, dy] = [(e * dx - c * dy) / det, (a * dy - b * dx) / det];
+  }
+  const box: PathSeg[] = [
+    { op: 'M', pts: [x, y] },
+    { op: 'L', pts: [x + w, y] },
+    { op: 'L', pts: [x + w, y + h] },
+    { op: 'L', pts: [x, y + h] },
+    { op: 'Z', pts: [] },
+  ];
+  const area = filled ? (path ?? (d.image ? box : null)) : null;
+  const l = d.line;
+  const line = l?.color && l.width > 0 ? { segs: d.geometry === 'custom' ? geometryPath(d, x, y, w, h, 'stroke') : (path ?? geometryPath(d, x, y, w, h)), width: l.width, dash: lineDash(l) } : null;
+  return shadowOps({ fill: area, line }, { ...s, dx, dy }, env.shadows);
 }
 
 /**

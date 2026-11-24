@@ -150,7 +150,8 @@ export class SfntFont {
   private cmap = new Map<number, number>();
   /** True when the only usable cmap is the (3,0) symbol cmap with codes in U+F000..U+F0FF. */
   symbolCmap = false;
-  private kernPairs: Map<number, number> | null = null;
+  private kernIndex: KernIndex | null = null;
+  private kernCache = new Map<number, number>();
 
   constructor(
     readonly data: Uint8Array,
@@ -537,14 +538,24 @@ export class SfntFont {
     return range ? readComponents(this.r, range[0], range[1]) : [];
   }
 
-  /** Pair kerning in font units (legacy `kern` table, then GPOS pair adjustments). */
+  /** Pair kerning in font units (legacy `kern` table, then GPOS pair adjustments), read per pair. */
   kerning(left: number, right: number): number {
-    if (!this.kernPairs) this.kernPairs = this.parseKerning();
-    return this.kernPairs.get(left * 65536 + right) ?? 0;
+    const key = left * 65536 + right;
+    const cached = this.kernCache.get(key);
+    if (cached !== undefined) return cached;
+    this.kernIndex ??= this.indexKerning();
+    const value = this.lookupKerning(this.kernIndex, left, right);
+    if (this.kernCache.size >= KERN_CACHE_LIMIT) this.kernCache.clear();
+    this.kernCache.set(key, value);
+    return value;
   }
 
-  private parseKerning(): Map<number, number> {
-    const pairs = new Map<number, number>();
+  /**
+   * Locates the kerning subtables once. Pairs are binary-searched on demand rather than expanded
+   * into a map: fonts carry tens of thousands of class pairs and a slide uses a few hundred.
+   */
+  private indexKerning(): KernIndex {
+    const index: KernIndex = { legacy: [], gpos: [], gposEnd: 0 };
     const t = this.table('kern');
     if (t) {
       const o = t.offset;
@@ -563,28 +574,49 @@ export class SfntFont {
           const format = coverage >> 8;
           if (format === 0 && (coverage & 1) === 1) {
             requireBytes(p, 14, p + len);
-            const nPairs = this.r.u16(p + 6);
-            requireBytes(p, 14 + nPairs * 6, p + len);
-            this.budget.reserveKerning(nPairs);
-            for (let k = 0; k < nPairs; k++) {
-              const q = p + 14 + k * 6;
-              pairs.set(this.r.u16(q) * 65536 + this.r.u16(q + 2), this.r.i16(q + 4));
-            }
+            const count = this.r.u16(p + 6);
+            requireBytes(p, 14 + count * 6, p + len);
+            this.budget.reserveKerning(count);
+            reserveKernSubtable(index);
+            index.legacy.push(this.legacyKernSubtable(p + 14, count));
           }
           p += len;
         }
       }
     }
-    this.parseGposPairs(pairs);
-    return pairs;
+    // A later legacy subtable overrides an earlier one, so search them last first.
+    index.legacy.reverse();
+    this.indexGposPairs(index);
+    return index;
   }
 
-  private parseGposPairs(pairs: Map<number, number>): void {
+  /** Format-0 pairs must be sorted for a binary search; the rare unsorted table is mapped instead. */
+  private legacyKernSubtable(start: number, count: number): LegacyKern {
+    const r = this.r;
+    let previous = -1;
+    for (let k = 0; k < count; k++) {
+      const q = start + k * 6;
+      const key = r.u16(q) * 65536 + r.u16(q + 2);
+      if (key <= previous) {
+        const pairs = new Map<number, number>();
+        for (let j = 0; j < count; j++) {
+          const p = start + j * 6;
+          pairs.set(r.u16(p) * 65536 + r.u16(p + 2), r.i16(p + 4));
+        }
+        return { start, count, pairs };
+      }
+      previous = key;
+    }
+    return { start, count };
+  }
+
+  private indexGposPairs(index: KernIndex): void {
     const t = this.table('GPOS');
     if (!t) return;
     const r = this.r;
     const base = t.offset;
     const tableEnd = base + t.length;
+    index.gposEnd = tableEnd;
     const records = (start: number, count: number, size: number) => {
       requireBytes(start, count * size, tableEnd);
       this.budget.reserveKerning(count);
@@ -606,123 +638,6 @@ export class SfntFont {
       records(feat + 4, n, 2);
       for (let k = 0; k < n; k++) kernLookups.add(r.u16(feat + 4 + k * 2));
     }
-    const coverage = (off: number): number[] => {
-      requireBytes(off, 4, tableEnd);
-      const fmt = r.u16(off);
-      const out: number[] = [];
-      if (fmt === 1) {
-        const n = r.u16(off + 2);
-        records(off + 4, n, 2);
-        for (let i = 0; i < n; i++) out.push(r.u16(off + 4 + i * 2));
-      } else if (fmt === 2) {
-        const n = r.u16(off + 2);
-        records(off + 4, n, 6);
-        for (let i = 0; i < n; i++) {
-          const rr = off + 4 + i * 6;
-          const s = r.u16(rr);
-          const e = r.u16(rr + 2);
-          this.budget.reserveKerning(e - s + 1);
-          for (let g = s; g <= e; g++) out.push(g);
-        }
-      }
-      return out;
-    };
-    const classDef = (off: number): Map<number, number> => {
-      const m = new Map<number, number>();
-      requireBytes(off, 4, tableEnd);
-      const fmt = r.u16(off);
-      if (fmt === 1) {
-        requireBytes(off, 6, tableEnd);
-        const start = r.u16(off + 2);
-        const n = r.u16(off + 4);
-        records(off + 6, n, 2);
-        for (let i = 0; i < n; i++) m.set(start + i, r.u16(off + 6 + i * 2));
-      } else if (fmt === 2) {
-        const n = r.u16(off + 2);
-        records(off + 4, n, 6);
-        for (let i = 0; i < n; i++) {
-          const rr = off + 4 + i * 6;
-          const s = r.u16(rr);
-          const e = r.u16(rr + 2);
-          const c = r.u16(rr + 4);
-          this.budget.reserveKerning(e - s + 1);
-          for (let g = s; g <= e; g++) m.set(g, c);
-        }
-      }
-      return m;
-    };
-    const valueSize = (vf: number): number => {
-      let n = 0;
-      for (let b = 0; b < 8; b++) if (vf & (1 << b)) n += 2;
-      return n;
-    };
-    const xAdvance = (p: number, vf: number): number => {
-      // XAdvance is bit 2; preceded by XPlacement (bit 0) and YPlacement (bit 1).
-      if (!(vf & 4)) return 0;
-      let off = 0;
-      if (vf & 1) off += 2;
-      if (vf & 2) off += 2;
-      return r.i16(p + off);
-    };
-    const handleSubtable = (st: number) => {
-      requireBytes(st, 8, tableEnd);
-      const fmt = r.u16(st);
-      const cov = coverage(st + r.u16(st + 2));
-      const vf1 = r.u16(st + 4);
-      const vf2 = r.u16(st + 6);
-      const s1 = valueSize(vf1);
-      const s2 = valueSize(vf2);
-      if (fmt === 1) {
-        requireBytes(st, 10, tableEnd);
-        const setCount = r.u16(st + 8);
-        records(st + 10, setCount, 2);
-        for (let i = 0; i < setCount && i < cov.length; i++) {
-          const ps = st + r.u16(st + 10 + i * 2);
-          requireBytes(ps, 2, tableEnd);
-          const n = r.u16(ps);
-          records(ps + 2, n, 2 + s1 + s2);
-          for (let k = 0; k < n; k++) {
-            const pr = ps + 2 + k * (2 + s1 + s2);
-            const second = r.u16(pr);
-            const adj = xAdvance(pr + 2, vf1);
-            const key = cov[i] * 65536 + second;
-            if (adj && !pairs.has(key)) pairs.set(key, adj);
-          }
-        }
-      } else if (fmt === 2) {
-        requireBytes(st, 16, tableEnd);
-        const cd1 = classDef(st + r.u16(st + 8));
-        const cd2 = classDef(st + r.u16(st + 10));
-        const c1Count = r.u16(st + 12);
-        const c2Count = r.u16(st + 14);
-        const rec = s1 + s2;
-        requireBytes(st + 16, c1Count * c2Count * rec, tableEnd);
-        this.budget.reserveKerning(cov.length * c2Count);
-        // Class-pair matrices can be large; expand only for glyphs with a nonzero adjustment.
-        const byClass2 = new Map<number, number[]>();
-        for (const [g, c] of cd2) {
-          let arr = byClass2.get(c);
-          if (!arr) byClass2.set(c, (arr = []));
-          arr.push(g);
-        }
-        for (const g1 of cov) {
-          const c1 = cd1.get(g1) ?? 0;
-          if (c1 >= c1Count) continue;
-          for (let c2 = 1; c2 < c2Count; c2++) {
-            const p = st + 16 + (c1 * c2Count + c2) * rec;
-            const adj = xAdvance(p, vf1);
-            if (!adj) continue;
-            const glyphs = byClass2.get(c2);
-            if (!glyphs) continue;
-            this.budget.reserveKerning(glyphs.length);
-            for (const g2 of glyphs) {
-              const key = g1 * 65536 + g2;
-              if (!pairs.has(key)) pairs.set(key, adj);
-            }
-          }
-        }
-      }
-    };
     for (const li of kernLookups) {
       if (li >= r.u16(lookupList)) throw new Error('Invalid font lookup index');
       requireBytes(lookupList + 2 + li * 2, 2, tableEnd);
@@ -739,10 +654,181 @@ export class SfntFont {
           stType = r.u16(st + 2);
           st = st + r.u32(st + 4);
         }
-        if (stType === 2) handleSubtable(st);
+        if (stType !== 2) continue;
+        requireBytes(st, 8, tableEnd);
+        const fmt = r.u16(st);
+        if (fmt === 1) {
+          requireBytes(st, 10, tableEnd);
+          records(st + 10, r.u16(st + 8), 2);
+        } else if (fmt === 2) {
+          requireBytes(st, 16, tableEnd);
+          const rec = valueSize(r.u16(st + 4)) + valueSize(r.u16(st + 6));
+          requireBytes(st + 16, r.u16(st + 12) * r.u16(st + 14) * rec, tableEnd);
+        } else continue;
+        reserveKernSubtable(index);
+        index.gpos.push(st);
       }
     }
   }
+
+  private lookupKerning(index: KernIndex, left: number, right: number): number {
+    const r = this.r;
+    const key = left * 65536 + right;
+    for (const sub of index.legacy) {
+      if (sub.pairs) {
+        const value = sub.pairs.get(key);
+        if (value !== undefined) return value;
+        continue;
+      }
+      let lo = 0;
+      let hi = sub.count - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const q = sub.start + mid * 6;
+        const k = r.u16(q) * 65536 + r.u16(q + 2);
+        if (k === key) return r.i16(q + 4);
+        if (k < key) lo = mid + 1;
+        else hi = mid - 1;
+      }
+    }
+    for (const st of index.gpos) {
+      const value = this.pairAdjustment(st, index.gposEnd, left, right);
+      if (value) return value;
+    }
+    return 0;
+  }
+
+  /** The XAdvance of the first glyph for one GPOS pair-adjustment subtable, or 0. */
+  private pairAdjustment(st: number, end: number, left: number, right: number): number {
+    const r = this.r;
+    const ci = coverageIndex(r, st + r.u16(st + 2), left, end);
+    if (ci < 0) return 0;
+    const vf1 = r.u16(st + 4);
+    const size = valueSize(vf1) + valueSize(r.u16(st + 6));
+    if (r.u16(st) === 1) {
+      if (ci >= r.u16(st + 8)) return 0;
+      const ps = st + r.u16(st + 10 + ci * 2);
+      requireBytes(ps, 2, end);
+      const n = r.u16(ps);
+      requireBytes(ps + 2, n * (2 + size), end);
+      let lo = 0;
+      let hi = n - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const pr = ps + 2 + mid * (2 + size);
+        const second = r.u16(pr);
+        if (second === right) return xAdvance(r, pr + 2, vf1);
+        if (second < right) lo = mid + 1;
+        else hi = mid - 1;
+      }
+      return 0;
+    }
+    const c1 = glyphClass(r, st + r.u16(st + 8), left, end);
+    const c2 = glyphClass(r, st + r.u16(st + 10), right, end);
+    const c2Count = r.u16(st + 14);
+    // Class 0 of the second glyph means "no class": it never kerns.
+    if (!c2 || c1 >= r.u16(st + 12) || c2 >= c2Count) return 0;
+    return xAdvance(r, st + 16 + (c1 * c2Count + c2) * size, vf1);
+  }
+}
+
+interface LegacyKern {
+  start: number;
+  count: number;
+  /** Set only for a subtable whose pairs are out of order. */
+  pairs?: Map<number, number>;
+}
+
+interface KernIndex {
+  legacy: LegacyKern[];
+  /** GPOS pair-adjustment subtables of the `kern` feature, in lookup order. */
+  gpos: number[];
+  gposEnd: number;
+}
+
+/** Distinct pairs remembered per font; a long-lived shared font starts over past this. */
+const KERN_CACHE_LIMIT = 65_536;
+
+/**
+ * Kerning subtables a font may have. Each new pair searches all of them, so the kerning budget,
+ * which counts each subtable once, does not bound the work; real fonts have a few dozen at most.
+ */
+const MAX_KERN_SUBTABLES = 1024;
+
+function reserveKernSubtable(index: KernIndex): void {
+  if (index.legacy.length + index.gpos.length >= MAX_KERN_SUBTABLES) throw new FontLimitError('Font kerning subtable limit exceeded');
+}
+
+function valueSize(vf: number): number {
+  let n = 0;
+  for (let b = 0; b < 8; b++) if (vf & (1 << b)) n += 2;
+  return n;
+}
+
+function xAdvance(r: Reader, p: number, vf: number): number {
+  // XAdvance is bit 2; preceded by XPlacement (bit 0) and YPlacement (bit 1).
+  if (!(vf & 4)) return 0;
+  let off = 0;
+  if (vf & 1) off += 2;
+  if (vf & 2) off += 2;
+  return r.i16(p + off);
+}
+
+/** The glyph's index in an OpenType coverage table, or -1. */
+function coverageIndex(r: Reader, off: number, glyph: number, end: number): number {
+  requireBytes(off, 4, end);
+  const fmt = r.u16(off);
+  const n = r.u16(off + 2);
+  let lo = 0;
+  let hi = n - 1;
+  if (fmt === 1) {
+    requireBytes(off + 4, n * 2, end);
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const g = r.u16(off + 4 + mid * 2);
+      if (g === glyph) return mid;
+      if (g < glyph) lo = mid + 1;
+      else hi = mid - 1;
+    }
+  } else if (fmt === 2) {
+    requireBytes(off + 4, n * 6, end);
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const rr = off + 4 + mid * 6;
+      if (glyph < r.u16(rr)) hi = mid - 1;
+      else if (glyph > r.u16(rr + 2)) lo = mid + 1;
+      else return r.u16(rr + 4) + glyph - r.u16(rr);
+    }
+  }
+  return -1;
+}
+
+/** The glyph's class in an OpenType class definition table (0 when unlisted). */
+function glyphClass(r: Reader, off: number, glyph: number, end: number): number {
+  requireBytes(off, 4, end);
+  const fmt = r.u16(off);
+  if (fmt === 1) {
+    requireBytes(off, 6, end);
+    const start = r.u16(off + 2);
+    const n = r.u16(off + 4);
+    if (glyph < start || glyph >= start + n) return 0;
+    requireBytes(off + 6, n * 2, end);
+    return r.u16(off + 6 + (glyph - start) * 2);
+  }
+  if (fmt === 2) {
+    const n = r.u16(off + 2);
+    requireBytes(off + 4, n * 6, end);
+    let lo = 0;
+    let hi = n - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const rr = off + 4 + mid * 6;
+      if (glyph < r.u16(rr)) hi = mid - 1;
+      else if (glyph > r.u16(rr + 2)) lo = mid + 1;
+      else return r.u16(rr + 4);
+    }
+  }
+  return 0;
 }
 
 /** Component references in a detached TrueType outline, with offsets local to that glyph. */

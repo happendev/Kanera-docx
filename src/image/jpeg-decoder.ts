@@ -1,7 +1,8 @@
 // JPEG decoding (Huffman-coded baseline, extended and progressive, 8-bit samples) with libjpeg's
 // arithmetic: its integer inverse DCT, triangle ("fancy") chroma upsampling and YCbCr tables, the
 // way Poppler's DCTDecode filter, built on libjpeg, reads the pictures the PDF writer embeds. CMYK
-// pictures convert to RGB as Poppler's DeviceCMYK does.
+// pictures convert to RGB as Poppler's DeviceCMYK does. Sampling factors that don't divide the
+// largest, which libjpeg refuses, take each component's nearest sample.
 
 /** Coefficient position (row-major) of each zig-zag index, padded so corrupt runs stop at 63. */
 const NATURAL = new Int32Array(80).fill(63);
@@ -34,6 +35,19 @@ for (let i = 0; i < 256; i++) {
 const LIMIT = Uint8Array.from({ length: 768 }, (_, i) => Math.min(255, Math.max(0, i - 256)));
 
 const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+/**
+ * Most scans a JPEG may have. Each scan revisits every block, so a small file of empty scans could
+ * otherwise take minutes; real encoders write about ten. libjpeg-turbo's fuzzers allow 500.
+ */
+export const MAX_SCANS = 500;
+
+/** A JPEG with more scans than the decoder was allowed: {@link MAX_SCANS} unless asked for fewer. */
+export class JpegScanLimit extends Error {
+  constructor(readonly limit = MAX_SCANS) {
+    super(`JPEG: more than ${limit} scans`);
+  }
+}
 
 export interface JpegPixels {
   width: number;
@@ -90,6 +104,11 @@ interface Component {
   stride: number;
   rows: number;
   coefs: Int16Array;
+  /**
+   * Progressive JPEGs: for each block, two words flagging (by zig-zag index) the coefficients that
+   * may be nonzero, so refinement passes over empty blocks cost nothing.
+   */
+  nonzero: Int32Array;
   /** Samples across and down (libjpeg's downsampled size). */
   sw: number;
   sh: number;
@@ -104,8 +123,10 @@ class Bits {
   /** Bits held in `buf`, and how many of the lowest of them are made-up zeros past a marker. */
   private cnt = 0;
   private fake = 0;
-  /** Bits ran out mid-segment; libjpeg then leaves the segment's later blocks empty. */
+  /** Bits ran out mid-segment; libjpeg then leaves the segment's later MCUs as they are. */
   short = false;
+  /** Stopped at a marker no restart can pass (or the end): the scan has no more data. */
+  blocked = false;
   constructor(
     private readonly d: Uint8Array,
     public pos: number,
@@ -180,17 +201,40 @@ class Bits {
     return v < 1 << (s - 1) ? v - (1 << s) + 1 : v;
   }
 
-  /** Drop buffered bits and continue after the next marker if it is a restart marker. */
-  restart(): void {
+  /**
+   * libjpeg's process_restart: drop the buffered bits and resynchronise on restart marker `want`
+   * (0–7) as jpeg_resync_to_restart does. A marker left unread keeps the segment empty.
+   */
+  restart(want: number): void {
     this.buf = 0;
     this.cnt = 0;
     this.fake = 0;
-    this.short = false;
     const d = this.d;
-    let p = this.pos;
-    while (p + 1 < d.length && !(d[p] === 0xff && d[p + 1] !== 0 && d[p + 1] !== 0xff)) p++;
-    if (p + 1 < d.length && d[p + 1] >= 0xd0 && d[p + 1] <= 0xd7) p += 2;
-    this.pos = p;
+    for (;;) {
+      let p = this.pos;
+      while (p + 1 < d.length && !(d[p] === 0xff && d[p + 1] !== 0 && d[p + 1] !== 0xff)) p++;
+      // Past the data, Poppler's source supplies an end-of-image marker.
+      const end = p + 1 >= d.length;
+      const m = end ? 0xd9 : d[p + 1];
+      this.pos = end ? d.length : p;
+      const rst = m >= 0xd0 && m <= 0xd7;
+      const ahead = (m - 0xd0 - want) & 7;
+      if (rst && (ahead === 0 || (ahead >= 3 && ahead <= 5))) {
+        // The marker wanted, or one too far off to reason about: take it and go on.
+        this.pos = p + 2;
+        this.short = false;
+        this.blocked = false;
+        return;
+      }
+      if (!end && (m < 0xc0 || (rst && ahead >= 6))) {
+        // An invalid marker, or an earlier restart: look for the next marker.
+        this.pos = p + 2;
+        continue;
+      }
+      // The next restart or the one after, or another marker: leave it for later.
+      this.blocked = !rst;
+      return;
+    }
   }
 
   /** Where the scan's data ends: the next marker other than a restart marker. */
@@ -204,9 +248,11 @@ class Bits {
 
 /**
  * Decode a JPEG to RGBA. CMYK stored inverted under an Adobe marker is read as the PDF writer's
- * Decode array reads it.
+ * Decode array reads it. Throws {@link JpegScanLimit} past `maxScans` scans. A `reduce` above 1
+ * (2, 4 or 8) gives the image that many times smaller each way, each pixel the average of the
+ * block it covers, without holding the full-size pixels.
  */
-export function decodeJpegPixels(d: Uint8Array): JpegPixels {
+export function decodeJpegPixels(d: Uint8Array, maxScans = MAX_SCANS, reduce = 1): JpegPixels {
   if (d[0] !== 0xff || d[1] !== 0xd8) throw new Error('JPEG: no start marker');
   const quant: Array<Int32Array | null> = [null, null, null, null];
   const dcTables: Array<Huffman | null> = [null, null, null, null];
@@ -224,6 +270,7 @@ export function decodeJpegPixels(d: Uint8Array): JpegPixels {
   let mcusY = 0;
   let p = 2;
   let done = false;
+  let scans = 0;
   while (!done && p + 3 < d.length) {
     if (d[p] !== 0xff) {
       p++;
@@ -261,8 +308,9 @@ export function decodeJpegPixels(d: Uint8Array): JpegPixels {
           const counts = d.subarray(q + 1, q + 17);
           let n = 0;
           for (let i = 0; i < 16; i++) n += counts[i];
+          if (n > 256 || q + 17 + n > e) throw new Error('JPEG: bad Huffman table');
           const syms = new Uint8Array(256);
-          syms.set(d.subarray(q + 17, Math.min(e, q + 17 + n)));
+          syms.set(d.subarray(q + 17, q + 17 + n));
           (tc ? acTables : dcTables)[th] = huffman(counts, syms);
           q += 17 + n;
         }
@@ -279,6 +327,8 @@ export function decodeJpegPixels(d: Uint8Array): JpegPixels {
       case 0xc0:
       case 0xc1:
       case 0xc2: {
+        // libjpeg rejects a second frame too; its size would also escape the pixel budget.
+        if (comps.length) throw new Error('JPEG: more than one frame header');
         if (d[s] !== 8) throw new Error('JPEG: only 8-bit samples are supported');
         progressive = marker === 0xc2;
         height = (d[s + 1] << 8) | d[s + 2];
@@ -291,14 +341,13 @@ export function decodeJpegPixels(d: Uint8Array): JpegPixels {
           const h = d[o + 1] >> 4;
           const v = d[o + 1] & 15;
           if (h < 1 || h > 4 || v < 1 || v > 4) throw new Error('JPEG: bad sampling factors');
-          comps.push({ id: d[o], h, v, tq: d[o + 2] & 3, quant: null, bw: 0, bh: 0, stride: 0, rows: 0, coefs: new Int16Array(0), sw: 0, sh: 0, dc: null, ac: null, pred: 0 });
+          comps.push({ id: d[o], h, v, tq: d[o + 2] & 3, quant: null, bw: 0, bh: 0, stride: 0, rows: 0, coefs: new Int16Array(0), nonzero: new Int32Array(0), sw: 0, sh: 0, dc: null, ac: null, pred: 0 });
         }
         hmax = Math.max(...comps.map((c) => c.h));
         vmax = Math.max(...comps.map((c) => c.v));
         mcusX = Math.ceil(width / (8 * hmax));
         mcusY = Math.ceil(height / (8 * vmax));
         for (const c of comps) {
-          if (hmax % c.h || vmax % c.v) throw new Error('JPEG: fractional sampling is not supported');
           c.sw = Math.ceil((width * c.h) / hmax);
           c.sh = Math.ceil((height * c.v) / vmax);
           c.bw = Math.ceil(c.sw / 8);
@@ -306,6 +355,7 @@ export function decodeJpegPixels(d: Uint8Array): JpegPixels {
           c.stride = mcusX * c.h;
           c.rows = mcusY * c.v;
           c.coefs = new Int16Array(c.stride * c.rows * 64);
+          if (progressive) c.nonzero = new Int32Array(c.stride * c.rows * 2);
         }
         break;
       }
@@ -322,21 +372,32 @@ export function decodeJpegPixels(d: Uint8Array): JpegPixels {
         throw new Error('JPEG: lossless, hierarchical and arithmetic-coded JPEGs are not supported');
       case 0xda: {
         if (!comps.length) throw new Error('JPEG: scan before frame header');
+        if (++scans > maxScans) throw new JpegScanLimit(maxScans);
+        // The checks libjpeg makes before decoding a scan.
         const ns = d[s];
-        const scan: Component[] = [];
-        for (let i = 0; i < ns; i++) {
-          const c = comps.find((x) => x.id === d[s + 1 + i * 2]);
-          if (!c) throw new Error('JPEG: scan names an unknown component');
-          c.dc = dcTables[d[s + 2 + i * 2] >> 4];
-          c.ac = acTables[d[s + 2 + i * 2] & 3];
-          c.quant ??= quant[c.tq];
-          scan.push(c);
-        }
+        if (ns < 1 || ns > 4 || len !== 6 + ns * 2) throw new Error('JPEG: bad scan header');
         const q = s + 1 + ns * 2;
         const ss = d[q];
         const se = d[q + 1];
         const ah = d[q + 2] >> 4;
         const al = d[q + 2] & 15;
+        if (progressive && ((ss === 0 ? se !== 0 : ss > se || se > 63 || ns !== 1) || (ah !== 0 && al !== ah - 1) || al > 13)) {
+          throw new Error('JPEG: bad progression parameters');
+        }
+        const scan: Component[] = [];
+        for (let i = 0; i < ns; i++) {
+          const c = comps.find((x) => x.id === d[s + 1 + i * 2]);
+          if (!c) throw new Error('JPEG: scan names an unknown component');
+          if (scan.includes(c)) throw new Error('JPEG: scan names a component twice');
+          c.dc = dcTables[d[s + 2 + i * 2] >> 4];
+          c.ac = acTables[d[s + 2 + i * 2] & 3];
+          if (((!progressive || (ss === 0 && ah === 0)) && !c.dc) || ((!progressive || ss > 0) && !c.ac)) {
+            throw new Error('JPEG: scan uses a missing Huffman table');
+          }
+          c.quant ??= quant[c.tq];
+          scan.push(c);
+        }
+        if (ns > 1 && scan.reduce((n, c) => n + c.h * c.v, 0) > 10) throw new Error('JPEG: too many blocks in an MCU');
         const bits = new Bits(d, e);
         decodeScan(bits, scan, progressive, ss, se, ah, al, restartInterval, mcusX, mcusY);
         p = bits.end();
@@ -348,7 +409,7 @@ export function decodeJpegPixels(d: Uint8Array): JpegPixels {
   }
   if (!comps.length) throw new Error('JPEG: no frame header');
   for (const c of comps) if (!c.quant) c.quant = quant[c.tq] ?? new Int32Array(64);
-  return output(comps, width, height, hmax, vmax, colorTransform(comps, adobe, jfif), adobe !== null);
+  return output(comps, width, height, hmax, vmax, colorTransform(comps, adobe, jfif), adobe !== null, reduce);
 }
 
 function decodeScan(bits: Bits, scan: Component[], progressive: boolean, ss: number, se: number, ah: number, al: number, restartInterval: number, mcusX: number, mcusY: number): void {
@@ -361,8 +422,9 @@ function decodeScan(bits: Bits, scan: Component[], progressive: boolean, ss: num
   const total = single ? c0.bw * c0.bh : mcusX * mcusY;
   const block = (c: Component, row: number, col: number) => {
     const at = (row * c.stride + col) * 64;
-    if (bits.short) return;
     const coefs = c.coefs;
+    const nz = c.nonzero;
+    const b = at >> 5;
     if (!progressive) {
       const t = bits.decode(c.dc!);
       c.pred += t ? bits.receive(t) : 0;
@@ -400,6 +462,8 @@ function decodeScan(bits: Bits, scan: Component[], progressive: boolean, ss: num
         if (s) {
           k += r;
           coefs[at + NATURAL[k]] = bits.receive(s) * (1 << al);
+          const z = k < 63 ? k : 63;
+          nz[b + (z >> 5)] |= 1 << (z & 31);
         } else if (r === 15) k += 15;
         else {
           eobrun = (1 << r) - 1;
@@ -431,23 +495,50 @@ function decodeScan(bits: Bits, scan: Component[], progressive: boolean, ss: num
             } else if (--r < 0) break;
             k++;
           } while (k <= se);
-          if (s) coefs[at + NATURAL[k]] = s;
+          if (s) {
+            coefs[at + NATURAL[k]] = s;
+            const z = k < 63 ? k : 63;
+            nz[b + (z >> 5)] |= 1 << (z & 31);
+          }
         }
       }
       if (eobrun > 0) {
-        for (; k <= se; k++) {
-          const pos = at + NATURAL[k];
-          if (coefs[pos] !== 0 && bits.bit() && (coefs[pos] & p1) === 0) coefs[pos] += coefs[pos] >= 0 ? p1 : m1;
+        // In an end-of-band run only coefficients already nonzero take a correction bit, in order.
+        for (let w = k >> 5; w <= se >> 5; w++) {
+          const lo = w === k >> 5 ? k & 31 : 0;
+          const hi = w === se >> 5 ? se & 31 : 31;
+          let m = nz[b + w] & (-1 << lo) & ~(-2 << hi);
+          while (m) {
+            const t = m & -m;
+            m ^= t;
+            const pos = at + NATURAL[(w << 5) + 31 - Math.clz32(t)];
+            if (coefs[pos] !== 0 && bits.bit() && (coefs[pos] & p1) === 0) coefs[pos] += coefs[pos] >= 0 ? p1 : m1;
+          }
         }
         eobrun--;
       }
     }
   };
+  let restarts = restartInterval;
+  let want = 0;
   for (let n = 0; n < total; n++) {
-    if (restartInterval && n && n % restartInterval === 0) {
-      bits.restart();
-      eobrun = 0;
-      for (const c of scan) c.pred = 0;
+    if (restartInterval) {
+      if (restarts === 0) {
+        bits.restart(want);
+        want = (want + 1) & 7;
+        restarts = restartInterval;
+        eobrun = 0;
+        for (const c of scan) c.pred = 0;
+      }
+      restarts--;
+    }
+    if (bits.short) {
+      // Out of data, libjpeg leaves MCUs as they are: to the next restart marker, or to the end of
+      // the scan when none can follow. Stopping here keeps empty scans cheap.
+      if (!restartInterval || bits.blocked) break;
+      n += restarts;
+      restarts = 0;
+      continue;
     }
     const ux = n % unitsX;
     const uy = (n / unitsX) | 0;
@@ -631,16 +722,48 @@ function upsampleRow(c: Component, src: { data: Uint8Array; stride: number }, hf
   out[o + 1] = (thiscol * 4 + 7) >> 4;
 }
 
-function output(comps: Component[], width: number, height: number, hmax: number, vmax: number, transform: number, inverted: boolean): JpegPixels {
+function output(comps: Component[], width: number, height: number, hmax: number, vmax: number, transform: number, inverted: boolean, reduce = 1): JpegPixels {
   const n = comps.length;
-  const out = new Uint8Array(width * height * 4);
   const rows = comps.map(() => new Uint8Array(Math.max(width, ...comps.map((c) => c.bw * 8)) + 16));
   const planes = comps.map(plane);
-  for (let y = 0; y < height; y++) {
-    for (let i = 0; i < n; i++) upsampleRow(comps[i], planes[i], hmax / comps[i].h, vmax / comps[i].v, y, width, rows[i]);
-    convertRow(rows, n, transform, inverted, out, y * width * 4, width);
+  if (reduce <= 1) {
+    const out = new Uint8Array(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let i = 0; i < n; i++) upsampleRow(comps[i], planes[i], hmax / comps[i].h, vmax / comps[i].v, y, width, rows[i]);
+      convertRow(rows, n, transform, inverted, out, y * width * 4, width);
+    }
+    return { width, height, components: n, data: out };
   }
-  return { width, height, components: n, data: out };
+  // Each output pixel averages the reduce × reduce block it covers (fewer at the right and bottom).
+  const ow = Math.ceil(width / reduce);
+  const oh = Math.ceil(height / reduce);
+  const out = new Uint8Array(ow * oh * 4);
+  const line = new Uint8Array(width * 4);
+  const sums = new Uint32Array(ow * 3);
+  for (let oy = 0; oy < oh; oy++) {
+    sums.fill(0);
+    const y0 = oy * reduce;
+    const y1 = Math.min(height, y0 + reduce);
+    for (let y = y0; y < y1; y++) {
+      for (let i = 0; i < n; i++) upsampleRow(comps[i], planes[i], hmax / comps[i].h, vmax / comps[i].v, y, width, rows[i]);
+      convertRow(rows, n, transform, inverted, line, 0, width);
+      for (let x = 0; x < width; x++) {
+        const o = ((x / reduce) | 0) * 3;
+        sums[o] += line[x * 4];
+        sums[o + 1] += line[x * 4 + 1];
+        sums[o + 2] += line[x * 4 + 2];
+      }
+    }
+    for (let ox = 0; ox < ow; ox++) {
+      const count = (Math.min(width, (ox + 1) * reduce) - ox * reduce) * (y1 - y0);
+      const o = (oy * ow + ox) * 4;
+      out[o] = Math.round(sums[ox * 3] / count);
+      out[o + 1] = Math.round(sums[ox * 3 + 1] / count);
+      out[o + 2] = Math.round(sums[ox * 3 + 2] / count);
+      out[o + 3] = 255;
+    }
+  }
+  return { width: ow, height: oh, components: n, data: out };
 }
 
 function convertRow(rows: Uint8Array[], n: number, transform: number, inverted: boolean, out: Uint8Array, o: number, width: number): void {

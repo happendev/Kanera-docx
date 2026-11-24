@@ -27,6 +27,18 @@ export class ImageBudget {
     if (!this.tryReserve(width, height)) throw new Error('Image pixel limit exceeded');
   }
 
+  /**
+   * The smallest of 1, 2, 4 and 8 by which an image shrunk each way fits, reserved; 0 when none
+   * does. Only an image up to four times the per-image limit may be shrunk: its decoder still reads
+   * the full-size image.
+   */
+  tryReserveReduced(width: number, height: number): number {
+    if (this.tryReserve(width, height)) return 1;
+    if (!supported(width, height) || width * height > 4 * this.maxImagePixels) return 0;
+    for (const reduce of [2, 4, 8]) if (this.tryReserve(Math.ceil(width / reduce), Math.ceil(height / reduce))) return reduce;
+    return 0;
+  }
+
   /** Reserve when the image fits, or return false for callers that can skip the decode instead. */
   tryReserve(width: number, height: number): boolean {
     const pixels = width * height;

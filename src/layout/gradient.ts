@@ -1,4 +1,4 @@
-import type { GradientFill } from '../docx/model.js';
+import type { GradientFill } from '../ooxml/model.js';
 import type { DrawOp, PathSeg, ShadeGeometry } from './types.js';
 
 const decode = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);

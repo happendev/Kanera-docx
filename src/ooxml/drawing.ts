@@ -1,6 +1,6 @@
 import { arc } from '../util/arc.js';
 import { child, children, descendant, descendants, path, resolveAlternateContent, type XmlElement } from '../util/xml.js';
-import { parseChart, type ChartPointBudget } from './chart.js';
+import { parseChart, type ChartPointBudget, type ChartRefs } from './chart.js';
 import { parseGradient } from './gradient.js';
 import type { AnchorProps, Block, Chart, Color, Drawing, Fill, ImageRef, LineStyle, PositionSpec, TextBox } from './model.js';
 import type { OpcPackage } from './package.js';
@@ -16,6 +16,8 @@ export interface DrawingContext {
   images: Map<string, ImageRef>;
   chartBudget: ChartPointBudget;
   charts: Map<string, Chart | undefined>;
+  /** Cell values for chart series saved without cached values. */
+  chartRefs?: ChartRefs;
   /** Record pictures by part name without reading their bytes (text extraction). */
   skipImageData?: boolean;
 }
@@ -37,7 +39,7 @@ export function loadImage(ctx: DrawingContext, rid: string | undefined): ImageRe
   return ref;
 }
 
-function loadBlip(ctx: DrawingContext, blip: XmlElement | undefined): ImageRef | undefined {
+export function loadBlip(ctx: DrawingContext, blip: XmlElement | undefined): ImageRef | undefined {
   const fallback = loadImage(ctx, blip?.attrs['r:embed']);
   const svgBlip = children(child(blip, 'a:extLst'), 'a:ext').map((ext) => child(ext, 'asvg:svgBlip')).find(Boolean);
   const svg = loadImage(ctx, svgBlip?.attrs['r:embed']);
@@ -206,11 +208,11 @@ function parseAnchor(a: XmlElement): AnchorProps {
   };
 }
 
-function baseDrawing(kind: Drawing['kind'], inline: boolean, width: number, height: number): Drawing {
+export function baseDrawing(kind: Drawing['kind'], inline: boolean, width: number, height: number): Drawing {
   return { kind, inline, width, height, effectL: 0, effectT: 0, effectR: 0, effectB: 0, rotation: 0, flipH: false, flipV: false, geometry: 'rect', hidden: false };
 }
 
-function applyXfrm(d: Drawing, spPr: XmlElement | undefined): void {
+export function applyXfrm(d: Drawing, spPr: XmlElement | undefined): void {
   const xfrm = child(spPr, 'a:xfrm');
   if (!xfrm) return;
   d.rotation = (Number(xfrm.attrs.rot ?? 0) || 0) / 60000;
@@ -218,7 +220,7 @@ function applyXfrm(d: Drawing, spPr: XmlElement | undefined): void {
   d.flipV = xfrm.attrs.flipV === '1';
 }
 
-function applyGeometry(d: Drawing, spPr: XmlElement | undefined): void {
+export function applyGeometry(d: Drawing, spPr: XmlElement | undefined): void {
   const prst = child(spPr, 'a:prstGeom');
   if (prst) {
     d.geometry = prst.attrs.prst ?? 'rect';
@@ -287,7 +289,40 @@ function styleRefColor(style: XmlElement | undefined, refName: string, ctx: Draw
   return { idx: Number(ref.attrs.idx ?? 0) || 0, color: parseColor(firstColorChild(ref), ctx) };
 }
 
-function parsePicture(pic: XmlElement, ctx: DrawingContext, d: Drawing): void {
+/**
+ * The outer shadow among a shape's effects (a:effectLst), or failing those its style's (a:effectRef
+ * into the theme's effect styles, in the reference's colour).
+ */
+function parseShadow(spPr: XmlElement | undefined, style: XmlElement | undefined, ctx: DrawingContext): Drawing['shadow'] {
+  let effects = child(spPr, 'a:effectLst');
+  let phClr: string | undefined;
+  if (!effects && !child(spPr, 'a:effectDag')) {
+    const ref = child(style, 'a:effectRef');
+    const idx = Number(ref?.attrs.idx ?? 0) || 0;
+    if (idx > 0) {
+      effects = child(ctx.theme.effectStyles[idx - 1], 'a:effectLst');
+      phClr = parseColor(firstColorChild(ref), ctx)?.color;
+    }
+  }
+  const s = child(effects, 'a:outerShdw');
+  const c = s && parseColor(firstColorChild(s), ctx, phClr);
+  if (!s || !c || !(c.alpha > 0)) return undefined;
+  const dist = emu(Number(s.attrs.dist) || 0);
+  const dir = ((Number(s.attrs.dir) || 0) / 60000) * (Math.PI / 180);
+  const scale = (v: string | undefined) => (Number(v ?? 100000) || 0) / 100000;
+  return {
+    dx: dist * Math.cos(dir),
+    dy: dist * Math.sin(dir),
+    blur: emu(Number(s.attrs.blurRad) || 0),
+    color: c.color,
+    alpha: c.alpha,
+    sx: scale(s.attrs.sx),
+    sy: scale(s.attrs.sy),
+    rotWithShape: s.attrs.rotWithShape !== '0' && s.attrs.rotWithShape !== 'false',
+  };
+}
+
+export function parsePicture(pic: XmlElement, ctx: DrawingContext, d: Drawing): void {
   const blipFill = child(pic, 'pic:blipFill');
   d.kind = 'image';
   d.image = loadBlip(ctx, child(blipFill, 'a:blip'));
@@ -302,9 +337,11 @@ function parsePicture(pic: XmlElement, ctx: DrawingContext, d: Drawing): void {
   applyGeometry(d, spPr);
   const line = parseLine(spPr, ctx);
   if (line && line.color) d.line = line;
+  const shadow = parseShadow(spPr, undefined, ctx);
+  if (shadow) d.shadow = shadow;
 }
 
-function parseShape(wsp: XmlElement, ctx: DrawingContext, d: Drawing): void {
+export function parseShape(wsp: XmlElement, ctx: DrawingContext, d: Drawing): void {
   d.kind = 'shape';
   const spPr = child(wsp, 'wps:spPr');
   applyXfrm(d, spPr);
@@ -322,6 +359,8 @@ function parseShape(wsp: XmlElement, ctx: DrawingContext, d: Drawing): void {
   }
   d.fill = fill;
   d.line = line;
+  const shadow = parseShadow(spPr, style, ctx);
+  if (shadow) d.shadow = shadow;
   // Picture fill in a shape renders as an image.
   const blipFill = child(spPr, 'a:blipFill');
   if (blipFill) {
@@ -363,7 +402,7 @@ function colorAutomaticText(blocks: Block[], color: string): void {
   }
 }
 
-function parseGroup(grp: XmlElement, ctx: DrawingContext, d: Drawing, isTop: boolean): void {
+export function parseGroup(grp: XmlElement, ctx: DrawingContext, d: Drawing, isTop: boolean): void {
   d.kind = 'group';
   const grpSpPr = child(grp, 'wpg:grpSpPr') ?? child(grp, 'a:grpSpPr');
   const xfrm = child(grpSpPr, 'a:xfrm');

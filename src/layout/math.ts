@@ -1,5 +1,5 @@
-import { ACCENT_FORMS, INTEGRALS, isMathItalic, mathChar } from '../docx/math.js';
-import type { MathNode, RunProps } from '../docx/model.js';
+import { ACCENT_FORMS, INTEGRALS, isMathItalic, mathChar } from '../ooxml/math.js';
+import type { MathNode, RunProps } from '../ooxml/model.js';
 import type { FontRegistry } from '../fonts/registry.js';
 import { normalizeFamily } from '../fonts/substitutes.js';
 import type { SfntFont } from '../fonts/sfnt.js';

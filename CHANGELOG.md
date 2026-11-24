@@ -10,3 +10,9 @@ Initial release.
 - Render Word's page layout, tables, charts and equations, including vertical East Asian text and right-to-left tables. Use `--mac` to match Word for Mac's text placement.
 - Keep long footnotes visible across pages and honour the document's page and endnote numbering.
 - Use embedded fonts and bundled Office-compatible fonts, with searchable colour emoji.
+- Draw bubble charts, trendline equations and R² values, and rounded chart frames.
+- Embed a picture once when a document stores it under several names, and keep palette TIFFs indexed: smaller PDFs.
+- Show CCITT fax and JPEG-compressed TIFFs, embedding their fax or JPEG data as it is.
+- Recompress JPEGs with the built-in codec, about twice as fast and with smaller 4:2:0 output, and read JPEGs with unusual chroma sampling.
+- Keep large photos in page images: a JPEG past the pixel limits is decoded smaller, and the limits apply to each page.
+- Draw shapes' and pictures' shadows, and blur shape and chart shadows as Word does.

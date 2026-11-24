@@ -23,11 +23,12 @@ function decodePng(png: Uint8Array): { width: number; height: number; rgb: Uint8
   const rgb = new Uint8Array(stride * height);
   for (let y = 0; y < height; y++) {
     const filter = raw[y * (stride + 1)];
+    // Check once per row: an expect() per byte costs seconds on a full page.
+    expect(filter).toBeLessThanOrEqual(2);
     for (let x = 0; x < stride; x++) {
       const v = raw[y * (stride + 1) + 1 + x];
       const left = x >= 3 ? rgb[y * stride + x - 3] : 0;
       const up = y ? rgb[(y - 1) * stride + x] : 0;
-      expect(filter <= 2).toBe(true);
       rgb[y * stride + x] = (v + (filter === 0 ? 0 : filter === 1 ? left : up)) & 255;
     }
   }

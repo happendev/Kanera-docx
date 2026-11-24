@@ -23,9 +23,6 @@ importers:
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
-      jpeg-js:
-        specifier: 0.4.4
-        version: 0.4.4
       oxlint:
         specifier: 1.94.0
         version: 1.94.0(oxlint-tsgolint@7.0.2008)
@@ -781,9 +778,6 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
-  jpeg-js@0.4.4:
-    resolution: {integrity: sha512-WZzeDOEtTOBK4Mdsar0IqEU5sMr3vSV2RqkAIzUEV2BHnUfKGyswWFPFwK5EeDo93K3FohSHbLAjj0s1Wzd+dg==}
-
   magic-string@1.4.5:
     resolution: {integrity: sha512-oLLC2+YvQUfAa+vxoufE/yc1icb87M9iXIRqAoR/2EhE/8cb3SF/+Gi0c2By1B+5Vz2e2vQtUvHiu1+63Znh+w==}
 
@@ -1384,8 +1378,6 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
-
-  jpeg-js@0.4.4: {}
 
   magic-string@1.4.5:
     dependencies:

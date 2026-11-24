@@ -61,10 +61,19 @@ main README and the breakdown below. Bold marks the best comparable values, incl
 Scoring uses up to eight processes by default. Use `score.py --jobs 1` to score one case at a
 time, or set a different worker count with `--jobs`. Cold and warm conversion timings are serial.
 
-If `convert.py` exits with an error during the warm pass, run it again with the same engine flags
-and build. It reuses the cold timings and PDFs from `conversion-cold.json` and reruns the warm
-pass. Use `--fresh` to start from cold conversions. Run `score.py` after conversion finishes
+`convert.py` measures one engine at a time, cold and then warm. If it exits with an error, run it
+again with the same engine flags and build. It keeps the engines that finished and the cold
+timings and PDFs of the engine it stopped on, recorded in `conversion-cold.json`, and continues
+from there. Use `--fresh` to start from cold conversions. Run `score.py` after conversion finishes
 successfully.
+
+Each comparison engine's results and PDFs are saved in `out/benchmark-word/cache/<engine>-<key>/`
+as soon as that engine finishes, and later runs reuse them instead of measuring it again. The key
+covers the engine and runtime versions, its runner files and lock files, the input and reference
+digests, the scoring code, the CPU model, and the timing settings. Kanera is always measured.
+Scoring and the README tables treat cached engines like measured ones. Use `--no-cache` to
+measure every engine again, for example after changing fonts. Raise `CACHE_FORMAT` in
+`convert.py` when the measurement changes.
 
 ### Fast Kanera-only run
 
@@ -252,6 +261,13 @@ Liberation and DejaVu.
 - **Cold speed.** The benchmark launches a fresh process for each converter and document.
   Wall time includes runtime and library startup, reading the DOCX, and writing the PDF. LibreOffice
   uses a separate profile for each invocation. The host's filesystem caches may already be warm.
+  An engine that downloads resources on first use gets one untimed pass first (`PRIME` in
+  `convert.py`), so no timing includes a download. None of the current engines needs it.
+- **Sampling.** Each engine first converts a fixed sample, cold and timed: the 50 documents whose
+  case IDs have the lowest SHA-256 digests. If the sample's mean cold time multiplied by the number
+  of documents exceeds five minutes, the engine is timed (cold, warm, and memory) on the sample
+  only and converts the other documents untimed, for scoring. † marks speed and memory figures
+  that come from the sample only. Warm docs/sec is not highlighted for † engines.
 - **Warm speed.** Each engine converts an initial fixture once before timing the full set in the
   same process. Timings still include reading the DOCX and writing the PDF. LibreOffice gets the
   documents in one CLI batch. Its per-file timing is the interval between successive PDF write

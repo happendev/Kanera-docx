@@ -51,9 +51,12 @@ class Lru<K, V> {
 }
 
 export class ImagePainter {
-  /** Decoded images by their bytes and colour adjustment (null: unsupported). */
-  private readonly decoded = new WeakMap<Uint8Array, Map<string, Pixmap | null>>();
-  private readonly sources = new Lru<Pixmap, true>(MAX_CACHED_BYTES);
+  /**
+   * Decoded images by their bytes and colour adjustment (null: unsupported). Only these hold them,
+   * so a document's pictures need not fit in memory at once: one dropped is decoded again.
+   */
+  private readonly decoded = new Lru<string, Pixmap | null>(MAX_CACHED_BYTES);
+  private readonly dataIds = new WeakMap<Uint8Array, number>();
   private readonly scaled = new Lru<string, Premultiplied>(MAX_CACHED_BYTES / 2);
   private readonly ids = new WeakMap<Pixmap, number>();
   private nextId = 1;
@@ -61,19 +64,19 @@ export class ImagePainter {
 
   constructor(
     private readonly compression: Compression,
-    private readonly budget: ImageBudget,
+    /** What decoding may spend: the page being drawn's budget. */
+    public budget: ImageBudget,
   ) {}
 
   /** Decode a raster image (or fetch it decoded); null when its format is unsupported. */
   async load(ref: ImageRef): Promise<Pixmap | null> {
-    const adjust = ref.adjust ? `${ref.adjust.slope}:${ref.adjust.offset}` : '';
-    let byAdjust = this.decoded.get(ref.data);
-    if (!byAdjust) this.decoded.set(ref.data, (byAdjust = new Map()));
-    let px = byAdjust.get(adjust);
+    let dataId = this.dataIds.get(ref.data);
+    if (dataId === undefined) this.dataIds.set(ref.data, (dataId = this.nextId++));
+    const key = ref.adjust ? `${dataId}:${ref.adjust.slope}:${ref.adjust.offset}` : `${dataId}`;
+    let px = this.decoded.get(key);
     if (px === undefined) {
       px = await decodePixels(ref.data, this.compression, this.budget, ref.dibBits, ref.adjust);
-      byAdjust.set(adjust, px);
-      if (px) this.sources.set(px, true, px.data.length);
+      this.decoded.set(key, px, px ? px.data.length : 0);
     }
     return px;
   }
@@ -110,7 +113,7 @@ export class ImagePainter {
     const key = `${this.id(px)}:${dw}x${dh}:${flipX ? 1 : 0}${flipY ? 1 : 0}:${vx0 - x0},${vy0 - y0},${vx1 - x0},${vy1 - y0}`;
     let region = this.scaled.get(key);
     if (!region) {
-      region = resample(px, dw, dh, vx0 - x0, vy0 - y0, vx1 - x0, vy1 - y0, flipX, flipY);
+      region = resample(px, dw, dh, vx0 - x0, vy0 - y0, vx1 - x0, vy1 - y0, flipX, flipY, canvas.style === 'poppler');
       this.scaled.set(key, region, region.data.length);
     }
     composite(canvas, region, vx0, vy0, alpha);
@@ -125,7 +128,7 @@ export class ImagePainter {
     const key = `${this.id(px)}:${tw}x${th}:full`;
     let src = this.scaled.get(key);
     if (!src) {
-      src = resample(px, tw, th, 0, 0, tw, th, false, false);
+      src = resample(px, tw, th, 0, 0, tw, th, false, false, canvas.style === 'poppler');
       this.scaled.set(key, src, src.data.length);
     }
     const shape = this.outline;
@@ -235,15 +238,16 @@ function taps(src: number, dst: number, from: number, to: number, flip: boolean,
 
 /**
  * `px` scaled to dw × dh, of which only pixels [rx0, rx1) × [ry0, ry1) are made, premultiplied.
+ * `splash` shrinks a picture with alpha as Poppler's Splash does; MuPDF averages it premultiplied.
  */
-function resample(px: Pixmap, dw: number, dh: number, rx0: number, ry0: number, rx1: number, ry1: number, flipX: boolean, flipY: boolean): Premultiplied {
+function resample(px: Pixmap, dw: number, dh: number, rx0: number, ry0: number, rx1: number, ry1: number, flipX: boolean, flipY: boolean, splash: boolean): Premultiplied {
   const rw = rx1 - rx0;
   const rh = ry1 - ry0;
   // Interpolation only when both axes grow, by less than four times.
   const smooth = dw >= px.width && dh >= px.height && Math.floor(dw / px.width) < 4 && Math.floor(dh / px.height) < 4;
   const xt = taps(px.width, dw, rx0, rx1, flipX, smooth);
   const yt = taps(px.height, dh, ry0, ry1, flipY, smooth);
-  if (px.opaque && (dw < px.width || dh < px.height)) return boxScale(px, xt, yt, rw, rh, dw < px.width, dh < px.height);
+  if ((px.opaque || splash) && (dw < px.width || dh < px.height)) return boxScale(px, xt, yt, rw, rh, dw < px.width, dh < px.height);
   const across = rowScaler(px, xt, rw);
   const out = new Uint8Array(rw * rh * 4);
   const stride = rw * 4;
@@ -290,13 +294,17 @@ function resample(px: Pixmap, dw: number, dh: number, rx0: number, ry0: number, 
 }
 
 /**
- * Opaque pixels shrunk along at least one axis as Poppler's Splash does (scaleImageYdXd, YdXu
- * and YuXd): each box's byte sum times 2^23 / its size, rounded down to an integer, then shifted
- * back, so a box's average can come out one below its exact value. Growing axes repeat pixels.
+ * Pixels shrunk along at least one axis as Poppler's Splash does (scaleImageYdXd, YdXu and YuXd):
+ * each box's byte sum times 2^23 / its size, rounded down to an integer, then shifted back, so a
+ * box's average can come out one below its exact value. Growing axes repeat pixels. Splash shrinks
+ * a picture's colours and its soft mask (the PDF writer's alpha) apart, so a box's colour also
+ * averages the colours of its transparent pixels.
  */
 function boxScale(px: Pixmap, xt: Taps, yt: Taps, rw: number, rh: number, shrinkX: boolean, shrinkY: boolean): Premultiplied {
   const src = px.data;
   const sw = px.width;
+  // Colour components summed: alpha too when there is any.
+  const nc = px.opaque ? 3 : 4;
   let cx0 = sw;
   let cx1 = 0;
   for (let i = 0; i < rw; i++) {
@@ -304,40 +312,41 @@ function boxScale(px: Pixmap, xt: Taps, yt: Taps, rw: number, rh: number, shrink
     cx1 = Math.max(cx1, xt.first[i] + xt.count[i]);
   }
   const cols = cx1 - cx0;
+  const span = cols * nc;
   // Each source column's sum over the destination row's source rows.
-  const sums = new Int32Array(cols * 3);
+  const sums = new Int32Array(span);
   // Growing across, each source column's value, repeated into the destination.
-  const values = shrinkX ? null : new Uint8Array(cols * 3);
+  const values = shrinkX ? null : new Uint8Array(span);
   const out = new Uint8Array(rw * rh * 4);
   const { first, count } = xt;
+  const box = [0, 0, 0, 0];
   for (let j = 0, o = 0; j < rh; j++) {
     const ystep = shrinkY ? yt.count[j] : 1;
     const sy = yt.first[j];
     for (let k = 0; k < ystep; k++) {
       let p = ((sy + k) * sw + cx0) * 4;
       if (k === 0) {
-        for (let c = 0; c < cols * 3; c += 3, p += 4) {
-          sums[c] = src[p];
-          sums[c + 1] = src[p + 1];
-          sums[c + 2] = src[p + 2];
-        }
-      } else {
-        for (let c = 0; c < cols * 3; c += 3, p += 4) {
+        if (nc === 3) {
+          for (let c = 0; c < span; c += 3, p += 4) {
+            sums[c] = src[p];
+            sums[c + 1] = src[p + 1];
+            sums[c + 2] = src[p + 2];
+          }
+        } else for (let c = 0; c < span; c++, p++) sums[c] = src[p];
+      } else if (nc === 3) {
+        for (let c = 0; c < span; c += 3, p += 4) {
           sums[c] += src[p];
           sums[c + 1] += src[p + 1];
           sums[c + 2] += src[p + 2];
         }
-      }
+      } else for (let c = 0; c < span; c++, p++) sums[c] += src[p];
     }
     if (values) {
       const d = Math.floor(0x800000 / ystep);
-      for (let c = 0; c < cols * 3; c++) values[c] = (sums[c] * d) >> 23;
+      for (let c = 0; c < span; c++) values[c] = (sums[c] * d) >> 23;
       for (let i = 0; i < rw; i++, o += 4) {
-        const c = (first[i] - cx0) * 3;
-        out[o] = values[c];
-        out[o + 1] = values[c + 1];
-        out[o + 2] = values[c + 2];
-        out[o + 3] = 255;
+        const c = (first[i] - cx0) * nc;
+        put(out, o, values[c], values[c + 1], values[c + 2], nc === 3 ? 255 : values[c + 3]);
       }
       continue;
     }
@@ -345,22 +354,32 @@ function boxScale(px: Pixmap, xt: Taps, yt: Taps, rw: number, rh: number, shrink
       const n = count[i];
       // Below 2^31: a box of n pixels sums to at most 255 · n, and d · n is at most 2^23.
       const d = Math.floor(0x800000 / (ystep * n));
-      let c = (first[i] - cx0) * 3;
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      for (const end = c + n * 3; c < end; c += 3) {
-        r += sums[c];
-        g += sums[c + 1];
-        b += sums[c + 2];
+      let c = (first[i] - cx0) * nc;
+      box[0] = box[1] = box[2] = box[3] = 0;
+      for (const end = c + n * nc; c < end; c += nc) {
+        box[0] += sums[c];
+        box[1] += sums[c + 1];
+        box[2] += sums[c + 2];
+        if (nc === 4) box[3] += sums[c + 3];
       }
-      out[o] = (r * d) >> 23;
-      out[o + 1] = (g * d) >> 23;
-      out[o + 2] = (b * d) >> 23;
-      out[o + 3] = 255;
+      put(out, o, (box[0] * d) >> 23, (box[1] * d) >> 23, (box[2] * d) >> 23, nc === 3 ? 255 : (box[3] * d) >> 23);
     }
   }
   return { width: rw, height: rh, data: out };
+}
+
+/** A colour and its coverage, premultiplied. */
+function put(out: Uint8Array, o: number, r: number, g: number, b: number, a: number): void {
+  if (a === 255) {
+    out[o] = r;
+    out[o + 1] = g;
+    out[o + 2] = b;
+  } else {
+    out[o] = Math.round((r * a) / 255);
+    out[o + 1] = Math.round((g * a) / 255);
+    out[o + 2] = Math.round((b * a) / 255);
+  }
+  out[o + 3] = a;
 }
 
 /** Destination bytes from summed premultiplied values, truncated as Poppler's integer arithmetic does. */

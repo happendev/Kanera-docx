@@ -2,7 +2,7 @@
  * Equations as text: LaTeX for Markdown (`$…$`), and a linear form close to Word's own linear
  * format for plain text (x^2, (a+b)/c, √(x)).
  */
-import type { MathNode } from '../docx/model.js';
+import type { MathNode } from '../ooxml/model.js';
 import { mathLetter } from '../fonts/symbol-map.js';
 
 /** Mathematical alphanumerics (𝑥, 𝐀, 𝟐) as the plain letters they style. */

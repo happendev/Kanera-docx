@@ -1,5 +1,6 @@
 import { coversEmoji } from './emoji.js';
 import { isEastAsian } from './script.js';
+import { EMOJI_FONT } from '../profile.js';
 
 /** Lazy loaders use these family names to match the faces in each font's name table. */
 export interface BundledFont {
@@ -39,13 +40,20 @@ export const COMMON_FONTS: BundledFont[] = [
   { file: 'DejaVuSans-Bold.ttf', family: 'DejaVu Sans', bold: true, italic: false, weight: 700 },
 ];
 
+/** The emoji fonts a package can bundle; its profile's `EMOJI_FONT` picks the one it ships. */
+export const EMOJI_FONTS: Record<'color' | 'outline', BundledFont> = {
+  // Google's COLRv1 release of Noto Color Emoji, unmodified: colour glyphs over TrueType outlines.
+  color: { file: 'Noto-COLRv1.ttf', family: 'Noto Color Emoji', bold: false, italic: false, weight: 400, covers: coversEmoji },
+  // Google's variable release of Noto Emoji, unmodified: its default outlines are the Regular weight.
+  outline: { file: 'NotoEmoji-VariableFont_wght.ttf', family: 'Noto Emoji', bold: false, italic: false, weight: 400, covers: coversEmoji },
+};
+
 /** Font faces available by default in Node and the browser. */
 export const FULL_FONTS: BundledFont[] = [
   ...COMMON_FONTS,
   { file: 'NotoSansCJKjp-Regular.ttf', family: 'Noto Sans CJK JP', bold: false, italic: false, weight: 400, covers: isEastAsian },
   { file: 'NotoSerifCJKsc-Regular.ttf', family: 'Noto Serif CJK SC', bold: false, italic: false, weight: 400, covers: isEastAsian },
-  // Google's COLRv1 release of Noto Color Emoji, unmodified: colour glyphs over TrueType outlines.
-  { file: 'Noto-COLRv1.ttf', family: 'Noto Color Emoji', bold: false, italic: false, weight: 400, covers: coversEmoji },
+  EMOJI_FONTS[EMOJI_FONT],
   ...four('Liberation Sans Narrow', 'LiberationSansNarrow'),
   ...four('Morrow Mono', 'MorrowMono'),
   ...four('Onward', 'Onward'),

@@ -9,7 +9,7 @@ import { parseDocx } from '../src/docx/parser.js';
 import { deobfuscateFont } from '../src/fonts/odttf.js';
 import { FontRegistry } from '../src/fonts/registry.js';
 import { SfntFont } from '../src/fonts/sfnt.js';
-import { cjkFallbacks } from '../src/fonts/substitutes.js';
+import { cjkFallbacks, substituteFamilies } from '../src/fonts/substitutes.js';
 import { formatNumber } from '../src/layout/chart.js';
 import type { DrawOp, GlyphOp, PathOp } from '../src/layout/types.js';
 import { ZipArchive } from '../src/util/zip.js';
@@ -545,5 +545,13 @@ describe('charts', () => {
     expect(label.end).toBeLessThan(bar.left);
     ({ bar, label } = await chart('bar', 37, true));
     expect(label.end).toBeLessThan(bar.left);
+  });
+});
+
+describe('font names', () => {
+  it('leaves PostScript-style names to the fallback font, as Word does', () => {
+    // Word's PDFs draw these in its fallback font, not in Avenir Next's or Open Sans's lookalikes.
+    expect(substituteFamilies('AvenirNext LT Pro Light')).toBeNull();
+    expect(substituteFamilies('OpenSans')).toBeNull();
   });
 });

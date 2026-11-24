@@ -1,4 +1,4 @@
-import type { DocumentInfo } from './docx/model.js';
+import type { DocumentInfo } from './ooxml/model.js';
 import { parseDocx } from './docx/parser.js';
 import { FontRegistry, type FontSource } from './fonts/registry.js';
 import { layoutDocument, type LayoutStats } from './layout/engine.js';

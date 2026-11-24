@@ -466,11 +466,27 @@ export interface GradientFill {
   eased?: boolean;
 }
 
+export interface LineEnd {
+  /** triangle, stealth, diamond, oval or arrow. */
+  type: string;
+  /** sm, med or lg: the head's width and length in multiples of the line width (2, 3 or 5). */
+  w: string;
+  len: string;
+}
+
 export interface LineStyle {
   color: Color;
   width: number;
   dash: string;
   alpha: number;
+  /** Custom dash pattern (a:custDash) in multiples of the line width: dash, space, dash, space... */
+  custDash?: number[];
+  cap?: 'flat' | 'rnd' | 'sq';
+  join?: 'round' | 'bevel' | 'miter';
+  head?: LineEnd;
+  tail?: LineEnd;
+  /** A gradient outline; `color` stands in for it. */
+  gradient?: GradientFill;
 }
 
 export interface PositionSpec {
@@ -554,6 +570,10 @@ export interface ChartTrendline {
   intercept?: number;
   /** The legend entry's own name. */
   name?: string;
+  /** Label the line with its equation and R² value. */
+  equation: boolean;
+  rSquared: boolean;
+  labelStyle: ChartTextStyle;
   line: ChartLine | null;
 }
 
@@ -562,6 +582,10 @@ export interface ChartLabels {
   category: boolean;
   series: boolean;
   percent: boolean;
+  /** A key in the point's colour before the text. */
+  legendKey: boolean;
+  /** Lines from labels moved off a pie's slices back to them. */
+  leaderLines: boolean;
   /** c:dLblPos: ctr, inEnd, inBase, outEnd, t, b, l, r, bestFit. */
   position?: string;
   style: ChartTextStyle;
@@ -587,6 +611,10 @@ export interface ChartSeries {
   values: Array<number | null>;
   /** Scatter and bubble x values. */
   xValues?: Array<number | null>;
+  /** Bubble sizes, by point. */
+  bubbleSizes?: Array<number | null>;
+  /** Bars below zero are drawn white (c:invertIfNegative). */
+  invertIfNegative?: boolean;
   format: string;
   shape: ChartShape;
   marker?: ChartMarker;
@@ -668,6 +696,8 @@ export interface ChartPlot {
   lines: boolean;
   series: ChartSeries[];
   axes: string[];
+  /** Bubble charts: the largest bubble's size in percent of the default, whether sizes are areas (else widths), and whether bubbles below zero show. */
+  bubble?: { scale: number; area: boolean; negative: boolean };
 }
 
 export interface ChartLayout {
@@ -684,10 +714,15 @@ export interface Chart {
   title?: ChartTitle;
   plots: ChartPlot[];
   axes: ChartAxis[];
-  legend?: { position: 'r' | 'l' | 't' | 'b' | 'tr'; overlay: boolean; style: ChartTextStyle; shape: ChartShape; hidden: number[]; layout?: ChartLayout };
+  /** `autoOverlay`: the overlay was not written, and Excel decides. */
+  legend?: { position: 'r' | 'l' | 't' | 'b' | 'tr'; overlay: boolean; autoOverlay?: boolean; style: ChartTextStyle; shape: ChartShape; hidden: number[]; layout?: ChartLayout };
   plotLayout?: ChartLayout;
   space: ChartShape;
   plotShape: ChartShape;
+  /** The chart's frame has rounded corners. */
+  rounded?: boolean;
+  /** Written without Office's style and text settings (openpyxl and other generators). */
+  legacy?: boolean;
 }
 
 export interface Drawing {
@@ -731,6 +766,20 @@ export interface Drawing {
    * when `pct` is set, that share of the text column wide.
    */
   hr?: { align: 'left' | 'center' | 'right'; pct: number };
+  /** Picture opacity (a:alphaModFix). */
+  alpha?: number;
+  /** Picture drawn in shades of grey (a:grayscl), or in two colours (a:duotone, dark then light). */
+  grayscale?: boolean;
+  duotone?: [string, string];
+  /** Tiled picture fill: tile size in points and offset. */
+  tile?: { w: number; h: number; x: number; y: number; flip?: string };
+  /**
+   * An outer shadow drawn behind the shape: offset (dx, dy), blur radius, colour. Unless
+   * `rotWithShape`, the offset stays on the page as the shape turns.
+   */
+  shadow?: { dx: number; dy: number; blur: number; color: string; alpha: number; sx: number; sy: number; rotWithShape?: boolean };
+  /** A picture is stretched into this rectangle of the box (a:fillRect insets as fractions). */
+  fillRect?: { l: number; t: number; r: number; b: number };
 }
 
 export interface Note {

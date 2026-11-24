@@ -1,13 +1,12 @@
 import { nodeCompression } from '../src/util/node-compression.js';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { encode } from 'jpeg-js';
 import { convertDocx } from '../src/node.js';
-import { ChartPointBudget, parseChart } from '../src/docx/chart.js';
-import { DEFAULT_THEME } from '../src/docx/theme.js';
+import { ChartPointBudget, parseChart } from '../src/ooxml/chart.js';
+import { DEFAULT_THEME } from '../src/ooxml/theme.js';
 import { formatNumber } from '../src/docx/numbering.js';
-import { parseWidth } from '../src/docx/props.js';
-import { applyWordTintShade, measure } from '../src/docx/values.js';
+import { parseWidth } from '../src/ooxml/props.js';
+import { applyWordTintShade, measure } from '../src/ooxml/values.js';
 import { ZipArchive } from '../src/util/zip.js';
 import { singleAdjustments, singleSubstitutions } from '../src/fonts/gsub.js';
 import { parseXml, decodeEntities, resolveAlternateContent } from '../src/util/xml.js';
@@ -15,8 +14,9 @@ import { parseDocx } from '../src/docx/parser.js';
 import { collectionSize, FontBudget, MAX_FONT_FACES, SfntFont } from '../src/fonts/sfnt.js';
 import { ImageBudget } from '../src/image/budget.js';
 import { toPdfImage } from '../src/image/image.js';
+import { encodeJpeg } from '../src/image/jpeg-encoder.js';
 import { makeDocx, p, zipStore } from './helpers/docx.js';
-import { inlineImage, redPng } from './helpers/sample.js';
+import { inlineImage, redPng, solidPng } from './helpers/sample.js';
 import { pdfText } from './helpers/pdf.js';
 
 describe('conversion limits', () => {
@@ -39,7 +39,8 @@ describe('conversion limits', () => {
   });
 
   it('counts source image pixels once per part and resets the budget for each document', async () => {
-    const media = { a: { name: 'a.png', data: redPng() }, b: { name: 'b.png', data: redPng() } };
+    // Two different pictures: the same picture stored under two part names is embedded and counted once.
+    const media = { a: { name: 'a.png', data: redPng() }, b: { name: 'b.png', data: solidPng([0, 0, 255]) } };
     const doc = (ids: string[]) => makeDocx({ body: '<w:p>' + ids.map((id) => inlineImage(id, 8, 8)).join('') + '</w:p>', media });
     const options = { imageLimits: { maxImagePixels: 8, maxTotalPixels: 8 } };
     await expect(convertDocx(doc(['a', 'a']), options)).resolves.toHaveProperty('pageCount', 1);
@@ -51,7 +52,7 @@ describe('conversion limits', () => {
   it('embeds JPEGs beyond the pixel budget unchanged instead of decoding them', async () => {
     const width = 64, height = 48;
     const pixels = new Uint8Array(width * height * 4).map((_, i) => (i % 4 === 3 ? 255 : (i * 37) % 251));
-    const jpeg = encode({ width, height, data: pixels }, 100).data;
+    const jpeg = encodeJpeg(width, height, pixels, 100, { channels: 4 });
     const budget = new ImageBudget({ maxImagePixels: width * height - 1 });
     const image = await toPdfImage(jpeg, nodeCompression, budget);
     expect(image).toMatchObject({ width, height, filter: 'DCTDecode' });
@@ -65,7 +66,7 @@ describe('conversion limits', () => {
   it('caps automatic JPEG selection at four million pixels and honors explicit quality above it', async () => {
     // Change only the SOF dimensions. A declining budget lets us observe selection without
     // allocating a four-megapixel image or passing the synthetic frame to the decoder.
-    const jpeg = Buffer.from(encode({ width: 8, height: 8, data: Buffer.alloc(256) }, 100).data);
+    const jpeg = Buffer.from(encodeJpeg(8, 8, new Uint8Array(256), 100, { channels: 4 }));
     const frame = jpeg.indexOf(Buffer.from([0xff, 0xc0]));
     expect(frame).toBeGreaterThan(0);
     jpeg.writeUInt16BE(2000, frame + 5);
@@ -82,7 +83,7 @@ describe('conversion limits', () => {
   });
 
   it('charges JPEG pixels only when 8-bit table zero meets the automatic cutoff', async () => {
-    const jpeg = Buffer.from(encode({ width: 8, height: 8, data: Buffer.alloc(8 * 8 * 4, 85) }, 100).data);
+    const jpeg = Buffer.from(encodeJpeg(8, 8, new Uint8Array(8 * 8 * 4).fill(85), 100, { channels: 4 }));
     const start = jpeg.indexOf(Buffer.from([0xff, 0xdb]));
     const end = start + 2 + jpeg.readUInt16BE(start + 2);
     const table = (sum: number) => [0, ...Array.from({ length: 64 }, (_, i) => Math.floor(sum / 64) + Number(i < sum % 64))];

@@ -3,8 +3,16 @@ import type { Chart, ChartAxis, ChartLabels, ChartLayout, ChartLine, ChartMarker
 import type { Theme } from './theme.js';
 import { parseGradient } from './gradient.js';
 import { emu } from './values.js';
+import { APP } from '../profile.js';
 
 type ColorOf = (el: XmlElement | undefined) => { color: string; alpha: number } | undefined;
+
+/** Values of the cells a reference formula (c:f) names, for series saved without cached values. */
+/**
+ * Reads the cells a chart reference names (as text for a text reference); `stale` says the cells
+ * changed after the chart's cache was saved.
+ */
+export type ChartRefs = (formula: string, text?: boolean) => { values: Array<string | null>; format?: string; stale?: boolean } | undefined;
 
 interface ChartContext {
   theme: Theme;
@@ -12,6 +20,9 @@ interface ChartContext {
   color: ColorOf;
   /** Default series colour scheme from the chart style (c:style 1-48). */
   scheme: number;
+  refs?: ChartRefs;
+  /** Series in the chart, for the automatic colours. */
+  seriesCount: number;
 }
 
 const isColor = (c: XmlElement) => /^a:(srgbClr|schemeClr|sysClr|prstClr|scrgbClr|hslClr)$/.test(c.name);
@@ -24,6 +35,10 @@ const scheme = (val: string, mods: Record<string, number> = {}) =>
   );
 
 /** A c: boolean element: present means true unless val says otherwise. */
+/**
+ * A boolean element's value. Office writes them all; Microsoft 365 Excel reads one that is left out as
+ * true (openpyxl leaves most out), which is what `dflt` says where that matters.
+ */
 function flag(e: XmlElement | undefined, dflt: boolean): boolean {
   if (!e) return dflt;
   const v = e.attrs.val;
@@ -111,11 +126,16 @@ function shape(spPr: XmlElement | undefined, ctx: ChartContext, dflt: ChartShape
 }
 
 /** The default colour of series (or pie point) `i` in the chart style's colour scheme. */
-function autoColor(i: number, ctx: ChartContext): string {
+/**
+ * The automatic colour of series or point `i` of `n`. Office writes every colour; Excel colours the rest
+ * from the accent cycle, darkening the earlier rounds and lightening the later ones evenly around the
+ * plain accents (measured on Microsoft 365 Excel's prints of openpyxl charts).
+ */
+function autoColor(i: number, n: number, ctx: ChartContext): string {
   const round = Math.floor(i / 6);
-  // Later rounds darken, then lighten, the accent cycle (Office's chart palette).
-  const rounds: Array<Record<string, number>> = [{}, { lumMod: 60000 }, { lumMod: 80000, lumOff: 20000 }, { lumMod: 80000 }, { lumMod: 60000, lumOff: 40000 }, { lumMod: 50000 }];
-  const mods = rounds[round % rounds.length];
+  const v = ((round + 1) / (Math.floor(Math.max(n, i + 1) / 6) + 2)) * 1.4 - 0.7;
+  const k = Math.round(Math.abs(v) * 100000);
+  const mods: Record<string, number> = k < 500 ? {} : v < 0 ? { shade: 100000 - k } : { tint: 100000 - k };
   if (ctx.scheme === 1) return ctx.color(scheme('tx1', { tint: [100000, 75000, 50000, 85000, 60000, 35000][i % 6] }))?.color ?? '808080';
   if (ctx.scheme >= 3 && ctx.scheme <= 8) {
     const shades: Array<Record<string, number>> = [{}, { shade: 76000 }, { tint: 77000 }, { shade: 53000 }, { tint: 54000 }, { shade: 88000 }, { tint: 88000 }];
@@ -152,6 +172,17 @@ function cache(e: XmlElement | undefined, ctx: ChartContext): Cache {
   let c = ref ? (child(ref, 'c:strCache') ?? child(ref, 'c:numCache') ?? child(ref, 'c:multiLvlStrCache')) : (child(e, 'c:strLit') ?? child(e, 'c:numLit'));
   // Multi-level categories: the first level holds the innermost labels.
   if (c && child(c, 'c:lvl')) c = { ...child(c, 'c:lvl')!, children: [...children(c, 'c:ptCount'), ...children(child(c, 'c:lvl'), 'c:pt')] };
+  if (ref && ref.name !== 'c:multiLvlStrRef') {
+    // Read the cells the reference names, where the document can, when there is no cache or the
+    // cells have changed since it was saved (Excel draws a chart from its cells).
+    const formula = child(ref, 'c:f')?.children.join('');
+    const read = formula ? ctx.refs?.(formula, ref.name === 'c:strRef') : undefined;
+    if (read && (!c || read.stale)) {
+      ctx.budget.reserve(read.values.length);
+      const format = read.format ?? child(c, 'c:formatCode')?.children.join('');
+      return { values: read.values, ...(format && { format }) };
+    }
+  }
   if (!c) {
     const v = child(e, 'c:v');
     if (!v) return { values: [] };
@@ -172,17 +203,21 @@ const numbers = (c: Cache) => c.values.map((v) => (v === null || v.trim() === ''
 
 function labels(dLbls: XmlElement | undefined, inherited: ChartLabels | undefined, base: ChartTextStyle, ctx: ChartContext): ChartLabels | undefined {
   if (!dLbls) return inherited;
+  // c:delete is the alternative to the label settings: true only where it is written.
   if (flag(child(dLbls, 'c:delete'), false)) return undefined;
   const style = textStyle(child(dLbls, 'c:txPr'), inherited?.style ?? base, ctx);
   const hidden = children(dLbls, 'c:dLbl')
     .filter((d) => flag(child(d, 'c:delete'), false))
     .map((d) => Number(val(child(d, 'c:idx'))) || 0);
-  const show = (n: string, dflt: boolean) => (child(dLbls, n) ? flag(child(dLbls, n), false) : dflt);
+  // A setting left out follows the plot's labels, else Excel takes it as on.
+  const show = (n: string, dflt: boolean | undefined) => (child(dLbls, n) ? flag(child(dLbls, n), false) : (dflt ?? true));
   const out: ChartLabels = {
-    value: show('c:showVal', inherited?.value ?? false),
-    category: show('c:showCatName', inherited?.category ?? false),
-    series: show('c:showSerName', inherited?.series ?? false),
-    percent: show('c:showPercent', inherited?.percent ?? false),
+    value: show('c:showVal', inherited?.value),
+    category: show('c:showCatName', inherited?.category),
+    series: show('c:showSerName', inherited?.series),
+    percent: show('c:showPercent', inherited?.percent),
+    legendKey: show('c:showLegendKey', inherited?.legendKey),
+    leaderLines: show('c:showLeaderLines', inherited?.leaderLines),
     style,
   };
   const pos = val(child(dLbls, 'c:dLblPos')) ?? inherited?.position;
@@ -196,10 +231,15 @@ function labels(dLbls: XmlElement | undefined, inherited: ChartLabels | undefine
   return out.value || out.category || out.series || out.percent ? out : undefined;
 }
 
-function title(e: XmlElement | undefined, base: ChartTextStyle, ctx: ChartContext, auto?: string): ChartTitle | undefined {
+/**
+ * Read a title. Text typed into it (c:rich) without a size of its own takes `richSize`: Excel draws
+ * a title's own text at the chart's text size, and only a title it makes up larger.
+ */
+function title(e: XmlElement | undefined, base: ChartTextStyle, ctx: ChartContext, auto?: string, richSize?: number): ChartTitle | undefined {
   if (!e) return undefined;
-  const style = textStyle(child(e, 'c:txPr'), base, ctx);
   const rich = path(e, 'c:tx', 'c:rich');
+  const txPr = child(e, 'c:txPr');
+  const style = textStyle(txPr, rich && richSize !== undefined && !txPr ? { ...base, size: richSize } : base, ctx);
   const paragraphs: ChartTitle['paragraphs'] = [];
   if (rich) {
     const richStyle = textStyle(rich, style, ctx);
@@ -237,7 +277,8 @@ function title(e: XmlElement | undefined, base: ChartTextStyle, ctx: ChartContex
   const ml = path(e, 'c:layout', 'c:manualLayout');
   return {
     paragraphs,
-    overlay: flag(child(e, 'c:overlay'), false),
+    // Office always writes c:overlay; Excel overlays a title that leaves it out.
+    overlay: flag(child(e, 'c:overlay'), true),
     ...(ml && numVal(child(ml, 'c:x')) !== undefined && { x: numVal(child(ml, 'c:x')), y: numVal(child(ml, 'c:y')) ?? 0 }),
     shape: shape(child(e, 'c:spPr'), ctx, { fill: null, line: null }),
   };
@@ -272,36 +313,42 @@ const PLOT_TYPES: Record<string, ChartPlot['type']> = {
   'c:bubbleChart': 'scatter',
   'c:radarChart': 'radar',
 };
+const PLOT_NAMES = Object.keys(PLOT_TYPES);
 const MARKERS = ['diamond', 'square', 'triangle', 'x', 'star', 'circle', 'plus'];
 
 function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx: ChartContext, seriesBase: number): ChartPlot {
   const grouping = val(child(e, 'c:grouping'));
-  const stacked = grouping === 'stacked' || grouping === 'percentStacked';
-  const scatterStyle = val(child(e, 'c:scatterStyle')) ?? 'marker';
+  // Excel draws a scatter chart without a style (openpyxl writes none) with lines.
+  const scatterStyle = val(child(e, 'c:scatterStyle')) ?? 'lineMarker';
+  // Bubbles are filled circles, without lines or markers.
+  const bubble = e.name === 'c:bubbleChart';
   const p: ChartPlot = {
     type,
     horizontal: val(child(e, 'c:barDir')) === 'bar',
     grouping: grouping === 'stacked' || grouping === 'percentStacked' || grouping === 'clustered' ? grouping : type === 'bar' ? 'clustered' : 'standard',
     gapWidth: numVal(child(e, 'c:gapWidth')) ?? 150,
-    overlap: numVal(child(e, 'c:overlap')) ?? (stacked && type === 'bar' ? 100 : 0),
-    varyColors: flag(child(e, 'c:varyColors'), type === 'pie' || type === 'doughnut'),
+    // Office writes 100 for stacked bars; without it Excel offsets each series' segments as if clustered.
+    overlap: numVal(child(e, 'c:overlap')) ?? 0,
+    // Office always writes c:varyColors; Excel varies the colours of a chart that leaves it out.
+    varyColors: flag(child(e, 'c:varyColors'), true),
     holeSize: numVal(child(e, 'c:holeSize')) ?? 50,
     firstSliceAngle: numVal(child(e, 'c:firstSliceAng')) ?? 0,
-    markers: type === 'scatter' ? scatterStyle !== 'line' && scatterStyle !== 'smooth' && scatterStyle !== 'none' : flag(child(e, 'c:marker'), false),
-    lines: type !== 'scatter' || scatterStyle === 'line' || scatterStyle === 'lineMarker' || scatterStyle === 'smooth' || scatterStyle === 'smoothMarker',
+    markers: bubble ? false : type === 'scatter' ? scatterStyle !== 'line' && scatterStyle !== 'smooth' && scatterStyle !== 'none' : flag(child(e, 'c:marker'), type === 'line'),
+    lines: !bubble && (type !== 'scatter' || scatterStyle === 'line' || scatterStyle === 'lineMarker' || scatterStyle === 'smooth' || scatterStyle === 'smoothMarker'),
     series: [],
     axes: children(e, 'c:axId').map((a) => a.attrs.val ?? ''),
   };
+  if (bubble) p.bubble = { scale: numVal(child(e, 'c:bubbleScale')) ?? 100, area: val(child(e, 'c:sizeRepresents')) !== 'w', negative: flag(child(e, 'c:showNegBubbles'), true) };
   // Excel writes the marker style for plain radar charts too, turning each series' markers off.
   const radarStyle = val(child(e, 'c:radarStyle'));
   if (type === 'radar') p.radarStyle = radarStyle === 'filled' || radarStyle === 'standard' ? radarStyle : 'marker';
   const filled = p.radarStyle === 'filled';
-  const traced = type === 'line' || type === 'scatter' || (type === 'radar' && !filled);
+  const traced = type === 'line' || (type === 'scatter' && !bubble) || (type === 'radar' && !filled);
   const plotLabels = labels(child(e, 'c:dLbls'), undefined, text, ctx);
   const sers = children(e, 'c:ser').sort((a, b) => (numVal(child(a, 'c:order')) ?? 0) - (numVal(child(b, 'c:order')) ?? 0));
   for (const [k, s] of sers.entries()) {
     const idx = numVal(child(s, 'c:idx')) ?? seriesBase + k;
-    const color = autoColor(idx, ctx);
+    const color = autoColor(idx, ctx.seriesCount, ctx);
     const isLine = type === 'line' || (type === 'scatter' && p.lines) || (type === 'radar' && !filled);
     // Without their own formatting, lines are 2.25pt in the series colour; bars and areas fill with it.
     const dflt: ChartShape = isLine ? { fill: null, line: { color, width: 2.25 } } : type === 'pie' || type === 'doughnut' ? { fill: { color, alpha: 1 }, line: { color: 'FFFFFF', width: 0.75 } } : { fill: { color, alpha: 1 }, line: null };
@@ -312,8 +359,8 @@ function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx:
       categories: cat.values.map((v) => v ?? ''),
       values: numbers(vals),
       format: vals.format ?? 'General',
-      shape: shape(child(s, 'c:spPr'), ctx, type === 'scatter' && !p.lines ? { fill: null, line: null } : dflt),
-      smooth: flag(child(s, 'c:smooth'), false) || (type === 'scatter' && scatterStyle.startsWith('smooth')),
+      shape: shape(child(s, 'c:spPr'), ctx, type === 'scatter' && !p.lines && !bubble ? { fill: null, line: null } : dflt),
+      smooth: !bubble && (flag(child(s, 'c:smooth'), type === 'line' || type === 'scatter') || (type === 'scatter' && scatterStyle.startsWith('smooth'))),
       points: new Map(),
       explosion: numVal(child(s, 'c:explosion')) ?? 0,
     };
@@ -322,6 +369,8 @@ function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx:
       ser.categoryFormat = cat.format ?? 'General';
     }
     if (type === 'scatter') ser.xValues = child(s, 'c:xVal') ? numbers(cat) : ser.values.map((_, i) => i + 1);
+    if (bubble) ser.bubbleSizes = numbers(cache(child(s, 'c:bubbleSize'), ctx));
+    if (type === 'bar' && flag(child(s, 'c:invertIfNegative'), true)) ser.invertIfNegative = true;
     // Markers: the series' own, else the plot's automatic ones (a symbol per series).
     const m = child(s, 'c:marker');
     const auto = (p.markers && (type === 'line' || type === 'scatter')) || p.radarStyle === 'marker';
@@ -333,13 +382,11 @@ function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx:
     }
     for (const dPt of children(s, 'c:dPt')) {
       const i = numVal(child(dPt, 'c:idx')) ?? 0;
-      const base: ChartShape = p.varyColors && (sers.length === 1 || type === 'pie' || type === 'doughnut') ? { ...ser.shape, fill: ser.shape.fill && { color: autoColor(i, ctx), alpha: 1 } } : ser.shape;
+      const base: ChartShape = p.varyColors && (ctx.seriesCount === 1 || type === 'pie' || type === 'doughnut') ? { ...ser.shape, fill: ser.shape.fill && { color: autoColor(i, ser.values.length, ctx), alpha: 1 } } : ser.shape;
       if (!ser.points.has(i)) ser.points.set(i, shape(child(dPt, 'c:spPr'), ctx, base));
     }
     const l = labels(child(s, 'c:dLbls'), plotLabels, text, ctx);
     if (l) ser.labels = l;
-    // Without their own formatting, trendlines are 1.5pt dotted lines in the series colour.
-    const trendColor = ser.shape.line?.color ?? ser.shape.fill?.color ?? color;
     const trends = children(s, 'c:trendline').map((t): ChartTrendline => {
       const type = val(child(t, 'c:trendlineType')) ?? 'linear';
       const name = child(t, 'c:name')?.children.join('');
@@ -351,7 +398,11 @@ function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx:
         backward: numVal(child(t, 'c:backward')) ?? 0,
         ...(intercept !== undefined && { intercept }),
         ...(name && { name }),
-        line: line(path(t, 'c:spPr', 'a:ln'), ctx, { color: trendColor, width: 1.5, dash: 'sysDot' }),
+        equation: flag(child(t, 'c:dispEq'), true),
+        rSquared: flag(child(t, 'c:dispRSqr'), true),
+        labelStyle: textStyle(path(t, 'c:trendlineLbl', 'c:txPr'), text, ctx),
+        // Without formatting of its own, Excel draws a trendline as a thin line in the text colour.
+        line: line(path(t, 'c:spPr', 'a:ln'), ctx, { color: ctx.color(scheme('tx1'))?.color ?? '000000', width: 0.75 }),
       };
     });
     if (trends.length) ser.trendlines = trends;
@@ -369,33 +420,39 @@ function plot(e: XmlElement, type: ChartPlot['type'], text: ChartTextStyle, ctx:
         value: numVal(child(eb, 'c:val')) ?? 1,
         ...(plus && { plus }),
         ...(minus && { minus }),
-        endCap: !flag(child(eb, 'c:noEndCap'), false),
+        endCap: !flag(child(eb, 'c:noEndCap'), true),
         line: line(path(eb, 'c:spPr', 'a:ln'), ctx, { color: ctx.color(scheme('tx1'))?.color ?? '000000', width: 0.75 }),
       };
     });
     if (bars.length) ser.errorBars = bars;
     p.series.push(ser);
   }
-  // Varied colours give each point of a lone series (or a pie's slices) its own accent colour.
-  if (p.varyColors && (p.series.length === 1 || type === 'pie' || type === 'doughnut'))
+  // Varied colours give each point of the chart's lone series (or a pie's slices) its own accent colour.
+  if (p.varyColors && (ctx.seriesCount === 1 || type === 'pie' || type === 'doughnut'))
     for (const ser of p.series) {
       const n = Math.max(ser.values.length, ser.categories.length);
       for (let i = 0; i < n; i++)
-        if (!ser.points.has(i)) ser.points.set(i, { ...ser.shape, fill: ser.shape.fill && { color: autoColor(i, ctx), alpha: ser.shape.fill.alpha } });
+        if (!ser.points.has(i))
+          ser.points.set(i, { ...ser.shape, fill: ser.shape.fill && { color: autoColor(i, n, ctx), alpha: ser.shape.fill.alpha }, line: ser.shape.line && (traced ? { ...ser.shape.line, color: autoColor(i, n, ctx) } : ser.shape.line) });
     }
   return p;
 }
 
-function axis(e: XmlElement, text: ChartTextStyle, ctx: ChartContext, defaultLine: ChartLine): ChartAxis {
+/**
+ * Read an axis. `across`, when known from the plot it serves, says whether the axis runs across the
+ * page: Excel follows the plot's direction where c:axPos disagrees (openpyxl writes "l" for both axes).
+ */
+function axis(e: XmlElement, text: ChartTextStyle, ctx: ChartContext, defaultLine: ChartLine, gridLine: ChartLine, across?: boolean): ChartAxis {
   const kind = e.name === 'c:valAx' ? 'val' : e.name === 'c:dateAx' ? 'date' : e.name === 'c:serAx' ? 'ser' : 'cat';
   const scaling = child(e, 'c:scaling');
-  const pos = val(child(e, 'c:axPos'));
+  let pos = val(child(e, 'c:axPos'));
+  if (across !== undefined && across !== (pos === 'b' || pos === 't')) pos = across ? 'b' : 'l';
   const fmt = child(e, 'c:numFmt');
   const crosses = val(child(e, 'c:crosses'));
   const crossesAt = numVal(child(e, 'c:crossesAt'));
   const grid = (name: string) => {
     const g = child(e, name);
-    return g ? line(path(g, 'c:spPr', 'a:ln'), ctx, defaultLine) : null;
+    return g ? line(path(g, 'c:spPr', 'a:ln'), ctx, gridLine) : null;
   };
   const tick = val(child(e, 'c:majorTickMark'));
   const lblPos = val(child(e, 'c:tickLblPos'));
@@ -403,7 +460,7 @@ function axis(e: XmlElement, text: ChartTextStyle, ctx: ChartContext, defaultLin
     id: val(child(e, 'c:axId')) ?? '',
     kind,
     position: pos === 'l' || pos === 'r' || pos === 't' || pos === 'b' ? pos : 'b',
-    deleted: flag(child(e, 'c:delete'), false),
+    deleted: flag(child(e, 'c:delete'), true),
     reverse: val(child(scaling, 'c:orientation')) === 'maxMin',
     format: fmt?.attrs.formatCode ?? 'General',
     sourceLinked: fmt ? fmt.attrs.sourceLinked === '1' : true,
@@ -411,7 +468,8 @@ function axis(e: XmlElement, text: ChartTextStyle, ctx: ChartContext, defaultLin
     gridlines: grid('c:majorGridlines'),
     minorGridlines: grid('c:minorGridlines'),
     majorTick: tick === 'in' || tick === 'cross' || tick === 'none' ? tick : 'out',
-    labelPosition: lblPos === 'low' || lblPos === 'high' || lblPos === 'none' ? lblPos : 'nextTo',
+    // Office always writes c:tickLblPos; Excel shows no labels on an axis that leaves it out.
+    labelPosition: lblPos === 'low' || lblPos === 'high' || lblPos === 'none' || lblPos === 'nextTo' ? lblPos : 'none',
     style: textStyle(child(e, 'c:txPr'), text, ctx),
     crossAxis: val(child(e, 'c:crossAx')) ?? '',
     crosses: crossesAt ?? (crosses === 'min' || crosses === 'max' ? crosses : 'autoZero'),
@@ -443,12 +501,13 @@ function axis(e: XmlElement, text: ChartTextStyle, ctx: ChartContext, defaultLin
  * their own formatting take the chart style's defaults: style 2 (Office's default) draws text 10pt
  * in the text colour, axes and gridlines in a 75% tint of it, and series in the accent colours.
  */
-export function parseChart(space: XmlElement, theme: Theme, color: ColorOf, budget: ChartPointBudget): Chart | undefined {
+export function parseChart(space: XmlElement, theme: Theme, color: ColorOf, budget: ChartPointBudget, refs?: ChartRefs): Chart | undefined {
   const chartEl = child(space, 'c:chart');
   const plotArea = child(chartEl, 'c:plotArea');
   if (!chartEl || !plotArea) return undefined;
   const style = numVal(descendant(space, 'c:style')) ?? 2;
-  const ctx: ChartContext = { theme, color, budget, scheme: ((((style - 1) % 8) + 8) % 8) + 1 };
+  const seriesCount = PLOT_NAMES.reduce((t, name) => t + children(plotArea, name).reduce((u, e) => u + children(e, 'c:ser').length, 0), 0);
+  const ctx: ChartContext = { theme, color, budget, scheme: ((((style - 1) % 8) + 8) % 8) + 1, refs, seriesCount };
   const ink = color(scheme('tx1'))?.color ?? '000000';
   const text = textStyle(child(space, 'c:txPr'), { font: theme.minorLatin || 'Calibri', size: 10, bold: false, italic: false, color: ink }, ctx);
   delete text.rotation;
@@ -458,28 +517,54 @@ export function parseChart(space: XmlElement, theme: Theme, color: ColorOf, budg
     axes: [],
     space: shape(child(space, 'c:spPr'), ctx, { fill: { color: color(scheme('bg1'))?.color ?? 'FFFFFF', alpha: 1 }, line: defaultLine }),
     plotShape: shape(child(plotArea, 'c:spPr'), ctx, { fill: null, line: null }),
+    // Office always writes c:roundedCorners; Excel rounds the corners of a chart that leaves it out.
+    rounded: flag(child(space, 'c:roundedCorners'), true),
   };
+  // A chart Office did not write (no Office 2010 style, no text properties) spaces its legend as Excel's oldest default does.
+  if (!descendant(space, 'mc:AlternateContent') && !child(space, 'c:txPr')) chart.legacy = true;
   let base = 0;
+  const crossBetween = new Map<string, string | undefined>();
   for (const e of children(plotArea)) {
     const type = PLOT_TYPES[e.name];
     if (type) {
       const p = plot(e, type, text, ctx, base);
       base += p.series.length;
       chart.plots.push(p);
-    } else if (e.name === 'c:catAx' || e.name === 'c:valAx' || e.name === 'c:dateAx' || e.name === 'c:serAx') chart.axes.push(axis(e, text, ctx, defaultLine));
+    } else if (e.name === 'c:catAx' || e.name === 'c:valAx' || e.name === 'c:dateAx' || e.name === 'c:serAx') {
+      const id = val(child(e, 'c:axId')) ?? '';
+      const p = chart.plots.find((q) => q.axes.includes(id));
+      // Category axes run across a column, line or area chart and down a bar chart; value axes the other way.
+      // A scatter chart's first axis is its x axis.
+      const across = p && (p.type === 'bar' || p.type === 'line' || p.type === 'area') ? (e.name === 'c:valAx') === p.horizontal : p?.type === 'scatter' ? id === p.axes[0] : undefined;
+      // Gridlines without formatting of their own are 0.75pt in the text colour in Excel and
+      // PowerPoint, and like the axes in Word.
+      chart.axes.push(axis(e, text, ctx, defaultLine, APP === 'word' ? defaultLine : { color: ink, width: 0.75 }, across));
+      if (e.name === 'c:valAx') crossBetween.set(id, val(child(e, 'c:crossBetween')));
+    }
+  }
+  // A value axis says where it crosses the category axis: between categories, or through their
+  // middles, which puts the categories on the tick marks. Without a say, an area chart's
+  // categories sit on the tick marks.
+  for (const a of chart.axes) {
+    if (a.kind !== 'cat' && a.kind !== 'date') continue;
+    const cb = crossBetween.get(a.crossAxis);
+    const p = chart.plots.find((q) => q.axes.includes(a.id));
+    a.between = cb ? cb !== 'midCat' : p?.type !== 'area';
   }
   // Surface charts are not drawn: leave the space empty rather than draw bare axes.
   if (!chart.plots.length) return undefined;
   const series = chart.plots.flatMap((p) => p.series);
   // A chart whose title was not deleted shows its only series' name as the title.
   const titleEl = child(chartEl, 'c:title');
-  const autoDeleted = flag(child(chartEl, 'c:autoTitleDeleted'), false);
+  const autoDeleted = flag(child(chartEl, 'c:autoTitleDeleted'), true);
   const titleStyle: ChartTextStyle = { ...text, size: text.size * 1.8, bold: true };
+  const made = !titleEl && !autoDeleted && series.length === 1 && chart.plots[0]?.type !== 'scatter';
   const t = titleEl
-    ? title(titleEl, titleStyle, ctx, series.length === 1 ? series[0].name : 'Chart Title')
-    : !autoDeleted && series.length === 1 && chart.plots[0]?.type !== 'scatter'
+    ? title(titleEl, titleStyle, ctx, series.length === 1 ? series[0].name : 'Chart Title', text.size)
+    : made
       ? title(el('c:title'), titleStyle, ctx, series[0].name)
       : undefined;
+  if (t && made) t.overlay = false;
   if (t) chart.title = t;
   const legend = child(chartEl, 'c:legend');
   if (legend) {
@@ -487,7 +572,8 @@ export function parseChart(space: XmlElement, theme: Theme, color: ColorOf, budg
     const lay = layout(legend);
     chart.legend = {
       position: pos === 'l' || pos === 't' || pos === 'b' || pos === 'tr' ? pos : 'r',
-      overlay: flag(child(legend, 'c:overlay'), false),
+      overlay: flag(child(legend, 'c:overlay'), true),
+      ...(!child(legend, 'c:overlay') && { autoOverlay: true }),
       style: textStyle(child(legend, 'c:txPr'), text, ctx),
       shape: shape(child(legend, 'c:spPr'), ctx, { fill: null, line: null }),
       hidden: children(legend, 'c:legendEntry')

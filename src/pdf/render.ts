@@ -1,4 +1,4 @@
-import type { DocumentInfo, ImageRef, Link } from '../docx/model.js';
+import type { DocumentInfo, ImageRef, Link } from '../ooxml/model.js';
 import type { Compression } from '../util/compression.js';
 import type { FontFace } from '../fonts/registry.js';
 import { colorGlyph, hasColorGlyphs } from '../fonts/colr.js';
@@ -8,6 +8,7 @@ import { adjustImage, dibToPdf, sniffImage, toPdfImage, type PdfImage } from '..
 import type { DrawOp, GlyphOp, Page, PathSeg, ShadeGeometry } from '../layout/types.js';
 import { ColorGlyphForms } from './color-glyph.js';
 import { latin1, num, PdfObjects, pdfName, textString } from './objects.js';
+import { SYNTHETIC_BOLD_STROKE } from '../profile.js';
 
 export interface PdfOptions {
   info?: DocumentInfo;
@@ -19,6 +20,8 @@ export interface PdfOptions {
   compress?: boolean;
   /** Snap text sizes, baselines (from the page top) and line starts to this grid, in points. */
   paintGrid?: number;
+  /** Leave out, with a warning, a picture past the image pixel limits rather than failing the conversion. */
+  skipImagesOverLimits?: boolean;
 }
 
 interface FontUse {
@@ -61,6 +64,20 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
   const images = new Map<string, ImageUse | null>();
   const rasterImages = new WeakMap<Uint8Array, PdfImage | null>();
   const masks = new WeakMap<Uint8Array, number>();
+  // Decks often store one picture under several part names: encode and embed it once.
+  const byContent = new Map<string, Uint8Array[]>();
+  const sameImage = (data: Uint8Array): Uint8Array => {
+    const key = contentKey(data);
+    const seen = byContent.get(key);
+    if (!seen) {
+      byContent.set(key, [data]);
+      return data;
+    }
+    for (const other of seen) if (other === data || equalBytes(other, data)) return other;
+    seen.push(data);
+    return data;
+  };
+  const writtenImages = new Map<PdfImage, number>();
   // Gradients' sampled colours, shared by gradients that sample the same.
   const shadeFunctions = new Map<string, number>();
   const anchors = new Map<string, { page: number; x: number; y: number }>();
@@ -104,7 +121,8 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
       if (!images.has(ref.svg.id)) await loadSvg(ref.svg);
       if (imageFor(ref) !== undefined) return;
     }
-    const data = ref.data;
+    // Raw DIB bits are only an image together with their header, so they are not shared by content.
+    const data = ref.dibBits ? ref.data : sameImage(ref.data);
     if (!ref.dibBits && (/\.svg$/i.test(ref.id) || sniffImage(data) === 'svg')) {
       await loadSvg(ref);
       if (!images.get(ref.id)) warnings.push(`Image ${ref.id} uses unsupported SVG features and was skipped`);
@@ -112,7 +130,16 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
     }
     let img = rasterImages.get(data);
     if (img === undefined) {
-      img = ref.dibBits ? dibToPdf(data, ref.dibBits, compression, imageBudget) : await toPdfImage(data, compression, imageBudget, quality);
+      try {
+        img = ref.dibBits ? dibToPdf(data, ref.dibBits, compression, imageBudget) : await toPdfImage(data, compression, imageBudget, quality);
+      } catch (e) {
+        // Past the pixel budget, drop this picture rather than the whole document where asked to.
+        if (!opts.skipImagesOverLimits || !(e instanceof Error && e.message === 'Image pixel limit exceeded')) throw e;
+        warnings.push(`Image ${ref.id} exceeds the image pixel limits and was skipped`);
+        rasterImages.set(data, null);
+        images.set(ref.id, null);
+        return;
+      }
       rasterImages.set(data, img);
     }
     if (!img) {
@@ -120,8 +147,12 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
       images.set(ref.id, null);
       return;
     }
-    const use = { resName: `Im${images.size + 1}`, objNum: writeImage(pdf, ref.adjust ? adjustImage(img, ref.adjust) : img, masks) };
-    images.set(ref.id, use);
+    let objNum = ref.adjust ? undefined : writtenImages.get(img);
+    if (objNum === undefined) {
+      objNum = writeImage(pdf, ref.adjust ? adjustImage(img, ref.adjust) : img, masks);
+      if (!ref.adjust) writtenImages.set(img, objNum);
+    }
+    images.set(ref.id, { resName: `Im${images.size + 1}`, objNum });
   };
 
   for (const [pi, page] of pages.entries()) {
@@ -190,7 +221,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
       s += color(op.color, false) + ' ';
       if (stroked) {
         // A dash pattern a line or border left set would dash the glyphs' outlines too.
-        s += `${color(op.color, true)} ${num(op.size * (op.outline ? 0.02 : 0.03))} w [] 0 d ${op.outline ? 1 : 2} Tr `;
+        s += `${color(op.color, true)} ${num(op.size * (op.outline ? 0.02 : SYNTHETIC_BOLD_STROKE))} w [] 0 d ${op.outline ? 1 : 2} Tr `;
       }
       if (colored) s += '3 Tr ';
       const x0 = op.x + op.xs[0] + (grid && op.lineX !== undefined ? snap(op.lineX) - op.lineX : 0);
@@ -246,7 +277,9 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
           if (op.stroke) {
             const a = op.strokeAlpha !== undefined && op.strokeAlpha < 1;
             const dash = op.dash ? `[${op.dash.map(num).join(' ')}] 0 d` : '[] 0 d';
-            out.push(`${a ? `q /${alphaFor(op.strokeAlpha!)} gs ` : ''}${num(op.strokeWidth ?? 0.75)} w 0 J 1 j ${dash} ${color(op.stroke, true)} ${path}S${a ? ' Q' : ''}`);
+            const cap = op.cap === 'round' ? 1 : op.cap === 'square' ? 2 : 0;
+            const join = op.join === 'miter' ? 0 : op.join === 'bevel' ? 2 : 1;
+            out.push(`${a ? `q /${alphaFor(op.strokeAlpha!)} gs ` : ''}${num(op.strokeWidth ?? 0.75)} w ${cap} J ${join} j ${dash} ${color(op.stroke, true)} ${path}S${a ? ' Q' : ''}`);
           }
           break;
         }
@@ -287,6 +320,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
           const ix = op.x - c.l * W;
           const iy = op.y - c.t * Hh;
           let s = 'q ';
+          if (op.alpha !== undefined && op.alpha < 1) s += `/${alphaFor(op.alpha)} gs `;
           if (c.l || c.t || c.r || c.b) s += `${num(op.x)} ${num(Y(op.y + op.h))} ${num(op.w)} ${num(op.h)} re W n `;
           s += `${num(W)} 0 0 ${num(Hh)} ${num(ix)} ${num(Y(iy + Hh))} cm /${use.resName} Do Q`;
           out.push(s);
@@ -431,6 +465,21 @@ function shadingObject(pdf: PdfObjects, g: ShadeGeometry, fn: number, space: str
     }
   }
   return pdf.addStream(`/ShadingType 4 ${head} /BitsPerCoordinate 32 /BitsPerComponent 16 /BitsPerFlag 8 /Decode [${num(x0)} ${num(x1)} ${num(y0)} ${num(y1)} 0 1]`, data, compress);
+}
+
+/** Length and a sparse hash: equal keys are confirmed byte for byte. */
+function contentKey(d: Uint8Array): string {
+  let h = 0x811c9dc5;
+  const step = Math.max(1, Math.floor(d.length / 512));
+  for (let i = 0; i < d.length; i += step) h = Math.imul(h ^ d[i], 0x01000193);
+  for (let i = Math.max(0, d.length - 64); i < d.length; i++) h = Math.imul(h ^ d[i], 0x01000193);
+  return `${d.length}:${h >>> 0}`;
+}
+
+function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 function writeImage(pdf: PdfObjects, img: PdfImage, masks: WeakMap<Uint8Array, number>): number {

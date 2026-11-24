@@ -23,7 +23,7 @@ Kanera scored **98.5% Markdown accuracy** across 278 DOCX documents. [Markdown b
 
 | Converter | Visual match | Page counts matched | Fresh process | Reused process | Median peak memory |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Kanera | **92.6%** | **273/278** | **92.7 ms** | **5.9 ms** | 75.9 MiB |
+| Kanera | **92.6%** | **273/278** | **94.4 ms** | **6.4 ms** | 75.6 MiB |
 | LibreOffice | 80.3% | 256/278 | 807.2 ms | 58.0 ms | – |
 | EigenPal | 70.9% | 257/278 | 775.1 ms | 257.8 ms | 278.6 MiB |
 | Syncfusion DocIO (.NET) | 56.1% | 246/278 | 568.8 ms | 60.0 ms | 121.8 MiB |
@@ -285,11 +285,14 @@ whatever its own name table says.
 With `imageQuality` omitted, eligible colour JPEGs of up to 4,000,000 pixels are encoded at quality 80
 when the 64 entries in their 8-bit quantization table 0 sum to 750 or less. Other JPEGs keep their
 original stream. An explicit quality encodes each eligible JPEG within the configured image budget
-once, even above 4 megapixels or when the encoded file grows. Set `imageQuality: false` to preserve
-all original JPEG streams.
+once, even above 4 megapixels or when the encoded file grows. Recompressed JPEGs are baseline with
+4:2:0 chroma; a JPEG of more than 32 scans keeps its original stream. Set `imageQuality: false` to
+preserve all original JPEG streams.
 PNG and supported TIFF
 use lossless PDF compression of their decoded pixels. TIFF is decoded directly into a PDF image
-stream. As with other conversions, existing decoder limits apply.
+stream, except that JPEG-compressed TIFFs are embedded as JPEGs (strips joined, not recompressed,
+and following the JPEG quality rules above) and CCITT fax TIFFs of one strip keep their fax data.
+As with other conversions, existing decoder limits apply.
 
 ### Text extraction
 
@@ -460,7 +463,7 @@ as packaged by Fedora (`google-noto-color-emoji-fonts`), unmodified, as `Noto-CO
   kept on the page of the table row that refers to them.
 - Plain-text and HTML/XHTML imports (`w:altChunk`). HTML is rendered as plain text. The warnings identify flattened HTML and unsupported import types.
 - Images: PNG (all colour types, transparency, interlacing), JPEG (including CMYK), GIF, BMP and
-  TIFF (uncompressed, LZW, Deflate and PackBits). Basic SVG, EMF and WMF are drawn as vector paths.
+  TIFF (uncompressed, LZW, Deflate, PackBits, CCITT fax and JPEG). Basic SVG, EMF and WMF are drawn as vector paths.
   Images can be inline or floating, with cropping, rotation, flips and square/tight/top-and-bottom
   text wrap, also around pictures in headers and footers. Brightness, contrast and Washout apply to
   raster pictures, except CMYK JPEGs; SVG and metafile pictures are drawn unadjusted.
@@ -490,8 +493,8 @@ as packaged by Fedora (`google-noto-color-emoji-fonts`), unmodified, as `Noto-CO
 
 - SVGs with features such as gradients, filters, stylesheets or text use Word's raster preview when
   available. Supported SVGs become PDF vector drawing commands, with metadata and unused
-  definitions omitted. An unsupported SVG without a preview, WebP, or CCITT- or JPEG-compressed
-  TIFF produces a warning. Metafiles drawn only in EMF+ records come out blank.
+  definitions omitted. An unsupported SVG without a preview, WebP, or old-style JPEG TIFF
+  without a complete JPEG stream produces a warning. Metafiles drawn only in EMF+ records come out blank.
 - 3D charts are drawn as their flat versions. Surface charts are left blank, and newer chart types
   (waterfall, treemap, histogram and others) show the fallback Word saves with them. No document in
   the benchmark or test corpora has a radar chart or error bars, so those follow Excel's documented
@@ -549,7 +552,7 @@ The [benchmark](benchmarks/word/README.md) compares converters on 278 documents 
 <!-- benchmark-results:start -->
 | Converter | Mean ink overlap | Matching page count | Failed conversions | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS | Total PDF size |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **92.6%** | **273/278** | **0/278** | **92.7 ms** | **5.9 ms** | **74.0 ms** | **56.6** | 75.9 MiB | **187.3 MiB** | **17.67 MiB** |
+| @kanera/docx2pdf 1.0.0 | **92.6%** | **273/278** | **0/278** | **94.4 ms** | **6.4 ms** | **62.9 ms** | **66.0** | 75.6 MiB | **160.8 MiB** | **17.43 MiB** |
 | LibreOffice 26.8.3.1 | 80.3% | 256/278 | **0/278** | 807.2 ms | 58.0 ms | 244.1 ms | 10.5 | – | – | 44.46 MiB |
 | EigenPal 2.39.0 | 70.9% | 257/278 | 1/278 | 775.1 ms | 257.8 ms | 661.0 ms | 3.6 | 278.6 MiB | 578.4 MiB | 21.98 MiB |
 | Syncfusion DocIO (.NET) 28.2.4.0 | 56.1% | 246/278 | 1/278 | 568.8 ms | 60.0 ms | 2507.9 ms | 1.2 | 121.8 MiB | 1128.7 MiB | 18.91 MiB |

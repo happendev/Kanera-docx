@@ -19,7 +19,8 @@ from fetch import (BENCHMARK_FIXTURES, HERE, MANIFEST, UPSTREAM, OUTPUT, benchma
                    benchmark_reference, verify_reference)
 from pdf_text import extract as extract_text
 from ink import page_scores, render, render_reference
-from readme import markdown_table, update_measured_readme, update_mini_pdf_breakdown, update_readmes, update_suite_scores
+from readme import (markdown_table, sampled_note, update_measured_readme, update_mini_pdf_breakdown, update_readmes,
+                    update_suite_scores)
 
 ENGINES = {
     'reference': 'Reference',
@@ -108,6 +109,8 @@ def comparison(fixture, rasters, rows, page, out):
                 caption = f"Unreadable PDF ({row['unreadable_pdf']}), scored as failed"
             elif row['failed']:
                 caption = f"Conversion failed after {row['cold_ms']:.1f} ms"
+            elif row['untimed']:
+                caption = f"Untimed (sampled engine) · {row['ink_f1']:.1f}% document ink overlap"
             else:
                 warm = 'no warm time' if row['warm_ms'] is None else f"{row['warm_ms']:.1f} ms warm"
                 caption = (f"{row['cold_ms']:.1f} ms cold · {warm} · "
@@ -140,10 +143,12 @@ def score_case(fixture, engines, metrics, visuals, *, output=None):
         if len(reference_words) != len(reference):
             raise ValueError(f'Inconsistent reference page count for {name}')
 
+    # A sampled engine skips documents that nothing scores; they are left out of everything.
+    engines = [engine for engine in engines[1:] if not metrics[name, engine].get('skipped')]
     rasters = {'reference': reference}
     extracted = {}
     invalid = {}
-    for engine in engines[1:]:
+    for engine in engines:
         pdf = directory / f'{engine}.pdf'
         if 'error' in metrics[name, engine]:
             # A failed conversion has no pages, so every reference page scores zero.
@@ -176,7 +181,7 @@ def score_case(fixture, engines, metrics, visuals, *, output=None):
         extracted[engine] = pdf_words
 
     rows = []
-    for engine in engines[1:]:
+    for engine in engines:
         pages = rasters[engine]
         failed = 'error' in metrics[name, engine] or engine in invalid
         scores = page_scores(reference, pages)
@@ -191,6 +196,8 @@ def score_case(fixture, engines, metrics, visuals, *, output=None):
             'engine': engine,
             'failed': failed,
             'unreadable_pdf': invalid.get(engine),
+            # Untimed conversions of a sampled engine count for accuracy and failures only.
+            'untimed': bool(metrics[name, engine].get('untimed')),
             'cold_ms': round(metrics[name, engine]['cold_ms'], 2),
             # A document a warm batch stopped on has no warm time (see resumable_warm in convert.py).
             'warm_ms': None if failed else metrics[name, engine].get('warm_ms'),
@@ -219,28 +226,33 @@ HEADERS = ('Converter', 'Median cold time', 'Median warm time', 'Warm p95 latenc
 def summary_table(rows, engines, count):
     yield HEADERS
     for engine in engines[1:]:
+        # Skipped documents have no rows, so failures and page counts cover the converted documents.
         scores = [row for row in rows if row['engine'] == engine]
+        total = len(scores)
         converted = [row for row in scores if not row['failed']]
-        failed = len(scores) - len(converted)
-        if not converted:
-            yield (ENGINES[engine], *('–',) * 6, f'{failed}/{count}', f'0/{count}', '0.0%', '0.00 MiB')
-            continue
-        # Speed and memory cover successful conversions; failures score zero for accuracy.
-        cold = statistics.median(row['cold_ms'] for row in converted)
-        warm_times = [row['warm_ms'] for row in converted if row['warm_ms'] is not None]
-        warm_columns = ('–',) * 3
-        if warm_times:
-            warm = statistics.median(warm_times)
-            warm_p95 = statistics.quantiles(warm_times, n=100, method='inclusive')[94] if len(warm_times) > 1 else warm
-            throughput = 1000 / statistics.mean(warm_times)
-            warm_columns = (f'{warm:.1f} ms', f'{warm_p95:.1f} ms', f'{throughput:.1f}')
-        rss = [row['peak_rss_kib'] / 1024 for row in converted]
+        failed = total - len(converted)
+        # Speed and memory cover successful timed conversions; failures score zero for accuracy.
+        timed = [row for row in converted if not row['untimed']]
+        # † marks an engine timed on the sample only.
+        mark = ' †' if total < count or len(timed) < len(converted) else ''
+        timing = ('–',) * 6
+        if timed:
+            cold = statistics.median(row['cold_ms'] for row in timed)
+            warm_times = [row['warm_ms'] for row in timed if row['warm_ms'] is not None]
+            warm_columns = ('–',) * 3
+            if warm_times:
+                warm = statistics.median(warm_times)
+                warm_p95 = statistics.quantiles(warm_times, n=100, method='inclusive')[94] if len(warm_times) > 1 else warm
+                throughput = 1000 / statistics.mean(warm_times)
+                warm_columns = (f'{warm:.1f} ms', f'{warm_p95:.1f} ms', f'{throughput:.1f}')
+            rss = [row['peak_rss_kib'] / 1024 for row in timed]
+            timing = tuple(value if value == '–' else value + mark for value in (
+                f'{cold:.1f} ms', *warm_columns, f'{statistics.median(rss):.1f} MiB', f'{max(rss):.1f} MiB'))
         matches = sum(row['pages'] == row['reference_pages'] for row in scores)
-        ink = statistics.mean(row['ink_f1'] for row in scores)
+        ink = statistics.mean(row['ink_f1'] for row in scores) if scores else 0
         pdf_bytes = sum(row['pdf_bytes'] for row in scores)
-        yield (ENGINES[engine], f'{cold:.1f} ms', *warm_columns,
-               f'{statistics.median(rss):.1f} MiB', f'{max(rss):.1f} MiB',
-               f'{failed}/{count}', f'{matches}/{count}', f'{ink:.1f}%', f'{pdf_bytes / 1024**2:.2f} MiB')
+        yield (ENGINES[engine], *timing, f'{failed}/{total}', f'{matches}/{total}', f'{ink:.1f}%',
+               f'{pdf_bytes / 1024**2:.2f} MiB')
 
 
 def case_images(output=None, include_gallery=True):
@@ -268,8 +280,10 @@ def report(table, versions, count, pages, *, output=None, include_gallery=True, 
         '',
         markdown_table(table[0], table[1:]),
     ])
-    lines.extend(['', 'Cold time includes process startup and file I/O. Warm time includes file I/O and reuses one process per engine after an unmeasured conversion. Warm p95 is the 95th percentile across timed documents. Warm docs/sec divides successful warm conversions by their total timed duration. Peak RSS, accuracy, and PDF sizes come from the cold runs. Times and memory cover successful conversions. A failed conversion scores zero ink overlap.',
-                  '', '## Cases', ''])
+    lines.extend(['', 'Cold time includes process startup and file I/O. Warm time includes file I/O and reuses one process per engine after an unmeasured conversion. Warm p95 is the 95th percentile across timed documents. Warm docs/sec divides successful warm conversions by their total timed duration. Peak RSS, accuracy, and PDF sizes come from the cold runs. Times and memory cover successful conversions. A failed conversion scores zero ink overlap.'])
+    if any(cell.endswith('†') for row in table[1:] for cell in row):
+        lines.extend(['', sampled_note()])
+    lines.extend(['', '## Cases', ''])
     for name, images in case_images(output, include_gallery):
         links = ' · '.join(f'[{i}]({image})' for i, image in enumerate(images, 1))
         lines.append(f'- {name} ({links})' if images else f'- {name}')
@@ -295,7 +309,10 @@ figcaption { margin-bottom: .3rem; }
     yield '<tr>' + ''.join(f'<th scope="col">{escape(cell)}</th>' for cell in table[0]) + '</tr></thead><tbody>'
     for row in table[1:]:
         yield '<tr>' + ''.join(f'<td>{escape(cell)}</td>' for cell in row) + '</tr>'
-    yield '</tbody></table><h2>Page comparisons</h2><nav aria-label="Benchmark cases"><ul>'
+    yield '</tbody></table>'
+    if any(cell.endswith('†') for row in table[1:] for cell in row):
+        yield f'<p>{escape(sampled_note())}</p>'
+    yield '<h2>Page comparisons</h2><nav aria-label="Benchmark cases"><ul>'
     for name, _ in case_images(output):
         yield f'<li><a href="#{escape(name)}">{escape(name)}</a></li>'
     yield '</ul></nav>'
@@ -364,7 +381,7 @@ def score_outputs(args):
         writer.writerows(rows)
     count = len(BENCHMARK_FIXTURES)
     table = list(summary_table(rows, engines, count))
-    pages = sum(row['reference_pages'] for row in rows if row['engine'] == engines[1])
+    pages = sum({row['case']: row['reference_pages'] for row in rows}.values())
     summary = report(table, versions, count, pages, output=output, include_gallery=include_gallery, run_date=run_date)
     (output / 'report.md').write_text(summary, encoding='utf-8')
     if include_gallery:

@@ -1,5 +1,5 @@
 import type { FontFace } from '../fonts/registry.js';
-import type { Color, Drawing, FieldInline, ImageRef, Link } from '../docx/model.js';
+import type { Color, Drawing, FieldInline, ImageRef, Link } from '../ooxml/model.js';
 
 /** A run of glyphs drawn with one font at one size. Coordinates: points, origin top-left, y down. */
 export interface GlyphOp {
@@ -61,6 +61,7 @@ export interface ImageOp {
   rotation: number;
   flipH: boolean;
   flipV: boolean;
+  alpha?: number;
 }
 
 export interface PathSeg {
@@ -79,6 +80,8 @@ export interface PathOp {
   dash?: number[];
   /** Fill by the nonzero winding rule rather than even-odd. */
   nonzero?: boolean;
+  cap?: 'butt' | 'round' | 'square';
+  join?: 'miter' | 'round' | 'bevel';
 }
 
 /** Where a shading's colour runs from position 0 to 1. */

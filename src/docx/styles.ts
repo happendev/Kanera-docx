@@ -17,7 +17,7 @@ import {
   type TblDelta,
   type TcDelta,
   type TrDelta,
-} from './props.js';
+} from '../ooxml/props.js';
 
 export interface CondFormat {
   pPr: ParaDelta;

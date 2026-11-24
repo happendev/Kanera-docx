@@ -125,8 +125,6 @@ async function main(): Promise<void> {
     target: 'es2022',
     minify: !serve,
     sourcemap: true,
-    // As in the package build: jpeg-js reaches for Buffer.from.
-    define: { 'Buffer.from': 'Uint8Array.from' },
     logLevel: 'info',
   };
   const ctx = await context(options);

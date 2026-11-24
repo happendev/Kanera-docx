@@ -4,8 +4,9 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { decode, encode } from 'jpeg-js';
 import { convertDocx as convertInBrowser } from '../src/browser.js';
+import { decodeJpegPixels } from '../src/image/jpeg-decoder.js';
+import { encodeJpeg } from '../src/image/jpeg-encoder.js';
 import { convertDocx as convertCore } from '../src/index.js';
 import { convertDocx, docxToPdf } from '../src/node.js';
 import { makeDocx, p } from './helpers/docx.js';
@@ -22,7 +23,7 @@ describe('convertDocx (node)', () => {
         data.set([80 + x / 2, 100 + y / 2, 120 + 17 * Math.sin((x + y) / 9), 255], i);
       }
     }
-    const jpeg = encode({ width, height, data }, 100).data;
+    const jpeg = Buffer.from(encodeJpeg(width, height, data, 100, { channels: 4 }));
     const docx = makeDocx({ body: `<w:p>${inlineImage('photo', 96, 64)}</w:p>`, media: { photo: { name: 'photo.jpg', data: jpeg } } });
     const original = await docxToPdf(docx, { imageQuality: false });
     const automatic = await docxToPdf(docx);
@@ -36,13 +37,13 @@ describe('convertDocx (node)', () => {
   it('preserves a coarsely quantized JPEG by default and honors explicit quality even when output grows', async () => {
     const width = 16, height = 16;
     const data = Uint8Array.from({ length: width * height * 4 }, (_, i) => i % 4 === 3 ? 255 : (i * 37) % 251);
-    const jpeg = encode({ width, height, data }, 15).data;
+    const jpeg = Buffer.from(encodeJpeg(width, height, data, 15, { channels: 4 }));
     expect(jpeg.length).toBeLessThan(1024);
-    const pixels = decode(jpeg);
+    const pixels = decodeJpegPixels(jpeg);
     const doc = makeDocx({ body: `<w:p>${inlineImage('img', 16, 16)}</w:p>`, media: { img: { name: 'small.jpg', data: jpeg } } });
     expect(Buffer.from(await docxToPdf(doc)).includes(jpeg)).toBe(true);
     for (const quality of [80, 100]) {
-      const expected = encode(pixels, quality).data;
+      const expected = Buffer.from(encodeJpeg(pixels.width, pixels.height, pixels.data, quality, { channels: 4 }));
       expect(expected.length).toBeGreaterThan(jpeg.length);
       expect(Buffer.from(await docxToPdf(doc, { imageQuality: quality })).includes(expected)).toBe(true);
     }

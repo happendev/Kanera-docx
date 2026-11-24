@@ -5,8 +5,8 @@
  * reading order and, for Markdown, maps Word's structure (headings, lists, tables, emphasis, links,
  * notes, equations) onto Markdown's.
  */
-import type { Block, Chart, DocxDocument, Drawing, Link, NumberingLabel, Paragraph, RunProps, Section, Table, TableCell } from '../docx/model.js';
-import { formatNumber as formatChartNumber } from '../docx/number-format.js';
+import type { Block, Chart, DocxDocument, Drawing, Link, NumberingLabel, Paragraph, RunProps, Section, Table, TableCell } from '../ooxml/model.js';
+import { formatNumber as formatChartNumber } from '../ooxml/number-format.js';
 import { formatNumber } from '../docx/numbering.js';
 import { fontFor } from '../fonts/script.js';
 import { mapSymbolChar, symbolFontKind, type SymbolFontKind } from '../fonts/symbol-map.js';

@@ -1,5 +1,6 @@
-import type { AnchorProps, Block, Border, Drawing, FrameProps, Paragraph, ParaProps, Table, TableCell, TableRow } from '../docx/model.js';
+import type { AnchorProps, Block, Border, Drawing, FrameProps, Paragraph, ParaProps, Table, TableCell, TableRow } from '../ooxml/model.js';
 import { ParagraphLayout, type Line, type ParagraphEnv } from './paragraph.js';
+import type { ShadowCache } from './shadow.js';
 import { appendOps, translateOps, type DrawOp } from './types.js';
 
 /** Start of an unconsumed line or nested table row in the original cell. */
@@ -29,6 +30,8 @@ type CellParagraphs = (paragraph: Paragraph) => ParagraphLayout;
 
 export interface BoxEnv extends ParagraphEnv {
   compatibilityMode: number;
+  /** Blurred shadow pictures drawn so far, reused for identical shadows. */
+  shadows?: ShadowCache;
 }
 
 // ---------------------------------------------------------------------------------------------

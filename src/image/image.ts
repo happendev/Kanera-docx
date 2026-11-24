@@ -1,6 +1,5 @@
 import type { Compression } from '../util/compression.js';
 import { ImageBudget } from './budget.js';
-import { decodeTiff } from './tiff.js';
 
 /** An image ready to be written as a PDF image XObject. */
 export interface PdfImage {
@@ -9,7 +8,7 @@ export interface PdfImage {
   /** PDF colour space: a name like `/DeviceRGB`, or an inline array for indexed images. */
   colorSpace: string;
   bitsPerComponent: number;
-  filter: 'DCTDecode' | 'FlateDecode';
+  filter: 'DCTDecode' | 'FlateDecode' | 'CCITTFaxDecode';
   data: Uint8Array;
   decodeParms?: string;
   decode?: number[];
@@ -84,8 +83,24 @@ export async function toPdfImage(
       return dibToPdf(d.subarray(14, offset), d.subarray(offset), compression, budget);
     }
     case 'tiff': {
-      const rgba = decodeTiff(d, compression.inflateZlib, budget);
-      return rgba ? rgbaToPdf(rgba.width, rgba.height, rgba.data, compression) : null;
+      // Loaded only for documents with TIFFs, as the JPEG codec only for recompression: it keeps
+      // the start of every conversion short.
+      const { decodeTiff, tiffFax, tiffJpeg } = await import('./tiff.js');
+      // JPEG and fax data pass through without decoding, as JPEG files do.
+      const jpeg = tiffJpeg(d);
+      if (jpeg) return jpegToPdf(jpeg, budget, quality);
+      const fax = tiffFax(d);
+      if (fax) {
+        const { width, height, k, byteAlign, endOfLine, blackIs1 } = fax;
+        const parms = `<< /K ${k} /Columns ${width} /Rows ${height}${byteAlign ? ' /EncodedByteAlign true' : ''}${endOfLine ? ' /EndOfLine true' : ''}${blackIs1 ? ' /BlackIs1 true' : ''} >>`;
+        return { width, height, colorSpace: '/DeviceGray', bitsPerComponent: 1, filter: 'CCITTFaxDecode', data: fax.data, decodeParms: parms };
+      }
+      const tiff = decodeTiff(d, compression.inflateZlib, budget);
+      if (!tiff) return null;
+      if ('data' in tiff) return rgbaToPdf(tiff.width, tiff.height, tiff.data, compression);
+      // Palette images stay indexed rather than tripling into RGB.
+      const { width, height } = tiff;
+      return { width, height, colorSpace: indexedColorSpace(tiff.palette), bitsPerComponent: 8, filter: 'FlateDecode', data: compression.deflateZlib(tiff.indices) };
     }
     default:
       return null;
@@ -100,6 +115,12 @@ export function le32s(d: Uint8Array, o: number): number {
 }
 function le16(d: Uint8Array, o: number): number {
   return d[o] | (d[o + 1] << 8);
+}
+
+function indexedColorSpace(palette: Uint8Array): string {
+  let hex = '';
+  for (const b of palette) hex += b.toString(16).padStart(2, '0');
+  return `[/Indexed /DeviceRGB ${palette.length / 3 - 1} <${hex}>]`;
 }
 
 function rgbaToPdf(width: number, height: number, rgba: Uint8Array, compression: Compression): PdfImage {
@@ -119,46 +140,79 @@ function rgbaToPdf(width: number, height: number, rgba: Uint8Array, compression:
 }
 
 function rgbToPdf(width: number, height: number, rgb: Uint8Array, alpha: Uint8Array | undefined, compression: Compression): PdfImage {
-  const plain = compression.deflateZlib(rgb);
-  // Smooth images and scans often compress much better as differences between pixels.
-  // Compare against the raw stream since a predictor can increase the size of some images.
+  // Smooth images and scans often compress much better as differences between pixels, but a
+  // predictor can also enlarge flat graphics. Large images are judged on a sample of row bands so
+  // that only the chosen form is compressed in full; the predictor must win the sample clearly,
+  // as a close sample misjudged several corpus images.
   const decodeParms = `<< /Predictor 15 /Colors 3 /BitsPerComponent 8 /Columns ${width} >>`;
-  const predicted = plain.length > 1024 ? predictedRgb(width, height, rgb, compression) : undefined;
-  const usePredictor = predicted !== undefined && predicted.length + decodeParms.length + 14 < plain.length;
+  const stride = width * 3;
+  let data: Uint8Array;
+  let usePredictor: boolean;
+  if (height > SAMPLE_BAND * SAMPLE_BANDS * 2 && rgb.length > 1 << 20) {
+    const rows: number[] = [];
+    for (let b = 0; b < SAMPLE_BANDS; b++) {
+      const start = Math.floor(((b + 0.5) * height) / SAMPLE_BANDS - SAMPLE_BAND / 2);
+      for (let y = start; y < start + SAMPLE_BAND; y++) rows.push(y);
+    }
+    const raw = new Uint8Array(rows.length * stride);
+    rows.forEach((y, i) => raw.set(rgb.subarray(y * stride, (y + 1) * stride), i * stride));
+    const sampled = compression.deflateZlib(predictRows(rgb, stride, rows)).length / compression.deflateZlib(raw).length;
+    usePredictor = sampled < 1 - SAMPLE_MARGIN;
+    data = compression.deflateZlib(usePredictor ? predictRows(rgb, stride) : rgb);
+  } else {
+    const plain = compression.deflateZlib(rgb);
+    const predicted = plain.length > 1024 ? compression.deflateZlib(predictRows(rgb, stride)) : undefined;
+    usePredictor = predicted !== undefined && predicted.length + decodeParms.length + 14 < plain.length;
+    data = usePredictor ? predicted! : plain;
+  }
   return {
     width,
     height,
     colorSpace: '/DeviceRGB',
     bitsPerComponent: 8,
     filter: 'FlateDecode',
-    data: usePredictor ? predicted : plain,
+    data,
     decodeParms: usePredictor ? decodeParms : undefined,
     smask: alpha ? compression.deflateZlib(alpha) : undefined,
   };
 }
 
-function predictedRgb(width: number, height: number, rgb: Uint8Array, compression: Compression): Uint8Array {
-  const stride = width * 3;
-  const rows = new Uint8Array((stride + 1) * height);
-  for (let y = 0; y < height; y++) {
+/** Rows per sample band and bands per image when choosing whether to use a predictor. */
+const SAMPLE_BAND = 8;
+const SAMPLE_BANDS = 16;
+/** How much smaller (as a fraction) the sample must compress with the predictor for the image to use it. */
+const SAMPLE_MARGIN = 0.03;
+
+/**
+ * PNG-filtered rows (Sub or Up per row, whichever has the smaller residuals) for a PDF PNG
+ * predictor; `only` filters just those rows, still predicting from the image row above each.
+ */
+function predictRows(rgb: Uint8Array, stride: number, only?: number[]): Uint8Array {
+  const height = rgb.length / stride;
+  const count = only ? only.length : height;
+  const rows = new Uint8Array((stride + 1) * count);
+  const sub = new Uint8Array(stride);
+  const up = new Uint8Array(stride);
+  for (let i = 0; i < count; i++) {
+    const y = only ? only[i] : i;
     const src = y * stride;
-    const dst = y * (stride + 1);
     let subScore = 0;
     let upScore = 0;
     for (let x = 0; x < stride; x++) {
-      const sub = (rgb[src + x] - (x < 3 ? 0 : rgb[src + x - 3])) & 255;
-      const up = (rgb[src + x] - (y === 0 ? 0 : rgb[src + x - stride])) & 255;
-      subScore += Math.min(sub, 256 - sub);
-      upScore += Math.min(up, 256 - up);
+      const v = rgb[src + x];
+      const s = (v - (x < 3 ? 0 : rgb[src + x - 3])) & 255;
+      const u = (v - (y === 0 ? 0 : rgb[src + x - stride])) & 255;
+      sub[x] = s;
+      up[x] = u;
+      subScore += s < 128 ? s : 256 - s;
+      upScore += u < 128 ? u : 256 - u;
     }
-    const up = y > 0 && upScore < subScore;
-    rows[dst] = up ? 2 : 1;
-    for (let x = 0; x < stride; x++) {
-      const prev = up ? rgb[src + x - stride] : x < 3 ? 0 : rgb[src + x - 3];
-      rows[dst + x + 1] = rgb[src + x] - prev;
-    }
+    const useUp = y > 0 && upScore < subScore;
+    const dst = i * (stride + 1);
+    rows[dst] = useUp ? 2 : 1;
+    rows.set(useUp ? up : sub, dst + 1);
   }
-  return compression.deflateZlib(rows);
+  return rows;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -245,9 +299,7 @@ async function pngToPdf(d: Uint8Array, compression: Compression, budget: ImageBu
     let colorSpace = colorType === 2 ? '/DeviceRGB' : '/DeviceGray';
     if (colorType === 3) {
       if (!palette) return null;
-      let hex = '';
-      for (const b of palette) hex += b.toString(16).padStart(2, '0');
-      colorSpace = `[/Indexed /DeviceRGB ${palette.length / 3 - 1} <${hex}>]`;
+      colorSpace = indexedColorSpace(palette);
     }
     return {
       width,
@@ -282,14 +334,29 @@ async function decodePngRows(info: PngInfo, compression: Compression): Promise<P
   let y = 0;
   const finishRow = () => {
     unfilter(filter, line, prev, bpp);
-    for (let x = 0; x < width; x++) {
-      const i = y * width + x;
-      writePixel(pixel, 0, line, x, bitDepth, colorType, palette, trns);
-      rgb[3 * i] = pixel[0];
-      rgb[3 * i + 1] = pixel[1];
-      rgb[3 * i + 2] = pixel[2];
-      alpha[i] = pixel[3];
-      if (alpha[i] !== 255) hasAlpha = true;
+    const o = y * width;
+    if (bitDepth === 8 && colorType === 6) {
+      // 8-bit RGBA, by far the most common case: split the planes directly.
+      let all = 255;
+      for (let x = 0, s = 0, d = o * 3; x < width; x++, s += 4, d += 3) {
+        rgb[d] = line[s];
+        rgb[d + 1] = line[s + 1];
+        rgb[d + 2] = line[s + 2];
+        const a = line[s + 3];
+        alpha[o + x] = a;
+        all &= a;
+      }
+      if (all !== 255) hasAlpha = true;
+    } else {
+      for (let x = 0; x < width; x++) {
+        const i = o + x;
+        writePixel(pixel, 0, line, x, bitDepth, colorType, palette, trns);
+        rgb[3 * i] = pixel[0];
+        rgb[3 * i + 1] = pixel[1];
+        rgb[3 * i + 2] = pixel[2];
+        alpha[i] = pixel[3];
+        if (alpha[i] !== 255) hasAlpha = true;
+      }
     }
     [prev, line] = [line, prev];
     y++;
@@ -489,6 +556,11 @@ export function writePixel(
 
 const MAX_AUTO_JPEG_PIXELS = 4_000_000;
 
+// Each progressive refinement scan revisits every coefficient of every block, so a small crafted
+// file of many scans holds the decoder for seconds. Encoders write at most about 14 scans; past 32
+// the optional recompression is skipped and the original stream embedded.
+export const RECOMPRESS_MAX_SCANS = 32;
+
 interface JpegInfo {
   width: number;
   height: number;
@@ -575,9 +647,11 @@ async function jpegToPdf(d: Uint8Array, budget: ImageBudget, quality?: number | 
   const selectedQuality = quality ?? (info.autoReencode && info.width * info.height <= MAX_AUTO_JPEG_PIXELS ? 80 : false);
   if (selectedQuality !== false && info.canReencode && budget.tryReserve(info.width, info.height)) {
     try {
-      data = await reencodeJpeg(d, info.width, info.height, selectedQuality);
+      const [{ decodeJpegPixels }, { encodeJpeg }] = await Promise.all([import('./jpeg-decoder.js'), import('./jpeg-encoder.js')]);
+      const pixels = decodeJpegPixels(d, RECOMPRESS_MAX_SCANS);
+      if (pixels.width === info.width && pixels.height === info.height) data = encodeJpeg(pixels.width, pixels.height, pixels.data, selectedQuality, { channels: 4 });
     } catch {
-      // The PDF reader can still handle JPEGs the optional recompressor cannot decode.
+      // The PDF reader can still handle JPEGs the optional recompression cannot decode.
     }
   }
   return {
@@ -590,19 +664,6 @@ async function jpegToPdf(d: Uint8Array, budget: ImageBudget, quality?: number | 
     // Adobe-flavoured CMYK JPEGs store inverted values.
     decode: info.components === 4 && info.adobeTransform !== null ? [1, 0, 1, 0, 1, 0, 1, 0] : undefined,
   };
-}
-
-async function reencodeJpeg(data: Uint8Array, width: number, height: number, quality: number): Promise<Uint8Array> {
-  const { encode, decode } = await import('./jpeg-codec.js');
-  const decodeOptions = {
-    useTArray: true as const,
-    tolerantDecoding: false,
-    maxResolutionInMP: Math.ceil(width * height / 1_000_000),
-    maxMemoryUsageInMB: 256,
-  };
-  const pixels = decode(data, decodeOptions);
-  if (pixels.width !== width || pixels.height !== height) return data;
-  return encode(pixels, quality).data;
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1,6 +1,6 @@
-// Baseline JPEG encoding of RGB pages: YCbCr with chroma halved both ways (4:2:0), the standard
-// quantisation tables scaled by quality and the standard Huffman tables. Blank white areas, most
-// of a document page, are coded straight from the canvas's painted spans without a transform.
+// Baseline JPEG encoding of RGB pictures and pages: YCbCr with chroma halved both ways (4:2:0), the
+// standard quantisation tables scaled by quality and the standard Huffman tables. Blank white areas,
+// most of a document page, are coded straight from the canvas's painted spans without a transform.
 
 const ZIGZAG = Int32Array.from([
   0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
@@ -258,19 +258,27 @@ function codeFlat(w: Writer, v: number, div: Float32Array, prevDc: number, dc: H
   return code(w, prevDc, dc, ac);
 }
 
-/**
- * A JPEG of an RGB image at `quality` (1–100). Pixels outside each row's [lo, hi) are white.
- */
-export function jpegFile(width: number, height: number, rgb: Uint8Array, lo: Int32Array, hi: Int32Array, quality: number, dpi: number): Uint8Array<ArrayBuffer> {
+export interface JpegEncodeOptions {
+  /** Bytes per pixel: 3 for RGB (the default), 4 for RGBA, whose alpha is ignored. */
+  channels?: 3 | 4;
+  /** Each row's painted span [lo, hi); pixels outside it are white. Whole rows when omitted. */
+  lo?: Int32Array;
+  hi?: Int32Array;
+  /** Resolution for the JFIF header, in dots per inch; omitted, only the square pixels. */
+  dpi?: number;
+}
+
+/** A JPEG of an RGB or RGBA image at `quality` (1–100). */
+export function encodeJpeg(width: number, height: number, rgb: Uint8Array, quality: number, { channels = 3, lo, hi, dpi }: JpegEncodeOptions = {}): Uint8Array<ArrayBuffer> {
   const ql = scaled(LUMA_Q, quality);
   const qc = scaled(CHROMA_Q, quality);
   const divL = divisors(ql);
   const divC = divisors(qc);
   const w = new Writer();
   w.raw([0xff, 0xd8]);
-  // JFIF, with the resolution in dots per inch.
-  const d = Math.max(1, Math.min(65535, Math.round(dpi)));
-  w.raw([0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 1, d >> 8, d & 255, d >> 8, d & 255, 0, 0]);
+  // JFIF, with the resolution in dots per inch, or just the pixel aspect ratio.
+  const d = dpi === undefined ? 1 : Math.max(1, Math.min(65535, Math.round(dpi)));
+  w.raw([0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, dpi === undefined ? 0 : 1, d >> 8, d & 255, d >> 8, d & 255, 0, 0]);
   w.raw([0xff, 0xdb, 0, 132, 0]);
   for (let i = 0; i < 64; i++) w.raw([ql[ZIGZAG[i]]]);
   w.raw([1]);
@@ -292,17 +300,17 @@ export function jpegFile(width: number, height: number, rgb: Uint8Array, lo: Int
   let dcY = 0;
   let dcCb = 0;
   let dcCr = 0;
-  const stride = width * 3;
+  const stride = width * channels;
   const ys = new Float32Array(256);
   const cbs = new Float32Array(64);
   const crs = new Float32Array(64);
   for (let my = 0; my < height; my += 16) {
     // The painted span across these 16 rows; MCUs outside it are white.
-    let spanLo = width;
-    let spanHi = 0;
+    let spanLo = lo ? width : 0;
+    let spanHi = hi ? 0 : width;
     for (let y = my; y < Math.min(height, my + 16); y++) {
-      if (lo[y] < spanLo) spanLo = lo[y];
-      if (hi[y] > spanHi) spanHi = hi[y];
+      if (lo && lo[y] < spanLo) spanLo = lo[y];
+      if (hi && hi[y] > spanHi) spanHi = hi[y];
     }
     for (let mx = 0; mx < width; mx += 16) {
       if (mx + 16 <= spanLo || mx >= spanHi) {
@@ -313,7 +321,7 @@ export function jpegFile(width: number, height: number, rgb: Uint8Array, lo: Int
         continue;
       }
       // One colour across the whole MCU: its blocks are flat, worked out as the general case would.
-      const first = my * stride + mx * 3;
+      const first = my * stride + mx * channels;
       const r0 = rgb[first];
       const g0 = rgb[first + 1];
       const b0 = rgb[first + 2];
@@ -321,7 +329,7 @@ export function jpegFile(width: number, height: number, rgb: Uint8Array, lo: Int
       for (let j = 0; j < 16 && uniform; j++) {
         const row = Math.min(height - 1, my + j) * stride;
         for (let i = 0; i < 16; i++) {
-          const o = row + Math.min(width - 1, mx + i) * 3;
+          const o = row + Math.min(width - 1, mx + i) * channels;
           if (rgb[o] !== r0 || rgb[o + 1] !== g0 || rgb[o + 2] !== b0) {
             uniform = false;
             break;
@@ -345,7 +353,7 @@ export function jpegFile(width: number, height: number, rgb: Uint8Array, lo: Int
           for (let k = 0; k < 4; k++) {
             const j = cj * 2 + (k >> 1);
             const i = ci * 2 + (k & 1);
-            const o = edge ? Math.min(height - 1, my + j) * stride + Math.min(width - 1, mx + i) * 3 : (my + j) * stride + (mx + i) * 3;
+            const o = edge ? Math.min(height - 1, my + j) * stride + Math.min(width - 1, mx + i) * channels : (my + j) * stride + (mx + i) * channels;
             const r = rgb[o];
             const g = rgb[o + 1];
             const b = rgb[o + 2];

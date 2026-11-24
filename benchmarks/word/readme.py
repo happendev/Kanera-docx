@@ -31,6 +31,14 @@ def markdown_table(headers, rows):
     return '\n'.join(lines)
 
 
+def sampled_note():
+    from convert import FULL_TIMING_MS, SAMPLE_SIZE
+
+    return (f'† Timed on a fixed {SAMPLE_SIZE}-document sample only, because timing every document would '
+            f'take more than {FULL_TIMING_MS // 60_000} minutes; the other documents were converted untimed '
+            'and count for accuracy and failures.')
+
+
 def highlight_best(values, *, higher_is_better, eligible=None):
     scores = [
         float(value.split()[0].split('/')[0].rstrip('%'))
@@ -44,8 +52,12 @@ def highlight_best(values, *, higher_is_better, eligible=None):
 
 def metric_cells(results, engines, column):
     values = [results[engine][column] for engine in engines]
-    eligible = ([results[engine]['Failed conversions'].startswith('0/') for engine in engines]
-                if column == 'Total PDF size' else None)
+    eligible = None
+    if column == 'Total PDF size':
+        eligible = [results[engine]['Failed conversions'].startswith('0/') for engine in engines]
+    elif column == 'Warm docs/sec':
+        # Warm throughput sums the warm times, so an engine warm-timed on the sample only (†) is not compared.
+        eligible = [not value.endswith('†') for value in values]
     return highlight_best(values, higher_is_better=column in HIGHER_IS_BETTER, eligible=eligible)
 
 
@@ -62,6 +74,16 @@ def section_parts(text, name):
 def replace_section(text, name, body):
     before, _, after = section_parts(text, name)
     return before + '\n' + body + '\n' + after
+
+
+def mark_sampled(text, name):
+    """Keep the † note in a README section exactly when one of its table cells has a †."""
+    _, body, _ = section_parts(text, name)
+    note = sampled_note()
+    parts = [part for part in body.strip('\n').split('\n\n') if part != note]
+    if any('†' in line for line in body.splitlines() if line.startswith('|')):
+        parts.append(note)
+    return replace_section(text, name, '\n\n'.join(parts))
 
 
 def edit_main_readme(root, transform):
@@ -134,7 +156,7 @@ def update_measured_readme(root, table, versions, count, engines):
                 converter += ' ' + (version[1] if engine == 'libreoffice' and len(version) > 1 else version[0])
             text = refresh_engine_table(text, 'benchmark-summary', values, 'Kanera' if engine == 'ours' else name, count)
             text = refresh_engine_table(text, 'benchmark-results', values, converter, count)
-        return text
+        return mark_sampled(mark_sampled(text, 'benchmark-summary'), 'benchmark-results')
 
     edit_main_readme(root, transform)
 
@@ -170,7 +192,8 @@ def fixture_suite(row):
 
 
 def comparison_counts(baseline, candidate):
-    differences = [round(value - candidate[case], 2) for case, value in baseline.items()]
+    # Documents a sampled engine skipped are left out of its comparison.
+    differences = [round(value - candidate[case], 2) for case, value in baseline.items() if case in candidate]
     higher = sum(value >= 0.5 for value in differences)
     lower = sum(value <= -0.5 for value in differences)
     return str(higher), str(lower), str(len(differences) - higher - lower)
@@ -297,7 +320,8 @@ def update_readmes(root, rows, table, engines, versions):
 
     def transform(text):
         text = replace_section(text, 'benchmark-summary', headline)
-        return replace_section(text, 'benchmark-results', overview)
+        text = replace_section(text, 'benchmark-results', overview)
+        return mark_sampled(mark_sampled(text, 'benchmark-summary'), 'benchmark-results')
 
     edit_main_readme(root, transform)
     benchmark = root / 'benchmarks/word/README.md'

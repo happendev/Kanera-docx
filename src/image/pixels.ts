@@ -4,8 +4,18 @@
 import type { Compression } from '../util/compression.js';
 import { ImageBudget } from './budget.js';
 import { decodeAdam7, decodeDib, decodeGif, le32s, readPng, sniffImage, unfilter, writePixel, type PngInfo } from './image.js';
-import { decodeJpegPixels } from './jpeg-decoder.js';
-import { decodeTiff } from './tiff.js';
+import { decodeJpegPixels, JpegScanLimit } from './jpeg-decoder.js';
+import type { TiffPixels } from './tiff.js';
+
+/**
+ * A JPEG the decoder cannot read. The PDF writer embeds JPEGs without decoding them, so page
+ * images skip such a picture instead of failing.
+ */
+export class UnreadableJpeg extends Error {
+  constructor(cause: unknown) {
+    super('JPEG: the picture could not be decoded', { cause });
+  }
+}
 
 /** Straight (not premultiplied) RGBA pixels. */
 export interface Pixmap {
@@ -32,12 +42,15 @@ export async function decodePixels(data: Uint8Array, compression: Compression, b
   let adjustable = true;
   if (dibBits) px = fromRgb(decodeDib(data, dibBits, budget));
   else {
+    // Loaded only for TIFFs. A JPEG-compressed one decodes as the JPEG file the PDF writer embeds.
+    const tiff = sniffImage(data) === 'tiff' ? await import('./tiff.js') : null;
+    if (tiff) data = tiff.tiffJpeg(data) ?? data;
     switch (sniffImage(data)) {
       case 'png':
         px = decodePng(readPng(data, budget), compression);
         break;
       case 'jpeg': {
-        const jpeg = await decodeJpeg(data, budget);
+        const jpeg = decodeJpeg(data, budget);
         px = jpeg?.pixels ?? null;
         // The PDF writer leaves CMYK JPEGs' colours as they are.
         adjustable = jpeg?.components !== 4;
@@ -53,7 +66,7 @@ export async function decodePixels(data: Uint8Array, compression: Compression, b
         break;
       }
       case 'tiff':
-        px = fromRgba(decodeTiff(data, compression.inflateZlib, budget));
+        px = tiff && fromTiff(tiff.decodeTiff(data, compression.inflateZlib, budget));
         break;
     }
   }
@@ -71,6 +84,22 @@ function fromRgba(img: { width: number; height: number; data: Uint8Array } | nul
     }
   }
   return { width: img.width, height: img.height, data: img.data, opaque };
+}
+
+/** A TIFF's pixels, expanding palette indices to RGBA. */
+function fromTiff(t: TiffPixels | null): Pixmap | null {
+  if (!t || 'data' in t) return fromRgba(t);
+  const { width, height, indices, palette } = t;
+  const data = new Uint8Array(width * height * 4);
+  const last = palette.length / 3 - 1;
+  for (let i = 0, o = 0; i < indices.length; i++, o += 4) {
+    const p = Math.min(indices[i], last) * 3;
+    data[o] = palette[p];
+    data[o + 1] = palette[p + 1];
+    data[o + 2] = palette[p + 2];
+    data[o + 3] = 255;
+  }
+  return { width, height, data, opaque: true };
 }
 
 function fromRgb(img: { width: number; height: number; rgb: Uint8Array; alpha?: Uint8Array } | null): Pixmap | null {
@@ -189,25 +218,19 @@ function decodePng(info: PngInfo, compression: Compression): Pixmap {
   return { width, height, data: out, opaque };
 }
 
-async function decodeJpeg(data: Uint8Array, budget: ImageBudget): Promise<{ pixels: Pixmap; components: number } | null> {
+function decodeJpeg(data: Uint8Array, budget: ImageBudget): { pixels: Pixmap; components: number } | null {
   const size = jpegFrame(data);
   if (!size || !size.width || !size.height) return null;
-  if (!budget.tryReserve(size.width, size.height)) throw new Error('Image pixel limit exceeded');
+  // A photo past the pixel limits is decoded smaller (page images draw it far smaller anyway).
+  const reduce = budget.tryReserveReduced(size.width, size.height);
+  if (!reduce) throw new Error('Image pixel limit exceeded');
+  let img: { width: number; height: number; data: Uint8Array };
   try {
-    const img = decodeJpegPixels(data);
-    return { pixels: { width: img.width, height: img.height, data: img.data, opaque: true }, components: size.components };
-  } catch {
-    // Kinds the decoder leaves out, such as unusual sampling factors, fall back to jpeg-js.
+    img = decodeJpegPixels(data, undefined, reduce);
+  } catch (e) {
+    if (e instanceof JpegScanLimit) throw e;
+    throw new UnreadableJpeg(e);
   }
-  const { decode } = await import('./jpeg-codec.js');
-  const img = decode(data, {
-    useTArray: true,
-    formatAsRGBA: true,
-    tolerantDecoding: true,
-    maxResolutionInMP: Math.ceil((size.width * size.height) / 1_000_000),
-    // jpeg-js keeps 32-bit coefficients for each of up to four components besides its output.
-    maxMemoryUsageInMB: 64 + Math.ceil((size.width * size.height * 24) / (1024 * 1024)),
-  });
   return { pixels: { width: img.width, height: img.height, data: img.data, opaque: true }, components: size.components };
 }
 

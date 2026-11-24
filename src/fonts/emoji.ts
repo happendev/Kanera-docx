@@ -3,6 +3,8 @@
 // default (Unicode Emoji_Presentation) when the text's font lacks it. Other symbols, such as ☀
 // without U+FE0F, keep the text's font or the symbol fallback (Segoe UI Symbol in Office).
 
+import { APP } from '../profile.js';
+
 const PRESENTATION = /^\p{Emoji_Presentation}$/u;
 const PICTOGRAPHIC = /^\p{Extended_Pictographic}$/u;
 const EMOJI = /^\p{Emoji}$/u;
@@ -64,6 +66,13 @@ export const EMOJI_STAND_INS: Readonly<Record<string, EmojiStandIn>> = {
   'noto color emoji': { scale: 0.92, drop: -0.03, advance: 1.373 / (1275 / 1024) },
   'noto emoji': { scale: 1.08, drop: 0.03, advance: 1.08 },
 };
+
+/**
+ * Whether a line with emoji keeps the text font's height, the emoji's stand-in drawn within it, as
+ * in Word for Mac's PDFs. Excel's and PowerPoint's give the line the symbol fallback's height, as for
+ * other symbols, and lower it with a stand-in's glyphs.
+ */
+export const EMOJI_KEEPS_LINE = APP === 'word';
 
 /** Whether an emoji font can draw `cp`: the bundled one's coverage test. */
 export function coversEmoji(cp: number): boolean {

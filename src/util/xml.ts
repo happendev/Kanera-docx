@@ -54,12 +54,30 @@ const NS: Record<string, string> = {
   'http://www.w3.org/XML/1998/namespace': 'xml',
   'http://schemas.openxmlformats.org/drawingml/2006/lockedCanvas': 'lc',
   'http://schemas.microsoft.com/office/drawing/2008/diagram': 'dsp',
+  'http://schemas.openxmlformats.org/spreadsheetml/2006/main': 'x',
+  'http://purl.oclc.org/ooxml/spreadsheetml/main': 'x',
+  'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing': 'xdr',
+  'http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing': 'xdr',
+  'http://schemas.microsoft.com/office/spreadsheetml/2009/9/main': 'x14',
+  'http://schemas.microsoft.com/office/excel/2006/main': 'xm',
+  'http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac': 'x14ac',
+  'urn:schemas-microsoft-com:office:excel': 'xvml',
+  'http://schemas.microsoft.com/office/drawing/2007/8/2/chart': 'c14',
+  'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties': 'ep',
+  'http://schemas.openxmlformats.org/presentationml/2006/main': 'p',
+  'http://purl.oclc.org/ooxml/presentationml/main': 'p',
+  'http://schemas.microsoft.com/office/powerpoint/2010/main': 'p14',
+  'http://schemas.microsoft.com/office/powerpoint/2012/main': 'p15',
+  'http://schemas.microsoft.com/office/drawing/2014/main': 'a16',
+  'http://schemas.microsoft.com/office/drawing/2018/hyperlinkcolor': 'ahyp',
+  'http://schemas.microsoft.com/office/drawing/2014/chartex': 'cx',
+  'http://schemas.microsoft.com/office/drawing/2010/diagram': 'dsp14',
 };
 
 export class XmlDepthError extends Error {}
 
 /** Namespaces whose mc:Choice branches we can render (others fall back to mc:Fallback). */
-export const SUPPORTED_CHOICE_PREFIXES = new Set(['wps', 'wpg', 'wp14', 'w14', 'w15', 'a14', 'asvg', 'wpc', 'w', 'a', 'wp', 'pic', 'r', 'm', 'v', 'o']);
+export const SUPPORTED_CHOICE_PREFIXES = new Set(['wps', 'wpg', 'wp14', 'w14', 'w15', 'a14', 'asvg', 'wpc', 'w', 'a', 'wp', 'pic', 'r', 'm', 'v', 'o', 'x', 'xdr', 'x14', 'x14ac', 'c14']);
 
 const ENTITIES: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
 

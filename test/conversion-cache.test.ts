@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { convertDocx as convertBrowser } from '../src/browser.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ChartPointBudget } from '../src/docx/chart.js';
+import { ChartPointBudget } from '../src/ooxml/chart.js';
 import { parseDocx } from '../src/docx/parser.js';
 import { FontBudget, SfntFont } from '../src/fonts/sfnt.js';
 import { loadCjkFont, fontVersion } from '../src/fonts/node-cjk.js';

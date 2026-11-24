@@ -1,4 +1,4 @@
-import type { FontRequest } from '../docx/model.js';
+import type { FontRequest } from '../ooxml/model.js';
 import { SfntFont, collectionSize, FontBudget, FontLimitError } from './sfnt.js';
 import {
   ARABIC_SAMPLE,
@@ -15,14 +15,16 @@ import {
   normalizeFamily,
   ownArabicHebrew,
   proportionalKana,
+  singleFace,
   substituteFamilies,
   unstyledFamily,
   type FontTableHints,
   type GenericFamily,
 } from './substitutes.js';
 import { ligatureSubstitutions, singleAdjustments, singleSubstitutions, type FeatureBudget, type Ligature } from './gsub.js';
-import { EMOJI_FAMILIES, EMOJI_STAND_INS, mayPrintAsEmoji, type EmojiStandIn } from './emoji.js';
+import { EMOJI_FAMILIES, EMOJI_KEEPS_LINE, EMOJI_STAND_INS, mayPrintAsEmoji, type EmojiStandIn } from './emoji.js';
 import { hasColorGlyphs } from './colr.js';
+import { MISSING_FONT } from '../profile.js';
 import { mapSymbolChar, mathLetter, symbolFontKind, symbolLookalike, type SymbolFontKind } from './symbol-map.js';
 
 export type FontOrigin = 'embedded' | 'user' | 'system' | 'bundled';
@@ -357,6 +359,11 @@ export class FontRegistry {
     const altSub = alt ? substituteFamilies(alt) : null;
     if (altSub) out.push(...altSub.families);
     const generic = this.generic(family);
+    // A font with no rule is missing on the computer too: the application draws it in its own
+    // fallback (PowerPoint's PDFs draw Trajan Pro and Cascadia Code in Calibri).
+    if (MISSING_FONT && !sub && !altSub && generic !== 'cjk' && generic !== 'symbol') {
+      out.push(normalizeFamily(MISSING_FONT), ...(substituteFamilies(MISSING_FONT)?.families ?? []));
+    }
     out.push(...(generic === 'cjk' ? this.cjk(family, lang) : GENERIC_FALLBACKS[generic]));
     if (generic !== 'sans') out.push(...GENERIC_FALLBACKS.sans);
     return [...new Set(out)];
@@ -445,7 +452,8 @@ export class FontRegistry {
   }
 
   private *primarySources({ family, bold, italic, lang }: FontRequest): Generator<PendingFont> {
-    const b = bold || boldByName(family);
+    // A single face's name (AvenirNextLTPro-Medium) draws bold text with the regular face.
+    const b = (bold || boldByName(family)) && !singleFace(family);
     const i = italic || /\b(italic|oblique)\b/i.test(family);
     for (const candidate of this.candidateFamilies(family, lang)) {
       yield* this.familySources(candidate, b, i);
@@ -581,21 +589,24 @@ export class FontRegistry {
     // A family name that carries the style ("Arial Bold") selects that style.
     const styleBold = bold || boldByName(norm);
     const styleItalic = italic || /\b(italic|oblique)\b/.test(norm);
+    // A single face's name (AvenirNextLTPro-Medium) takes its substitute's regular face, made bold.
+    const faceBold = styleBold && !singleFace(norm);
     const symKind = symbolFontKind(norm);
     for (const cand of this.candidateFamilies(family, lang)) {
       const list = this.byFamily.get(cand);
       if (!list || list.length === 0) continue;
-      if (this.lacksStyle(family, cand, styleBold, styleItalic, true)) continue;
+      if (this.lacksStyle(family, cand, faceBold, styleItalic, true)) continue;
       // A font passed in `fonts` under this name replaces the other sources' faces, whatever its own
       // name says. Among the rest, Word matches the legacy family name: "Aptos" is Aptos and Aptos
       // Bold, not Aptos Display or Aptos Light, which only share the typographic family.
-      const source = this.callerWins(list, styleBold, styleItalic) ? list.filter((f) => f.origin === 'user') : list;
+      const source = this.callerWins(list, faceBold, styleItalic) ? list.filter((f) => f.origin === 'user') : list;
       const legacy = source.filter((f) => normalizeFamily(f.font.names.family) === cand);
-      const face = this.pickStyle(legacy.length ? legacy : source, styleBold, styleItalic);
+      const face = this.pickStyle(legacy.length ? legacy : source, faceBold, styleItalic);
       // A real symbol font keeps its encoding; any other face needs characters remapped.
       const isRealSymbol = symKind !== null && face.font.symbolCmap;
       result = this.styled(face, styleBold, styleItalic, symKind && !isRealSymbol ? symKind : undefined, this.substituteMetrics(norm, cand));
-      const widthScale = cand !== norm ? substituteFamilies(norm)?.widths?.[cand] : undefined;
+      const widths = cand !== norm ? substituteFamilies(norm)?.widths : undefined;
+      const widthScale = widths?.[`${cand}${faceBold ? ' bold' : ''}${styleItalic ? ' italic' : ''}`] ?? widths?.[cand];
       if (widthScale) result.glyphScale = widthScale;
       if (cand !== norm && halfWidthLatin(norm)) {
         const { half, full } = this.widthForms(face);
@@ -689,20 +700,21 @@ export class FontRegistry {
 
   /**
    * The face that draws an emoji sequence the requested font lacks (see emojiSequence): Segoe UI
-   * Emoji, which Office prints, or a stand-in for it (see EMOJI_FAMILIES). Its line keeps the text
-   * font's height: in Word for Mac's PDFs a line of text with Segoe UI Emoji's emoji is no taller.
-   * Undefined when no emoji font is loaded.
+   * Emoji, which Office prints, or a stand-in for it (see EMOJI_FAMILIES). In Word its line keeps
+   * the text font's height: in Word for Mac's PDFs a line of text with Segoe UI Emoji's emoji is no
+   * taller. Elsewhere it takes the symbol fallback's (see EMOJI_KEEPS_LINE). Undefined when no
+   * emoji font is loaded.
    */
-  emojiFace(family: string, bold: boolean, italic: boolean, primary: ResolvedFace): ResolvedFace | undefined {
+  emojiFace(family: string, bold: boolean, italic: boolean, primary: ResolvedFace, drawn = false): ResolvedFace | undefined {
     if (primary.symbolMap) return undefined;
-    const key = `${family}\u0000${bold ? 1 : 0}${italic ? 1 : 0}`;
+    const key = `${family}\u0000${bold ? 1 : 0}${italic ? 1 : 0}\u0000${drawn ? 1 : 0}`;
     let out = this.emojiCache.get(key);
     if (out === undefined) {
       const drawable = (f: string) => this.byFamily.get(f)?.filter(drawsEmoji) ?? [];
       const fam = EMOJI_FAMILIES.find((f) => drawable(f).length);
       const face = fam && this.pickStyle(drawable(fam), bold, italic);
       const standIn = fam && EMOJI_STAND_INS[fam];
-      const line = { ascent: primary.ascent, descent: primary.descent, externalLeading: primary.externalLeading };
+      const line = EMOJI_KEEPS_LINE ? { ascent: primary.ascent, descent: primary.descent, externalLeading: primary.externalLeading } : this.symbolLine(family, primary, drawn);
       out = face ? { ...this.fallback(primary, face, bold, italic), ...line, ...(standIn && { standIn }) } : null;
       this.emojiCache.set(key, out);
     }

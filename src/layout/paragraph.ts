@@ -1,6 +1,7 @@
+import { EMOJI_KEEPS_LINE } from '../fonts/emoji.js';
 import type { FontRegistry } from '../fonts/registry.js';
 import { arabicForms, bidiClass, bidiLevels, joinsArabic, mirrored, visualOrder } from './bidi.js';
-import type { DocSettings, Drawing, FieldInline, Link, Paragraph, RunProps, TabStop } from '../docx/model.js';
+import type { DocSettings, Drawing, FieldInline, Link, Paragraph, RunProps, TabStop } from '../ooxml/model.js';
 import { shapeSimple, shapeText, type ShapedRun } from './shaper.js';
 import { appendOps, translateOps, type DrawOp, type GlyphOp } from './types.js';
 import { layoutMath, mathLineProps, type MathBox } from './math.js';
@@ -688,6 +689,8 @@ export class ParagraphLayout {
     // baseline down (measured against Word's PDFs).
     let labelAscent = 0;
     let pictures = false;
+    // The text metrics of the runs holding the line's inline pictures.
+    let pictureRun: { ascent: number; descent: number; extLeading: number } | null = null;
     for (let k = start; k < end; k++) {
       const a = atoms[k];
       if (k >= this.labelStart && k < this.labelEnd && (a.k === 'g' || a.k === 'tab')) {
@@ -713,6 +716,9 @@ export class ParagraphLayout {
           break;
         case 'obj':
           pictures = true;
+          pictureRun = pictureRun
+            ? { ascent: Math.max(pictureRun.ascent, a.run.ascent), descent: Math.max(pictureRun.descent, a.run.descent), extLeading: Math.max(pictureRun.extLeading, a.run.extLeading) }
+            : a.run;
           add(a.h + a.props.position, Math.max(0, -a.props.position), 0, false);
           // A horizontal rule's line is as tall as its run's text.
           if (a.drawing.hr) add(a.run.ascent, a.run.descent, a.run.extLeading);
@@ -741,15 +747,18 @@ export class ParagraphLayout {
     const mark = this.markRun;
     if (!measured) add(mark.ascent, mark.descent, mark.extLeading);
     else if (textAscent + textDescent === 0) {
-      // A line holding only inline pictures is as tall as the taller of the pictures and the mark's
-      // text height: a picture taller than the text leaves no descent below it (measured against
-      // Word's PDFs). "Multiple" spacing still adds the mark's extra.
-      const top = Math.max(ascent, mark.ascent);
-      descent = Math.max(descent, mark.ascent + mark.descent - top);
-      ascent = top;
+      // A line holding only inline pictures is as tall as the taller of the pictures and the text
+      // height of the runs holding them (not the mark's: Word gave tiny pictures in 11pt runs 11pt
+      // lines over a 9pt mark), and its pictures sit at the bottom of it, with no descent below
+      // them (a 4pt rule in an 11pt Calibri run). The mark still lends its line gap, and "multiple"
+      // spacing scales the shorter of the two heights: a 10pt picture run's under a 14pt mark, a
+      // 10pt mark's under a 12pt picture run (all measured against Word's PDFs).
+      const run = pictureRun ?? mark;
+      ascent = Math.max(ascent, run.ascent + run.descent);
       ext = Math.max(ext, mark.extLeading);
-      textAscent = mark.ascent;
-      textDescent = mark.descent;
+      const scaled = run.ascent + run.descent < mark.ascent + mark.descent ? run : mark;
+      textAscent = scaled.ascent;
+      textDescent = scaled.descent;
     }
     // A font's line gap sits above its own ascent, so a taller font takes in a shorter one's: Times
     // New Roman beside SimSun or Cambria, or Arial beside 18pt Courier New, leaves the line as tall
@@ -1189,9 +1198,9 @@ export class ParagraphLayout {
     const props = run.props;
     const lineStart = line.start;
     const font = run.face.face.font;
-    // An emoji stand-in's box and lines are Segoe UI Emoji's: at the text's size, on the baseline
-    // its glyphs were moved from.
-    const look = run.face.standIn;
+    // In Word an emoji stand-in's box and lines are Segoe UI Emoji's: at the text's size, on the
+    // baseline its glyphs were moved from.
+    const look = EMOJI_KEEPS_LINE ? run.face.standIn : undefined;
     const size = look ? run.size / look.scale : run.size;
     const em = size / font.unitsPerEm;
     const yBase = baseline - run.baselineShift - (look ? look.drop * size : 0);

@@ -1,4 +1,4 @@
-import type { RunProps } from '../docx/model.js';
+import type { RunProps } from '../ooxml/model.js';
 
 export function isEastAsian(cp: number): boolean {
   return (

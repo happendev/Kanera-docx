@@ -1,10 +1,12 @@
-import type { Chart, ChartAxis, ChartErrorBars, ChartLabels, ChartLine, ChartPlot, ChartSeries, ChartShape, ChartTextStyle, ChartTitle, ChartTrendline } from '../docx/model.js';
-import { DEFAULT_RUN } from '../docx/props.js';
+import type { Chart, ChartAxis, ChartErrorBars, ChartLabels, ChartLine, ChartPlot, ChartSeries, ChartShape, ChartTextStyle, ChartTitle, ChartTrendline } from '../ooxml/model.js';
+import { DEFAULT_RUN } from '../ooxml/props.js';
 import type { BoxEnv } from './box.js';
 import { gradientOps } from './gradient.js';
-import { formatNumber } from '../docx/number-format.js';
+import { shadowOps } from './shadow.js';
+import { formatNumber } from '../ooxml/number-format.js';
 import { shapeText, type ShapedRun } from './shaper.js';
 import type { DrawOp, GlyphOp, PathSeg } from './types.js';
+import { APP } from '../profile.js';
 
 export { formatNumber };
 
@@ -15,6 +17,9 @@ export { formatNumber };
 const PAD = 9;
 const EDGE = 6.5;
 const TITLE_TOP = 7.6;
+/** Corner radius of a chart frame with rounded corners, and of a legacy chart's (measured in Excel's prints). */
+const ROUND_CORNER = 6;
+const LEGACY_ROUND_CORNER = 9;
 const TITLE_GAP = 12.4;
 /** Room between an axis title and its labels, and the extra margin Word leaves outside the title. */
 const AXIS_TITLE_GAP = 2.6;
@@ -22,6 +27,9 @@ const AXIS_TITLE_EDGE = 6;
 /** Where a manually placed title's text starts inside the box Word positions. */
 const MANUAL_INSET = [3, 1.5] as const;
 const LEGEND_GAP = 9;
+const SIDE_LEGEND_GAP = 15;
+/** Room between a trendline's end and the right edge of its label. */
+const TREND_LABEL_GAP = 10;
 const TICK = 3;
 
 interface Text {
@@ -135,30 +143,14 @@ function stroke(segs: PathSeg[], l: ChartLine | null): DrawOp[] {
   return [{ kind: 'path', segs, fill: null, stroke: l.color, strokeWidth: l.width, ...(l.alpha !== undefined && { strokeAlpha: l.alpha }), ...(dashOf(l) && { dash: dashOf(l) }) }];
 }
 
-/**
- * A shape's outer shadow: its fill and outline again in the shadow colour, offset. A blur fades the
- * shadow out over its radius: four translucent layers, each outlined wider, stand in for it.
- */
-function shadowOps(segs: PathSeg[], s: ChartShape): DrawOp[] {
-  const sh = s.shadow;
-  if (!sh || (!s.fill && !s.line)) return [];
-  const moved = segs.map((g) => ({ ...g, pts: g.pts.map((v, i) => v + (i % 2 ? sh.dy : sh.dx)) }));
-  const lw = s.line?.width ?? 0;
-  const layer = (alpha: number, width: number): DrawOp => ({
-    kind: 'path',
-    segs: moved,
-    fill: s.fill ? sh.color : null,
-    ...(s.fill && alpha < 1 && { fillAlpha: alpha }),
-    stroke: width > 0 ? sh.color : null,
-    ...(width > 0 && { strokeWidth: width, ...(alpha < 1 && { strokeAlpha: alpha }) }),
-  });
-  if (sh.blur < 0.5) return [layer(sh.alpha, lw)];
-  const a = 1 - Math.pow(1 - sh.alpha, 1 / 4);
-  return [0, 1, 2, 3].map((k) => layer(a, lw + (sh.blur * 2 * k) / 3));
+/** A shape's outer shadow: its fill and outline again in the shadow colour, offset and blurred. */
+function shadow(segs: PathSeg[], s: ChartShape): DrawOp[] {
+  if (!s.shadow || (!s.fill && !s.line)) return [];
+  return shadowOps({ fill: s.fill ? segs : null, line: s.line && { segs, width: s.line.width, dash: dashOf(s.line) } }, s.shadow);
 }
 
 function paint(segs: PathSeg[], s: ChartShape): DrawOp[] {
-  const ops: DrawOp[] = shadowOps(segs, s);
+  const ops: DrawOp[] = shadow(segs, s);
   if (s.fill?.gradient) ops.push(...gradientOps(segs, s.fill.gradient, s.fill.alpha));
   else if (s.fill) ops.push({ kind: 'path', segs, fill: s.fill.color, ...(s.fill.alpha < 1 && { fillAlpha: s.fill.alpha }), stroke: null });
   ops.push(...stroke(segs, s.line));
@@ -172,6 +164,23 @@ const rectPath = (x: number, y: number, w: number, h: number): PathSeg[] => [
   { op: 'L', pts: [x, y + h] },
   { op: 'Z', pts: [] },
 ];
+/** A rectangle with corners rounded to radius r. */
+function roundRectPath(x: number, y: number, w: number, h: number, r: number): PathSeg[] {
+  r = Math.min(r, w / 2, h / 2);
+  const k = r * (1 - 0.5523);
+  return [
+    { op: 'M', pts: [x + r, y] },
+    { op: 'L', pts: [x + w - r, y] },
+    { op: 'C', pts: [x + w - k, y, x + w, y + k, x + w, y + r] },
+    { op: 'L', pts: [x + w, y + h - r] },
+    { op: 'C', pts: [x + w, y + h - k, x + w - k, y + h, x + w - r, y + h] },
+    { op: 'L', pts: [x + r, y + h] },
+    { op: 'C', pts: [x + k, y + h, x, y + h - k, x, y + h - r] },
+    { op: 'L', pts: [x, y + r] },
+    { op: 'C', pts: [x, y + k, x + k, y, x + r, y] },
+    { op: 'Z', pts: [] },
+  ];
+}
 const seg = (x1: number, y1: number, x2: number, y2: number): PathSeg[] => [
   { op: 'M', pts: [x1, y1] },
   { op: 'L', pts: [x2, y2] },
@@ -188,6 +197,15 @@ interface Scale {
 }
 
 const NICE = [1, 2, 5, 10];
+
+/** Each bubble's diameter: the plot's largest spans a quarter of the plot's shorter side at 100%, the others scale by area (or width). */
+function bubbleDiameters(p: ChartPlot, plot: Rect): Map<ChartSeries, Array<number | null>> {
+  const b = p.bubble!;
+  const shown = (z: number | null | undefined): z is number => typeof z === 'number' && (z > 0 || (z < 0 && b.negative));
+  const largest = Math.max(0, ...p.series.flatMap((q) => (q.bubbleSizes ?? []).filter(shown).map(Math.abs)));
+  const full = (0.25 * Math.min(plot.w, plot.h) * b.scale) / 100;
+  return new Map(p.series.map((s) => [s, (s.bubbleSizes ?? []).map((z) => (shown(z) && largest ? full * (b.area ? Math.sqrt(Math.abs(z) / largest) : Math.abs(z) / largest) : null))]));
+}
 
 /**
  * Excel's automatic value axis: 5% headroom beyond the data, zero kept in unless the data sits far
@@ -477,26 +495,29 @@ function solve(A: number[][], b: number[]): number[] | null {
   return m.map((row, i) => row[n] / row[i]);
 }
 
+interface TrendFit {
+  /** The fitted curve, in data space. */
+  f: (x: number) => number;
+  /** Coefficients of u (x, or ln x) from the constant up: v (y, or ln y) = sum of coef[j] u^j. */
+  coef: number[];
+  r2: number;
+  xs: number[];
+}
+
 /**
- * Points along a trendline through a series' (x, y) points, in data space. Fits are least squares, as
- * Excel's: exponential and power ones on ln y, logarithmic and power ones on ln x, so they skip points
- * those can't take. The curve runs from the first x to the last, plus the forecast either side.
+ * A least-squares trendline through a series' (x, y) points, as Excel fits them: exponential and power
+ * ones on ln y, logarithmic and power ones on ln x, so they skip points those can't take.
  */
-function trendPoints(t: ChartTrendline, data: Array<[number, number]>): Array<[number, number]> {
-  if (t.type === 'movingAvg') {
-    const p = Math.max(2, Math.round(t.order));
-    const out: Array<[number, number]> = [];
-    for (let i = p - 1; i < data.length; i++) out.push([data[i][0], data.slice(i - p + 1, i + 1).reduce((sum, d) => sum + d[1], 0) / p]);
-    return out;
-  }
+function fitTrend(t: ChartTrendline, data: Array<[number, number]>): TrendFit | undefined {
   const logX = t.type === 'log' || t.type === 'power';
   const logY = t.type === 'exp' || t.type === 'power';
   const pts = data.filter(([x, y]) => (!logX || x > 0) && (!logY || y > 0));
   const degree = t.type === 'poly' ? Math.max(2, Math.min(6, Math.round(t.order))) : 1;
-  if (pts.length <= degree) return [];
+  if (pts.length <= degree) return undefined;
   // A set intercept fixes the constant term (ln of it for an exponential fit).
   const fixed = t.intercept === undefined || logX ? undefined : logY ? (t.intercept > 0 ? Math.log(t.intercept) : undefined) : t.intercept;
   const us = pts.map(([x]) => (logX ? Math.log(x) : x));
+  const vs = pts.map(([, y]) => (logY ? Math.log(y) : y));
   // Without a fixed constant, centre and scale u: the same curve, but a high-order fit stays well conditioned.
   const c = fixed === undefined ? us.reduce((a, u) => a + u, 0) / us.length : 0;
   const k = fixed === undefined ? Math.max(...us.map((u) => Math.abs(u - c))) || 1 : 1;
@@ -504,31 +525,103 @@ function trendPoints(t: ChartTrendline, data: Array<[number, number]>): Array<[n
   const n = degree + 1 - first;
   const A = Array.from({ length: n }, () => new Array<number>(n).fill(0));
   const b = new Array<number>(n).fill(0);
-  pts.forEach(([, y], i) => {
-    const u = (us[i] - c) / k;
-    const v = (logY ? Math.log(y) : y) - (fixed ?? 0);
+  us.forEach((uu, i) => {
+    const u = (uu - c) / k;
+    const v = vs[i] - (fixed ?? 0);
     const basis = Array.from({ length: n }, (_, j) => u ** (j + first));
     for (let r = 0; r < n; r++) {
       b[r] += basis[r] * v;
       for (let q = 0; q < n; q++) A[r][q] += basis[r] * basis[q];
     }
   });
-  const coef = solve(A, b);
-  if (!coef) return [];
+  const sol = solve(A, b);
+  if (!sol) return undefined;
+  const fu = (u: number) => sol.reduce((sum, a, j) => sum + a * ((u - c) / k) ** (j + first), fixed ?? 0);
+  // Expand sum a_j ((u - c) / k)^j into powers of u for the equation.
+  const coef = new Array<number>(degree + 1).fill(0);
+  coef[0] = fixed ?? 0;
+  for (let j = first; j <= degree; j++) {
+    const a = sol[j - first] / k ** j;
+    let binom = 1;
+    for (let m = 0; m <= j; m++) {
+      coef[m] += a * binom * (-c) ** (j - m);
+      binom = (binom * (j - m)) / (m + 1);
+    }
+  }
+  const mean = vs.reduce((a, v) => a + v, 0) / vs.length;
+  let res = 0;
+  let tot = 0;
+  us.forEach((u, i) => {
+    res += (vs[i] - fu(u)) ** 2;
+    tot += fixed === undefined ? (vs[i] - mean) ** 2 : vs[i] ** 2;
+  });
   const f = (x: number) => {
-    const u = ((logX ? Math.log(x) : x) - c) / k;
-    const y = coef.reduce((sum, a, j) => sum + a * u ** (j + first), fixed ?? 0);
-    return logY ? Math.exp(y) : y;
+    const v = fu(logX ? Math.log(x) : x);
+    return logY ? Math.exp(v) : v;
   };
-  const xs = pts.map(([x]) => x);
-  let lo = Math.min(...xs) - t.backward;
-  const hi = Math.max(...xs) + t.forward;
-  if (logX && lo <= 0) lo = Math.min(...xs);
-  const steps = degree === 1 && !logX && !logY ? 1 : 96;
+  return { f, coef, r2: tot > 0 ? 1 - res / tot : 1, xs: pts.map(([x]) => x) };
+}
+
+/**
+ * Points along a trendline through a series' (x, y) points, in data space. The curve runs from the
+ * first x to the last, plus the forecast either side.
+ */
+function trendPoints(t: ChartTrendline, data: Array<[number, number]>, fit = fitTrend(t, data)): Array<[number, number]> {
+  if (t.type === 'movingAvg') {
+    const p = Math.max(2, Math.round(t.order));
+    const out: Array<[number, number]> = [];
+    for (let i = p - 1; i < data.length; i++) out.push([data[i][0], data.slice(i - p + 1, i + 1).reduce((sum, d) => sum + d[1], 0) / p]);
+    return out;
+  }
+  if (!fit) return [];
+  const logX = t.type === 'log' || t.type === 'power';
+  const curved = t.type !== 'linear' || logX;
+  let lo = Math.min(...fit.xs) - t.backward;
+  const hi = Math.max(...fit.xs) + t.forward;
+  if (logX && lo <= 0) lo = Math.min(...fit.xs);
+  const steps = curved ? 96 : 1;
   return Array.from({ length: steps + 1 }, (_, i) => {
     const x = lo + ((hi - lo) * i) / steps;
-    return [x, f(x)] as [number, number];
+    return [x, fit.f(x)] as [number, number];
   }).filter(([, y]) => Number.isFinite(y));
+}
+
+/** A trendline label's number: five significant digits, as Excel shows them. */
+function trendNumber(v: number): string {
+  if (v === 0 || !Number.isFinite(v)) return '0';
+  const a = Math.abs(v);
+  if (a < 1e-4 || a >= 1e11) return v.toExponential(4).replace(/\.?0+e/, 'E').replace(/E([+-])(\d)$/, 'E$10$2').replace('E+', 'E+');
+  return String(Number(v.toPrecision(5)));
+}
+
+const SUPERSCRIPT: Record<string, string> = { 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶' };
+
+/** The lines of a trendline's label: its equation and R², as Excel writes them. */
+function trendLabel(t: ChartTrendline, fit: TrendFit): string[] {
+  const out: string[] = [];
+  if (t.equation && t.type !== 'movingAvg') {
+    const c = fit.coef;
+    const signed = (v: number, term: string, lead: boolean) => {
+      const n = trendNumber(Math.abs(v));
+      return lead ? `${v < 0 ? '-' : ''}${n}${term}` : ` ${v < 0 ? '-' : '+'} ${n}${term}`;
+    };
+    let eq: string;
+    if (t.type === 'exp') eq = `y = ${trendNumber(Math.exp(c[0]))}e^${trendNumber(c[1])}x`;
+    else if (t.type === 'power') eq = `y = ${trendNumber(Math.exp(c[0]))}x^${trendNumber(c[1])}`;
+    else if (t.type === 'log') eq = `y = ${signed(c[1], 'ln(x)', true)}${c[0] ? signed(c[0], '', false) : ''}`;
+    else {
+      const terms: string[] = [];
+      for (let j = c.length - 1; j >= 0; j--) {
+        if (j > 0 && Math.abs(c[j]) < 1e-300) continue;
+        if (j === 0 && c[j] === 0 && terms.length) continue;
+        terms.push(signed(c[j], j === 0 ? '' : j === 1 ? 'x' : `x${SUPERSCRIPT[j]}`, !terms.length));
+      }
+      eq = `y = ${terms.join('')}`;
+    }
+    out.push(eq);
+  }
+  if (t.rSquared) out.push(`R² = ${Number(Math.max(0, Math.min(1, fit.r2)).toFixed(4))}`);
+  return out;
 }
 
 /**
@@ -630,8 +723,8 @@ function pointShape(s: ChartSeries, i: number): ChartShape {
 export function renderChart(chart: Chart, X: number, Y: number, W: number, H: number, env: BoxEnv): DrawOp[] {
   const ops: DrawOp[] = [];
   ops.push({ kind: 'clip', x: X - 1, y: Y - 1, w: W + 2, h: H + 2 });
-  ops.push(...paint(rectPath(X, Y, W, H), chart.space));
-  let top = Y + (chart.title ? TITLE_TOP : 11);
+  ops.push(...paint(chart.rounded ? roundRectPath(X, Y, W, H, chart.legacy ? LEGACY_ROUND_CORNER : ROUND_CORNER) : rectPath(X, Y, W, H), chart.space));
+  let top = Y + (chart.title && !chart.title.overlay ? TITLE_TOP : 11);
   let bottom = Y + H - EDGE;
   let left = X + EDGE;
   let right = X + W - 11;
@@ -641,7 +734,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
   if (chart.title) {
     const [tw, th] = titleExtent(chart.title, env);
     const tx = chart.title.x !== undefined ? X + chart.title.x * W + MANUAL_INSET[0] + tw / 2 : X + W / 2;
-    const ty = chart.title.y !== undefined ? Y + chart.title.y * H + MANUAL_INSET[1] + th / 2 : top + th / 2;
+    const ty = chart.title.y !== undefined ? Y + chart.title.y * H + MANUAL_INSET[1] + th / 2 : Y + TITLE_TOP + th / 2;
     titleOps.push(...drawTitle(chart.title, tx, ty, env));
     if (!chart.title.overlay && chart.title.y === undefined) top += th + TITLE_GAP;
   }
@@ -655,19 +748,23 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
   }
   const entries: Entry[] = [];
   const legend = chart.legend;
+  const lone = chart.plots.reduce((n, p) => n + p.series.length, 0) === 1;
+  const trended = chart.plots.some((p) => isCartesian(p) && p.series.some((s) => s.trendlines?.length));
   if (legend) {
-    const trended = chart.plots.some((p) => isCartesian(p) && p.series.some((s) => s.trendlines?.length));
     for (const p of chart.plots) {
-      // Pies, and a lone series in varied colours, list their categories rather than their series,
-      // unless the chart has a trendline to list too.
-      if (isPie(p) || (p.series.length === 1 && p.varyColors && !trended)) {
+      // Pies, and the chart's lone series in varied colours, list their categories rather than their
+      // series, unless it has a trendline to list too.
+      if (isPie(p) || (lone && p.varyColors && !trended)) {
         const s = p.series[0];
         if (!s) continue;
+        const traced = p.type === 'line' || (p.type === 'scatter' && p.lines) || (p.type === 'radar' && p.radarStyle !== 'filled');
         s.categories.forEach((c, i) => {
-          if (!legend.hidden.includes(i)) entries.push({ text: measure(c, legend.style, env), shape: pointShape(s, i), line: false });
+          const shape = pointShape(s, i);
+          if (!legend.hidden.includes(i)) entries.push({ text: measure(c, legend.style, env), shape, line: traced && shape.line !== null });
         });
         continue;
       }
+      const first = entries.length;
       for (const s of p.series) {
         const n = entries.length;
         if (legend.hidden.includes(n)) {
@@ -678,6 +775,9 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
         const line = (p.type === 'line' || (p.type === 'scatter' && p.lines) || (p.type === 'radar' && p.radarStyle !== 'filled')) && s.shape.line !== null;
         entries.push({ text: measure(s.name, legend.style, env), shape: s.shape, line, marker: s.marker });
       }
+      // A legend down the side lists stacked columns and areas top first, as they stack.
+      const stacked = (p.type === 'area' || (p.type === 'bar' && !p.horizontal)) && (p.grouping === 'stacked' || p.grouping === 'percentStacked');
+      if (stacked && legend.position !== 't' && legend.position !== 'b') entries.push(...entries.splice(first).reverse());
     }
     // Trendlines follow every series, each named for its fit and series unless given a name.
     for (const p of chart.plots)
@@ -687,11 +787,16 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
           entries.push({ text: measure(legend.hidden.includes(entries.length) ? '' : name, legend.style, env), shape: { fill: null, line: t.line }, line: true });
         }
   }
-  const visible = entries.filter((e, i) => !legend?.hidden.includes(i) || e.text.runs.length);
+  let visible = entries.filter((e, i) => !legend?.hidden.includes(i) || e.text.runs.length);
+  // Without a written overlay, Excel lays the legend over the plot, except a cartesian chart's list of
+  // categories (a lone series in varied colours), which keeps its own room.
+  const categoryLegend = lone && !trended && chart.plots.some((p) => (isCartesian(p) || p.type === 'radar') && p.varyColors);
+  const legendOver = !!legend && (legend.autoOverlay ? !categoryLegend : legend.overlay);
   const legendOps: DrawOp[] = [];
   if (legend && visible.length) {
     const ls = legend.style;
-    const lineH = measure('0', ls, env).height;
+    // Excel spaces the legend of a chart without Office's settings at 1.81 lines (18.1pt for 10pt text).
+    const lineH = chart.legacy ? ls.size * 1.81 : measure('0', ls, env).height;
     // Word's keys are 0.54em squares, but once a line series is listed every key takes the line key's width.
     const keyH = ls.size * 0.54;
     const wide = visible.some((e) => e.line);
@@ -733,11 +838,14 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
         }
         y0 += lineH;
       }
-      if (!legend.overlay && !legend.layout) {
+      if (!legendOver && !legend.layout) {
         if (legend.position === 'b') bottom = Y + H - PAD - blockH - LEGEND_GAP;
         else top += blockH + LEGEND_GAP;
       }
     } else {
+      // Entries that don't fit the chart's height are left out.
+      const fit = Math.max(1, Math.floor((H - 2 * 11 + 1e-6) / lineH));
+      if (visible.length > fit) visible = visible.slice(0, fit);
       const w = Math.max(...visible.map(entryW));
       const blockH = visible.length * lineH;
       let x0 = legend.position === 'l' ? left : right - w;
@@ -751,9 +859,10 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
         drawEntry(e, x0, y0 + lineH / 2);
         y0 += lineH;
       }
-      if (!legend.overlay && !legend.layout) {
-        if (legend.position === 'l') left += w + 6;
-        else right -= w + 6;
+      if (!legendOver && !legend.layout) {
+        // Excel keeps the plot about 15pt clear of a legend at its side.
+        if (legend.position === 'l') left += w + SIDE_LEGEND_GAP;
+        else right -= w + SIDE_LEGEND_GAP;
       }
     }
   }
@@ -792,13 +901,15 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
   }
   // Data ranges of the value axes (and scatter x axes).
   const ranges = new Map<AxisState, [number, number]>();
-  const trends: Array<{ t: ChartTrendline; pts: Array<[number, number]>; cat: AxisState; val: AxisState; scatter: boolean }> = [];
+  const trends: Array<{ t: ChartTrendline; pts: Array<[number, number]>; cat: AxisState; val: AxisState; scatter: boolean; fit?: TrendFit }> = [];
+  const percentAxes = new Set<AxisState>();
   const widen = (a: AxisState, lo: number, hi: number) => {
     const r = ranges.get(a) ?? [Infinity, -Infinity];
     ranges.set(a, [Math.min(r[0], lo), Math.max(r[1], hi)]);
   };
   for (const { plot: p, cat, val: v } of pairs) {
     if (p.grouping === 'percentStacked') {
+      percentAxes.add(v);
       widen(v, 0, 1);
       const anyNeg = p.series.some((s) => s.values.some((x) => x !== null && x < 0));
       if (anyNeg) widen(v, -1, 1);
@@ -842,9 +953,10 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
           if (y !== null && x !== null && x !== undefined) data.push([x, y]);
         });
         for (const t of s.trendlines ?? []) {
-          const pts = trendPoints(t, data);
+          const fit = t.type === 'movingAvg' ? undefined : fitTrend(t, data);
+          const pts = trendPoints(t, data, fit);
           if (!pts.length) continue;
-          trends.push({ t, pts, cat, val: v, scatter: p.type === 'scatter' });
+          trends.push({ t, pts, cat, val: v, scatter: p.type === 'scatter', fit });
           widen(v, Math.min(...pts.map((q) => q[1])), Math.max(...pts.map((q) => q[1])));
           if (p.type === 'scatter') widen(cat, pts[0][0], pts[pts.length - 1][0]);
         }
@@ -857,27 +969,66 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
   // give (from 0, or from 1 when logarithmic), so the chart draws, empty.
   for (const { val: v } of pairs) if (!ranges.has(v)) ranges.set(v, [1, 1]);
   const valueAxes = [...axes.values()].filter((a) => ranges.has(a));
+  const bubbles = pairs.filter((q) => q.plot.bubble);
   const scaleAll = (plot: Rect) => {
+    scaleRanges(plot, ranges);
+    // Excel widens a bubble chart's axes until every bubble, a whole diameter out from its centre, lies
+    // within them (one chart's -10 to 60 and 0 to 6 for data from 8 to 50 and 3.5 to 4.7).
+    for (let pass = 0; bubbles.length && pass < 2; pass++) {
+      const wide = new Map(ranges);
+      const grow = (a: AxisState, lo: number, hi: number) => {
+        const r = wide.get(a);
+        if (r) wide.set(a, [Math.min(r[0], lo), Math.max(r[1], hi)]);
+      };
+      for (const { plot: p, cat, val: v } of bubbles) {
+        const sizes = bubbleDiameters(p, plot);
+        for (const s of p.series) {
+          const ds = sizes.get(s) ?? [];
+          s.values.forEach((y, i) => {
+            const x = s.xValues ? s.xValues[i] : i + 1;
+            const d = ds[i];
+            if (y === null || x === null || !d) return;
+            for (const [a, c] of [[cat, x], [v, y]] as const) {
+              if (!a.scale || a.scale.log) continue;
+              const per = (a.scale.max - a.scale.min) / (a.horizontal ? plot.w : plot.h);
+              grow(a, c - d * per, c + d * per);
+            }
+          });
+        }
+      }
+      scaleRanges(plot, wide);
+    }
+  };
+  // The widest label is guessed from the data's largest value, before any widening for bubbles.
+  function scaleRanges(plot: Rect, wide: Map<AxisState, [number, number]>) {
     for (const a of valueAxes) {
-      const [lo, hi] = ranges.get(a)!;
+      const [lo, hi] = wide.get(a)!;
       const len = a.horizontal ? plot.w : plot.h;
-      const probe = measure(formatNumber(hi, a.format), a.axis.style, env).width;
-      const spacing = a.horizontal ? Math.max(1.5 * a.axis.style.size, probe + a.axis.style.size) : 1.5 * a.axis.style.size;
+      const probe = measure(formatNumber(ranges.get(a)![1], a.format), a.axis.style, env).width;
+      // Labels across the plot stand at least five ems apart in Excel and PowerPoint (as they space
+      // them on bar and scatter charts), and an em and a half in Word.
+      const gap = APP === 'word' ? 1.5 : 5;
+      const spacing = a.horizontal ? Math.max(gap * a.axis.style.size, probe + a.axis.style.size) : 1.5 * a.axis.style.size;
       a.scale = autoScale(lo, hi, a.axis, len, spacing);
+      // A 100% stack's axis ends at 100%.
+      if (percentAxes.has(a)) {
+        if (a.axis.max === undefined) a.scale.max = Math.min(a.scale.max, 1);
+        if (a.axis.min === undefined) a.scale.min = Math.max(a.scale.min, -1);
+      }
       a.labels = ticks(a.scale).map((t) => formatNumber(t, a.format));
       a.lines = a.labels.map((l) => [l]);
       a.rotation = a.axis.style.rotation ?? 0;
     }
-  };
+  }
   // Labels keep a share of their size from the axis line; turned labels also keep a tick's length further off,
   // whether or not ticks are drawn (measured against Word with and without).
   const gapOf = (a: AxisState) => (a.horizontal ? (a.rotation ? TICK + a.axis.style.size * 0.85 : a.axis.style.size * 0.62) : a.axis.style.size * 0.9);
   const titleSize = (a: AxisState) => {
-    if (!a.axis.title || a.axis.deleted) return 0;
+    if (!a.axis.title) return 0;
     const [tw, th, rot] = titleExtent(a.axis.title, env);
     const [w, h] = turned(tw, th, rot);
-    // A title Word was told where to put takes no room from the plot.
-    if (a.axis.title.x !== undefined && a.axis.title.y !== undefined) return 0;
+    // A title Word was told where to put, or one laid over the plot, takes no room from it.
+    if ((a.axis.title.x !== undefined && a.axis.title.y !== undefined) || a.axis.title.overlay) return 0;
     return (a.horizontal ? h : w) + AXIS_TITLE_GAP + AXIS_TITLE_EDGE;
   };
   const shown = (a: AxisState) => !a.axis.deleted;
@@ -910,6 +1061,14 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
       // The plot keeps 11pt from a bare right edge, but labels and titles there run out to the usual margin.
       const reach = side.r && !fixed ? right - (X + W - EDGE) : side.r ? 0 : overhang;
       inner = { x: outer.x + side.l, y: outer.y + side.t, w: Math.max(1, outer.w - side.l - side.r - reach), h: Math.max(1, outer.h - side.t - side.b) };
+      // A side with no labels or title keeps the plot 11pt from the chart's edge, as the top and right do.
+      if (!fixed) {
+        if (!side.l && inner.x < X + 11) {
+          inner.w -= X + 11 - inner.x;
+          inner.x = X + 11;
+        }
+        if (!side.b && inner.y + inner.h > Y + H - 11) inner.h = Math.max(1, Y + H - 11 - inner.y);
+      }
     }
     if (fixed?.inner) {
       // Word keeps a manually placed plot's labels inside the chart, narrowing the plot if it must.
@@ -961,7 +1120,8 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     if (p.type === 'bar') {
       const band = (cat.horizontal ? plot.w : plot.h) / Math.max(1, n);
       const stacked = p.grouping !== 'clustered';
-      const k = stacked ? 1 : p.series.length;
+      // Stacked segments sit side by side too unless the series overlap fully (Office writes 100).
+      const k = p.series.length;
       const o = Math.max(-1, Math.min(1, p.overlap / 100));
       const w = band / (k - (k - 1) * o + p.gapWidth / 100);
       const cluster = w * (k - (k - 1) * o);
@@ -989,7 +1149,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
           }
           const c0 = pos(cat, i) - (cat.horizontal ? 1 : -1) * (band / 2) * (cat.axis.reverse ? -1 : 1);
           const dir = (cat.horizontal ? 1 : -1) * (cat.axis.reverse ? -1 : 1);
-          const start = c0 + dir * ((band - cluster) / 2 + (stacked ? 0 : si * w * (1 - o)));
+          const start = c0 + dir * ((band - cluster) / 2 + si * w * (1 - o));
           const a0 = pos(v, from);
           const a1 = pos(v, value);
           const r: Rect = cat.horizontal ? { x: Math.min(start, start + dir * w), y: Math.min(a0, a1), w, h: Math.abs(a1 - a0) } : { x: Math.min(a0, a1), y: Math.min(start, start + dir * w), w: Math.abs(a1 - a0), h: w };
@@ -1090,11 +1250,31 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
           prevLine.length = 0;
           prevLine.push(...top);
         } else if (s.shape.line && (p.type !== 'scatter' || p.lines)) {
-          for (const run of runs) {
-            if (run.length < 2) continue;
-            const segs = s.smooth ? smoothPath(run) : [{ op: 'M', pts: run[0] } as PathSeg, ...run.slice(1).map((q): PathSeg => ({ op: 'L', pts: q }))];
-            seriesOps.push(...stroke(segs, s.shape.line));
+          // Varied colours draw each segment in the colour of the point it runs to.
+          const own = (pt: [number, number]) => s.points.get(pts.indexOf(pt))?.line;
+          const varied = pts.some((pt) => pt && own(pt) && own(pt)!.color !== s.shape.line!.color);
+          const lines = runs.filter((run) => run.length >= 2);
+          const paths = lines.map((run) => (s.smooth ? smoothPath(run) : [{ op: 'M', pts: run[0] } as PathSeg, ...run.slice(1).map((q): PathSeg => ({ op: 'L', pts: q }))]));
+          // One shadow for the whole series, as Word draws it.
+          seriesOps.push(...shadow(paths.flat(), { fill: null, line: s.shape.line, shadow: s.shape.shadow }));
+          for (const [r, run] of lines.entries()) {
+            const segs = paths[r];
+            if (!varied) seriesOps.push(...stroke(segs, s.shape.line));
+            else
+              for (let k = 1; k < segs.length; k++) {
+                const from = run[k - 1];
+                seriesOps.push(...stroke([{ op: 'M', pts: from }, segs[k]], own(run[k]) ?? s.shape.line));
+              }
           }
+        }
+        if (p.bubble && s.bubbleSizes) {
+          const sizes = bubbleDiameters(p, plot).get(s) ?? [];
+          pts.forEach((pt, i) => {
+            const z = s.bubbleSizes![i]!;
+            const d = sizes[i];
+            if (!pt || !d) return;
+            seriesOps.push(...paint(markerPath('circle', pt[0], pt[1], d), z < 0 ? { fill: null, line: pointShape(s, i).line ?? { color: pointShape(s, i).fill?.color ?? '000000', width: 0.75 } } : pointShape(s, i)));
+          });
         }
         pts.forEach((pt, i) => {
           if (!pt) return;
@@ -1116,13 +1296,27 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     }
   }
   // Trendlines over the series; a category's x is its 1-based number.
-  for (const { t, pts, cat, val: v, scatter } of trends) {
+  for (const { t, pts, cat, val: v, scatter, fit } of trends) {
     const xy = pts.map(([x, y]): [number, number] => {
       const px = coord(cat, plot, scatter ? x : x - 1);
       const py = coord(v, plot, y);
       return cat.horizontal ? [px, py] : [py, px];
     });
     seriesOps.push(...stroke([{ op: 'M', pts: xy[0] }, ...xy.slice(1).map((q): PathSeg => ({ op: 'L', pts: q }))], t.line));
+    // The equation and R² stand left of the line's end, centred on it.
+    const lines = fit ? trendLabel(t, fit) : [];
+    if (lines.length) {
+      const texts = lines.map((l) => measure(l, t.labelStyle, env));
+      const lineH = Math.max(...texts.map((x) => x.height));
+      const blockW = Math.max(...texts.map((x) => x.width));
+      const [ex, ey] = xy[xy.length - 1];
+      const cx = ex - TREND_LABEL_GAP - blockW / 2;
+      let y = ey - (lineH * texts.length) / 2;
+      for (const x of texts) {
+        labelOps.push(...place(x, t.labelStyle.color, cx, y, 0.5, 0));
+        y += lineH;
+      }
+    }
   }
   if (seriesOps.length || errorOps.length) {
     ops.push({ kind: 'clip', x: plot.x, y: plot.y, w: plot.w, h: plot.h });
@@ -1245,21 +1439,19 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     });
   }
 
-  // Axis lines, tick marks and labels.
+  // Axis lines, tick marks and labels; a deleted axis keeps only its title.
   for (const a of axes.values()) {
-    if (!shown(a)) continue;
     const st = a.axis.style;
     const along = a.horizontal ? [plot.x, plot.x + plot.w] : [plot.y, plot.y + plot.h];
-    if (a.axis.line) ops.push(...stroke(a.horizontal ? seg(along[0], a.at, along[1], a.at) : seg(a.at, along[0], a.at, along[1]), a.axis.line));
+    if (a.axis.line && shown(a)) ops.push(...stroke(a.horizontal ? seg(along[0], a.at, along[1], a.at) : seg(a.at, along[0], a.at, along[1]), a.axis.line));
     // Labels and outside ticks face away from the plot: down and left for bottom and left axes.
     const outward = a.axis.position === 'b' || a.axis.position === 'r' ? 1 : -1;
     const tickPos = a.scale ? ticks(a.scale).map((t) => coord(a, plot, t)) : Array.from({ length: a.count + (a.axis.between ? 1 : 0) }, (_, i) => (a.axis.between ? (a.horizontal ? plot.x + (i / Math.max(1, a.count)) * plot.w : plot.y + plot.h - (i / Math.max(1, a.count)) * plot.h) : coord(a, plot, i)));
     const t0 = a.axis.majorTick === 'in' ? -TICK : a.axis.majorTick === 'cross' ? -TICK : 0;
     const t1 = a.axis.majorTick === 'out' || a.axis.majorTick === 'cross' ? TICK : 0;
-    if (a.axis.line && a.axis.majorTick !== 'none')
+    if (a.axis.line && shown(a) && a.axis.majorTick !== 'none')
       for (const p of tickPos) ops.push(...stroke(a.horizontal ? seg(p, a.at + outward * t0, p, a.at + outward * t1) : seg(a.at + outward * t0, p, a.at + outward * t1, p), a.axis.line));
-    if (a.axis.labelPosition === 'none') continue;
-    // Next to the axis, or at the plot's low or high edge.
+    // Next to the axis, or at the plot's low or high edge (an axis without labels still shows its title).
     let line = a.at;
     if (a.axis.labelPosition === 'low') line = a.horizontal ? plot.y + plot.h : plot.x;
     else if (a.axis.labelPosition === 'high') line = a.horizontal ? plot.y : plot.x + plot.w;
@@ -1268,7 +1460,7 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
     const lineH = measure('0', st, env).height;
     const centres = a.scale ? ticks(a.scale).map((t) => coord(a, plot, t)) : a.labels.map((_, i) => coord(a, plot, i));
     a.lines.forEach((lines, i) => {
-      if (i % a.skip) return;
+      if (i % a.skip || a.axis.labelPosition === 'none' || !shown(a)) return;
       const c = centres[i];
       if (c === undefined) return;
       if (a.horizontal) {
@@ -1295,6 +1487,9 @@ export function renderChart(chart: Chart, X: number, Y: number, W: number, H: nu
       const ext = labelExtent(a, env) + gap + AXIS_TITLE_GAP;
       const t = a.axis.title;
       if (t.x !== undefined && t.y !== undefined) ops.push(...drawTitle(t, X + t.x * W + MANUAL_INSET[0] + w / 2, Y + t.y * H + MANUAL_INSET[1] + h / 2, env));
+      // Laid over the plot: just inside its edge on the axis's side.
+      else if (t.overlay && a.horizontal) titleOps.push(...drawTitle(t, plot.x + plot.w / 2, a.axis.position === 't' ? plot.y + h / 2 : plot.y + plot.h - h / 2, env));
+      else if (t.overlay) titleOps.push(...drawTitle(t, a.axis.position === 'r' ? plot.x + plot.w - w / 2 : plot.x + w / 2, plot.y + plot.h / 2, env));
       else if (a.horizontal) ops.push(...drawTitle(t, plot.x + plot.w / 2, line + out * (ext + h / 2), env));
       else ops.push(...drawTitle(t, line + out * (ext + w / 2), plot.y + plot.h / 2, env));
     }

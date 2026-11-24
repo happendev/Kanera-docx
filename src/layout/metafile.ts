@@ -1,5 +1,5 @@
-import type { ImageRef } from '../docx/model.js';
-import { DEFAULT_RUN } from '../docx/props.js';
+import type { ImageRef } from '../ooxml/model.js';
+import { DEFAULT_RUN } from '../ooxml/props.js';
 import type { FontRegistry } from '../fonts/registry.js';
 import { playMetafile, type MetaOp, type MetaSeg } from '../image/metafile.js';
 import { sniffImage } from '../image/image.js';

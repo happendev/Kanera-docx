@@ -1,6 +1,6 @@
 import { child, children, type XmlElement } from '../util/xml.js';
-import { parseParaDelta, parseRunDelta, type ParaDelta, type PropContext, type RunDelta } from './props.js';
-import { num } from './values.js';
+import { parseParaDelta, parseRunDelta, type ParaDelta, type PropContext, type RunDelta } from '../ooxml/props.js';
+import { num } from '../ooxml/values.js';
 
 export interface Level {
   ilvl: number;

@@ -7,7 +7,7 @@ import { FontRegistry } from '../src/fonts/registry.js';
 import { SfntFont } from '../src/fonts/sfnt.js';
 import { buildSfnt } from '../src/fonts/subset.js';
 import { shapeText } from '../src/layout/shaper.js';
-import { DEFAULT_RUN } from '../src/docx/props.js';
+import { DEFAULT_RUN } from '../src/ooxml/props.js';
 import { convertDocx } from '../src/node.js';
 import { ghostscript, ghostscriptPixels, pdfPagesText, pdfText } from './helpers/pdf.js';
 import { makeDocx, p } from './helpers/docx.js';

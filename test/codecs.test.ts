@@ -283,7 +283,11 @@ describe('raster decoding', () => {
     });
     tiff.set([10, 5, 5], 134);
     const source = tiff.slice();
-    const grey = () => Array.from(decodeTiff(tiff, nodeCompression.inflateZlib)!.data.filter((_, i) => i % 4 === 0));
+    const grey = () => {
+      const pixels = decodeTiff(tiff, nodeCompression.inflateZlib)!;
+      if (!('data' in pixels)) throw new Error('expected RGBA pixels');
+      return Array.from(pixels.data.filter((_, i) => i % 4 === 0));
+    };
     expect(grey()).toEqual([10, 15, 20]);
     expect(grey()).toEqual([10, 15, 20]);
     expect(tiff).toEqual(source);

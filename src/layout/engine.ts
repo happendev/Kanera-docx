@@ -1,4 +1,4 @@
-import type { Block, DocxDocument, Drawing, FieldInline, Paragraph, Section, Table, TableCell } from '../docx/model.js';
+import type { Block, DocxDocument, Drawing, FieldInline, Paragraph, Section, Table, TableCell } from '../ooxml/model.js';
 import { formatNumber } from '../docx/numbering.js';
 import type { FontRegistry } from '../fonts/registry.js';
 import {
@@ -232,6 +232,7 @@ class Paginator {
       noteRefText: (type, id) => this.noteRefText(type, id),
       drawInline: (d, x, y) => renderDrawing(d, x, y, this.env),
       fitDrawing: (d) => this.fitDrawing(d, this.env),
+      shadows: new Map(),
     };
   }
 

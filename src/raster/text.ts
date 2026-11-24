@@ -17,6 +17,7 @@ import { Coverage } from './coverage.js';
 import { Supersampled } from './supersample.js';
 import { concat, flattenOutline, meanScale, Polylines, type Matrix } from './geometry.js';
 import { strokeOutline, type Join } from './stroke.js';
+import { SYNTHETIC_BOLD_STROKE } from '../profile.js';
 
 const ITALIC_SKEW = 0.2126; // tan(12°), the slant Word uses for synthetic italics
 /** Glyphs larger than this many pixels per em are drawn as paths rather than cached. */
@@ -90,7 +91,7 @@ export class TextPainter {
     const colored = colors !== undefined && op.gids.some((g) => colors.has(font, g));
     const fill = colored || !op.outline;
     const stroke = !colored && (op.outline || op.syntheticBold);
-    const strokeWidth = op.size * (op.outline ? 0.02 : 0.03) * meanScale(ctm);
+    const strokeWidth = op.size * (op.outline ? 0.02 : SYNTHETIC_BOLD_STROKE) * meanScale(ctm);
     const alpha = op.alpha !== undefined && op.alpha < 1 ? Math.max(0, op.alpha) : 1;
     if (alpha <= 0) return;
     const rgb = parseInt(op.color.slice(0, 6), 16) || 0;

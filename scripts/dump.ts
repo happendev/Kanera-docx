@@ -2,7 +2,7 @@
 import { nodeCompression } from '../src/util/node-compression.js';
 import { readFileSync } from 'node:fs';
 import { parseDocx } from '../src/docx/parser.js';
-import type { Block } from '../src/docx/model.js';
+import type { Block } from '../src/ooxml/model.js';
 
 const [file, fromS, toS] = process.argv.slice(2);
 const doc = parseDocx(new Uint8Array(readFileSync(file)), nodeCompression.inflateRaw);
