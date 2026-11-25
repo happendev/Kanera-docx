@@ -436,6 +436,9 @@ describe('PDF fonts, links and public inputs', () => {
     const override = pdfText((await convertDocx(doc, { info: { modified: new Date(Date.UTC(2025, 5, 30, 12)) } })).pdf);
     expect(override).toContain('/CreationDate (D:20240102030405Z)');
     expect(override).toContain('/ModDate (D:20250630120000Z)');
+    const author = pdfText((await convertDocx(doc, { info: { author: 'Bea' } })).pdf);
+    expect(author).toContain('/Author (Bea)');
+    expect(author).not.toContain('/Creator');
     const dateOnly = makeDocx({ body: p('Text'), coreProperties: '<dcterms:modified xsi:type="dcterms:W3CDTF">2023-07</dcterms:modified>' });
     expect(parseDocx(dateOnly, nodeCompression.inflateRaw).info.modified?.toISOString()).toBe('2023-07-01T00:00:00.000Z');
   });

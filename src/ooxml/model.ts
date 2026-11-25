@@ -798,7 +798,8 @@ export interface Note {
 export interface DocumentInfo {
   title?: string;
   subject?: string;
-  creator?: string;
+  /** The author, from the file's dc:creator; written to the PDF as /Author. */
+  author?: string;
   keywords?: string;
   description?: string;
   created?: Date;

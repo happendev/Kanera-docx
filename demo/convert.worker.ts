@@ -11,7 +11,7 @@ export type ConvertRequest = {
   id: number;
   docx: ArrayBuffer;
 } & (
-  | { format: 'pdf'; options: Pick<BrowserConvertOptions, 'fontPack' | 'wordPlatform' | 'imageQuality' | 'embeddedFonts'> }
+  | { format: 'pdf'; options: Pick<BrowserConvertOptions, 'fontPack' | 'wordPlatform' | 'imageQuality' | 'useEmbeddedFonts'> }
   | { format: TextFormat }
 );
 

@@ -24,14 +24,18 @@ result.warnings; // e.g. 'Font "Proxima Nova" not available; using Liberation Sa
 | `imageLimits` | all | 16,777,216 pixels per image, 67,108,864 total | Set `maxImagePixels` and `maxTotalPixels` to budget source raster pixels. Repeated placements of one image count once. JPEGs are only decoded for optional recompression, so one that exceeds the budget is embedded unchanged. |
 | `imageQuality` | all | | Encoder quality for eligible colour JPEGs. Set an integer from 1 to 100 or use `false` to disable lossy re-encoding. CLI: `--image-quality <1-100\|off>`. |
 | `additionalLinkSchemes` | all | `[]` | PDF links support HTTP, HTTPS, mailto and internal bookmarks. Pass scheme names such as `['tel']` to enable additional URI actions. Text for other destinations is preserved without a link annotation. |
-| `embeddedFonts` | all     | `true`   | Use fonts embedded in the `.docx` (including obfuscated `.odttf`).   |
+| `useEmbeddedFonts` | all  | `true`   | Use fonts embedded in the `.docx` (including obfuscated `.odttf`).   |
 | `info`          | all     | from doc | PDF title, author, subject, keywords, dates.                         |
 | `compress`      | all     | `true`   | Deflate PDF content streams.                                         |
+| `signal`        | all     |          | An `AbortSignal` that stops the conversion, rejecting with its reason. It is checked between stages, font loads and pages, so a long layout finishes first. |
 | `wordPlatform`  | all     | `'windows'` | Set to `'mac'` to match Word for Mac's PDFs, which draw text sizes, baselines and line starts on a 0.24pt grid (11pt text comes out at 11.04pt). Layout is the same. CLI: `--mac`. |
 | `format`        | images  | `'png'`  | `'png'` or `'jpeg'`.                                                 |
 | `dpi`           | images  | `150`    | Image resolution in dots per inch. CLI: `--dpi`.                     |
+| `width`, `height` | images | none  | Image size in pixels (1 to 65535), in place of `dpi`. With both, each page fits within them, keeping its shape unless `keepAspectRatio` is `false`; with one, the other follows the page's shape. |
+| `keepAspectRatio` | images | `true` | `false` stretches each page to exactly `width` × `height`.        |
 | `quality`       | images  | `90`     | JPEG quality from 1 to 100. CLI: `--quality`.                        |
 | `pages`         | images  | all      | Page numbers to draw, from 1. CLI: `--pages 1-3,5`.                  |
+| `onPage`        | images  |          | `(image, pageCount) => …` receives each image as soon as it is encoded, in page order, so only the pages in flight stay in memory; the result's images then have empty `data`. Drawing waits for a returned promise. |
 | `systemFonts`   | Node    | `false`  | `true` or a list of folders to scan for `.ttf`/`.otf`/`.ttc`.        |
 | `fontPack`      | browser | `'full'` | Set to `'common'` to use the smaller browser pack.                      |
 | `fontDir`       | Node    | package  | Folder holding the full pack.                                        |
@@ -104,13 +108,14 @@ Markdown follows GitHub's dialect:
 - Footnotes and endnotes become Markdown footnotes. Equations become LaTeX in `$…$` or `$$` blocks.
 - Quote styles become block quotes, and table-of-contents entries become a nested list.
 
-| Option           | Default  | Meaning                                                                 |
-| ---------------- | -------- | ----------------------------------------------------------------------- |
-| `format`         | `'text'` | `'markdown'` for Markdown (`extractText` only).                          |
-| `headersFooters` | `false`  | Include each distinct header before its section and each footer after it. |
-| `notes`          | `true`   | Include footnotes and endnotes after the body.                           |
-| `images`         | `true`   | Markdown: include picture references.                                    |
-| `archiveLimits`  |          | As for conversion.                                                       |
+| Option                  | Default  | Meaning                                                                   |
+| ----------------------- | -------- | ------------------------------------------------------------------------- |
+| `format`                | `'text'` | `'markdown'` for Markdown (`extractText` only).                           |
+| `includeHeadersFooters` | `false`  | Include each distinct header before its section and each footer after it. |
+| `includeNotes`          | `true`   | Include footnotes and endnotes after the body.                            |
+| `includeImages`         | `true`   | Markdown: include picture references.                                     |
+| `archiveLimits`         |          | As for conversion.                                                        |
+| `signal`                |          | An `AbortSignal`; extraction does not start once it is aborted.          |
 
 ## Converting untrusted documents
 

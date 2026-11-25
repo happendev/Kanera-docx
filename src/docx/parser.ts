@@ -291,7 +291,7 @@ class DocxParser {
       };
       info.title = get('dc:title');
       info.subject = get('dc:subject');
-      info.creator = get('dc:creator');
+      info.author = get('dc:creator');
       info.keywords = get('cp:keywords');
       info.description = get('dc:description');
       info.created = date('dcterms:created');

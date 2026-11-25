@@ -21,14 +21,14 @@ export interface TextOptions {
    * Include headers and footers (default false). Each distinct header appears once, before the
    * first section that uses it, and each footer once, after it.
    */
-  headersFooters?: boolean;
+  includeHeadersFooters?: boolean;
   /**
    * Include footnotes and endnotes (default true). References show as [1] in plain text and as
    * Markdown footnotes ([^1]); the notes follow the body.
    */
-  notes?: boolean;
+  includeNotes?: boolean;
   /** Markdown only: show pictures as `![alt text](word/media/image1.png)` (default true). */
-  images?: boolean;
+  includeImages?: boolean;
 }
 
 // Inline formatting flags.
@@ -213,11 +213,11 @@ class TextExtractor {
     for (const { section, blocks } of sections) {
       this.section = section;
       if (section.footnoteRestart === 'eachSect') this.footnoteCounter = undefined;
-      if (this.options.headersFooters) hf(section.headers, section);
+      if (this.options.includeHeadersFooters) hf(section.headers, section);
       this.blocks(blocks, chunks);
-      if (this.options.headersFooters) hf(section.footers, section);
+      if (this.options.includeHeadersFooters) hf(section.footers, section);
     }
-    if (this.options.notes !== false) this.notes(chunks);
+    if (this.options.includeNotes !== false) this.notes(chunks);
     return this.join(chunks);
   }
 
@@ -530,7 +530,7 @@ class TextExtractor {
       extras.push({ rule: true });
       return;
     }
-    if (d.kind === 'image' && d.image && this.md && this.options.images !== false) {
+    if (d.kind === 'image' && d.image && this.md && this.options.includeImages !== false) {
       const target = d.image.id.replace(/#.*$/, '');
       const alt = (d.alt ?? '').replace(/\s+/g, ' ').trim().replace(/[\\[\]]/g, '\\$&');
       const md = `![${alt}](${encodeUrl(target)})`;

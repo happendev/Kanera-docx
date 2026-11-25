@@ -154,7 +154,7 @@ Markdown keeps headings, lists, tables, emphasis, links, footnotes and equations
 
 ```ts
 const text = await docxToText('in.docx');
-const markdown = await docxToMarkdown('in.docx', { headersFooters: true });
+const markdown = await docxToMarkdown('in.docx', { includeHeadersFooters: true });
 ```
 
 ### Command line

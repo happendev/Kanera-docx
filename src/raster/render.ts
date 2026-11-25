@@ -29,8 +29,17 @@ export type ImageFormat = 'png' | 'jpeg';
 export interface RasterOptions {
   /** 'png' (default) or 'jpeg'. */
   format?: ImageFormat;
-  /** Resolution in dots per inch (default 150). */
+  /** Resolution in dots per inch (default 150), unless `width` or `height` is set. */
   dpi?: number;
+  /**
+   * The image size in pixels, in place of `dpi`, from 1 to 65535. With both, each page fits within
+   * them, keeping its shape unless `keepAspectRatio` is false; with one, the other follows the
+   * page's shape.
+   */
+  width?: number;
+  height?: number;
+  /** Keep each page's shape when both `width` and `height` are set (default true); false stretches it to exactly that size. */
+  keepAspectRatio?: boolean;
   /** JPEG quality from 1 to 100 (default 90). */
   quality?: number;
   /** Indexes of the pages to draw, from 0 (default: every page). */
@@ -40,6 +49,14 @@ export interface RasterOptions {
   paintGrid?: number;
   /** Whose anti-aliasing to follow (default 'poppler'). */
   style?: RasterStyle;
+  /**
+   * Receives each image as soon as it is encoded, in page order, with the document's page count,
+   * instead of the result keeping it: the result's images then have empty `data`. Drawing waits
+   * for a returned promise.
+   */
+  onPage?: (image: PageImage, pageCount: number) => void | Promise<void>;
+  /** Stops drawing, between pages and before each image is handed over, once aborted. */
+  signal?: AbortSignal;
 }
 
 export interface PageImage {
@@ -68,42 +85,80 @@ export function checkRasterOptions(opts: RasterOptions): void {
   const q = opts.quality;
   if (q !== undefined && (!Number.isInteger(q) || q < 1 || q > 100)) throw new RangeError('Image quality must be an integer from 1 to 100');
   if (opts.format !== undefined && opts.format !== 'png' && opts.format !== 'jpeg') throw new RangeError("Image format must be 'png' or 'jpeg'");
+  for (const side of [opts.width, opts.height]) {
+    if (side !== undefined && (!Number.isInteger(side) || side < 1 || side > MAX_DIMENSION)) throw new RangeError('Image width and height must be integers from 1 to 65535 pixels');
+  }
+}
+
+/**
+ * A page's image size, scale and resolution: at the resolution, with the page's edges rounded up
+ * to whole pixels, or fitted to the size asked for and scaled to fill those pixels exactly.
+ */
+function plan(page: Page, opts: RasterOptions, index: number): { width: number; height: number; sx: number; sy: number; dpi: number } {
+  const dpi = opts.dpi ?? 150;
+  const keep = opts.keepAspectRatio !== false;
+  const pw = Math.max(page.width, 1e-3), ph = Math.max(page.height, 1e-3);
+  const fit = opts.width !== undefined || opts.height !== undefined;
+  let sx: number, sy: number;
+  if (opts.width !== undefined && opts.height !== undefined) {
+    sx = opts.width / pw;
+    sy = opts.height / ph;
+    if (keep) sx = sy = Math.min(sx, sy);
+  } else if (opts.width !== undefined) sx = sy = opts.width / pw;
+  else if (opts.height !== undefined) sx = sy = opts.height / ph;
+  else sx = sy = dpi / 72;
+  let width = Math.max(1, Math.ceil(page.width * sx - 1e-6));
+  let height = Math.max(1, Math.ceil(page.height * sy - 1e-6));
+  if (fit && !keep) {
+    width = opts.width ?? width;
+    height = opts.height ?? height;
+  }
+  if (width > MAX_DIMENSION || height > MAX_DIMENSION || width * height > MAX_PAGE_PIXELS) {
+    throw new RangeError(`Page ${index + 1} would be ${width} × ${height} pixels${fit ? '' : ` at ${dpi} dpi`}, more than page images allow`);
+  }
+  if (!fit) return { width, height, sx, sy, dpi };
+  // Fitted pages fill the whole pixels chosen exactly.
+  return { width, height, sx: width / pw, sy: height / ph, dpi: (width / pw) * 72 };
 }
 
 /** Draw `pages` (or the chosen ones) to encoded page images. */
 export async function renderImages(pages: Page[], compression: Compression, opts: RasterOptions = {}, warnings: string[] = []): Promise<PageImage[]> {
   checkRasterOptions(opts);
-  const dpi = opts.dpi ?? 150;
-  const scale = dpi / 72;
+  const { signal, onPage } = opts;
+  signal?.throwIfAborted();
   const indexes = opts.pages ?? pages.map((_, i) => i);
   for (const i of indexes) if (!Number.isInteger(i) || i < 0 || i >= pages.length) throw new RangeError(`Page ${i + 1} is out of range (1-${pages.length})`);
-  const sizes = indexes.map((i) => {
-    const width = Math.max(1, Math.ceil(pages[i].width * scale - 1e-6));
-    const height = Math.max(1, Math.ceil(pages[i].height * scale - 1e-6));
-    if (width > MAX_DIMENSION || height > MAX_DIMENSION || width * height > MAX_PAGE_PIXELS) {
-      throw new RangeError(`Page ${i + 1} would be ${width} × ${height} pixels at ${dpi} dpi, more than page images allow`);
-    }
-    return { width, height };
-  });
+  const sizes = indexes.map((i) => plan(pages[i], opts, i));
   await preloadOutlines(indexes.map((i) => pages[i]));
   const style = opts.style ?? 'poppler';
   const painter = new PagePainter(compression, new ImageBudget(opts.imageLimits), warnings, opts.paintGrid);
   // The pixel limits apply to the pictures of each page: unlike the PDF writer, which embeds JPEGs
   // as they are, page images decode every picture, and a deck of photos passes the total.
   const pageBudget = () => new ImageBudget(opts.imageLimits);
-  const out: PageImage[] = new Array(indexes.length);
+  const out: PageImage[] = [];
+  // Each image goes to onPage, or into the result, in page order.
+  const emit = async (image: PageImage): Promise<void> => {
+    signal?.throwIfAborted();
+    if (!onPage) {
+      out.push(image);
+      return;
+    }
+    await onPage(image, pages.length);
+    out.push({ ...image, data: new Uint8Array(0) });
+  };
   // Pages compressing while later ones are drawn, where compression can run alongside.
-  const pending: Promise<void>[] = [];
+  const pending: Promise<PageImage>[] = [];
   const spare: Uint8Array<ArrayBuffer>[] = [];
   let canvas: Canvas | null = null;
   try {
     for (const [k, i] of indexes.entries()) {
-      const { width, height } = sizes[k];
+      signal?.throwIfAborted();
+      const { width, height, sx, sy, dpi } = sizes[k];
       if (canvas && canvas.width === width && canvas.height === height) canvas.reset();
       else canvas = new Canvas(width, height, style);
-      await painter.draw(pages[i], canvas, scale, pageBudget());
+      await painter.draw(pages[i], canvas, sx, sy, pageBudget());
       if (opts.format === 'jpeg') {
-        out[k] = { page: i + 1, width, height, data: encodeJpeg(width, height, canvas.data, opts.quality ?? 90, { lo: canvas.lo, hi: canvas.hi, dpi }) };
+        await emit({ page: i + 1, width, height, data: encodeJpeg(width, height, canvas.data, opts.quality ?? 90, { lo: canvas.lo, hi: canvas.hi, dpi }) });
         continue;
       }
       const size = (width * 3 + 1) * height;
@@ -111,23 +166,24 @@ export async function renderImages(pages: Page[], compression: Compression, opts
       const reuse = spare.findIndex((b) => b.length === size);
       const rows = pngScanlines(width, height, canvas.data, canvas.lo, canvas.hi, reuse >= 0 ? spare.splice(reuse, 1)[0] : new Uint8Array(size));
       if (!compression.deflateZlibAsync) {
-        out[k] = { page: i + 1, width, height, data: pngFile(width, height, compression.deflateZlib(rows, PNG_DEFLATE_LEVEL), dpi, compression.crc32) };
+        const data = pngFile(width, height, compression.deflateZlib(rows, PNG_DEFLATE_LEVEL), dpi, compression.crc32);
         spare.push(rows);
+        await emit({ page: i + 1, width, height, data });
         continue;
       }
       const job = compression.deflateZlibAsync(rows, PNG_DEFLATE_LEVEL).then((deflated) => {
-        out[k] = { page: i + 1, width, height, data: pngFile(width, height, deflated, dpi, compression.crc32) };
         if (spare.length <= MAX_PENDING) spare.push(rows);
+        return { page: i + 1, width, height, data: pngFile(width, height, deflated, dpi, compression.crc32) };
       });
       // Rejections surface when the job is awaited below.
       job.catch(() => {});
       pending.push(job);
-      if (pending.length >= MAX_PENDING) await pending.shift();
+      if (pending.length >= MAX_PENDING) await emit(await pending.shift()!);
     }
+    while (pending.length) await emit(await pending.shift()!);
   } finally {
     await Promise.allSettled(pending);
   }
-  await Promise.all(pending);
   return out;
 }
 
@@ -186,9 +242,9 @@ class PagePainter {
     this.images = new ImagePainter(compression, budget);
   }
 
-  async draw(page: Page, canvas: Canvas, scale: number, budget: ImageBudget): Promise<void> {
+  async draw(page: Page, canvas: Canvas, scaleX: number, scaleY: number, budget: ImageBudget): Promise<void> {
     this.images.budget = budget;
-    let ctm: Matrix = [scale, 0, 0, scale, 0, 0];
+    let ctm: Matrix = [scaleX, 0, 0, scaleY, 0, 0];
     const state: TextState = { join: 'miter' };
     const stack: Saved[] = [];
     for (const layer of [page.behind, page.headerFooter, page.body, page.front]) {

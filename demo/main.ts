@@ -69,7 +69,7 @@ function convert(docx: ArrayBuffer, format: OutputFormat): Promise<ConvertRespon
       fontPack: ui.fontPack.value as 'full' | 'common',
       wordPlatform: ui.platform.value as 'windows' | 'mac',
       imageQuality: quality === 'auto' ? undefined : quality === 'off' ? false : Number(quality),
-      embeddedFonts: ui.embedded.checked,
+      useEmbeddedFonts: ui.embedded.checked,
     },
   } : { id, docx, format };
   return new Promise((resolve) => {

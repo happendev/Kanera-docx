@@ -35,7 +35,7 @@ const times = [];
 for (const name of JSON.parse(fixtures)) {
   const data = readFileSync(`${cases}/${name}/input.docx`);
   const start = performance.now();
-  const text = await docxToText(data, { headersFooters: true });
+  const text = await docxToText(data, { includeHeadersFooters: true });
   times.push(performance.now() - start);
   writeFileSync(`${out}/${name}.txt`, text);
 }

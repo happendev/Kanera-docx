@@ -200,13 +200,13 @@ async function fontProviders(options: NodeFontOptions): Promise<FontProvider[]> 
 
 /** Convert a .docx (bytes or a file path) to PDF, with the bundled fonts available. */
 export async function convertDocx(input: Uint8Array | ArrayBuffer | string, options: NodeConvertOptions = {}): Promise<ConvertResult> {
-  const data = typeof input === 'string' ? await readFile(input) : input;
+  const data = typeof input === 'string' ? await readFile(input, { signal: options.signal }) : input;
   return convertWithCompression(data, options, await fontProviders(options), nodeCompression);
 }
 
 /** Render a .docx's (bytes or a file path) pages as PNG (default) or JPEG images, with the bundled fonts available. */
 export async function convertDocxToImages(input: Uint8Array | ArrayBuffer | string, options: NodeImageOptions = {}): Promise<ImagesResult> {
-  const data = typeof input === 'string' ? await readFile(input) : input;
+  const data = typeof input === 'string' ? await readFile(input, { signal: options.signal }) : input;
   return convertToImagesWithCompression(data, options, await fontProviders(options), nodeCompression);
 }
 
@@ -222,7 +222,7 @@ export async function docxToPdf(input: Uint8Array | ArrayBuffer | string, option
 
 /** Extract a .docx's (bytes or a file path) text as plain text or Markdown (`format: 'markdown'`), with warnings. */
 export async function extractText(input: Uint8Array | ArrayBuffer | string, options: ExtractTextOptions = {}): Promise<ExtractTextResult> {
-  const data = typeof input === 'string' ? await readFile(input) : input;
+  const data = typeof input === 'string' ? await readFile(input, { signal: options.signal }) : input;
   return extractTextWithCompression(data, options, nodeCompression);
 }
 

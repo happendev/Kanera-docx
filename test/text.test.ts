@@ -90,7 +90,7 @@ describe('plain text', () => {
     const note = (tag: string, id: number, text: string) => `<w:${tag} w:id="${id}"><w:p><w:r><w:${tag}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${tag}>`;
     const docx = makeDocx({ body, footnotes: note('footnote', 2, 'Second.') + note('footnote', 7, 'First.'), endnotes: note('endnote', 3, 'End.') });
     expect(await docxToText(docx)).toBe('A[1] B[i] C[2]\n\n[1] First.\n[2] Second.\n[i] End.\n');
-    expect(await docxToText(docx, { notes: false })).toBe('A[1] B[i] C[2]\n');
+    expect(await docxToText(docx, { includeNotes: false })).toBe('A[1] B[i] C[2]\n');
     expect(await docxToMarkdown(docx)).toBe('A[^1] B[^i] C[^2]\n\n[^1]: First.\n\n[^2]: Second.\n\n[^i]: End.\n');
   });
 
@@ -98,7 +98,7 @@ describe('plain text', () => {
     const docx = sampleDocx();
     const plain = await docxToText(docx);
     expect(plain).not.toContain('ACME');
-    const withHf = await docxToText(docx, { headersFooters: true });
+    const withHf = await docxToText(docx, { includeHeadersFooters: true });
     expect(withHf.startsWith('ACME Corp — Confidential\nQuarterly report\n')).toBe(true);
     expect(withHf).toContain('Second page\nPage 1\n');
   });
@@ -228,7 +228,7 @@ describe('Markdown', () => {
     const image = inlineImage('img1', 20, 10).replace('<wp:docPr id="1" name="Picture 1"/>', '<wp:docPr id="1" name="Picture 1" descr="A red [box]"/>');
     const docx = makeDocx({ body: para(run('See ') + image), media: { img1: { name: 'red.png', data: redPng() } } });
     expect(await docxToMarkdown(docx)).toBe('See ![A red \\[box\\]](word/media/red.png)\n');
-    expect(await docxToMarkdown(docx, { images: false })).toBe('See\n');
+    expect(await docxToMarkdown(docx, { includeImages: false })).toBe('See\n');
   });
 
   it('writes block quotes, tables of contents and monospaced paragraphs as code', async () => {

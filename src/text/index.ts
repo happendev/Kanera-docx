@@ -12,6 +12,8 @@ export type { TextFormat, TextOptions } from './extract.js';
 export interface ExtractTextOptions extends TextOptions {
   /** Maximum uncompressed bytes per ZIP part and across all parts read. */
   archiveLimits?: ArchiveLimits;
+  /** Stops extraction, rejecting with the signal's reason, if aborted before it starts. */
+  signal?: AbortSignal;
 }
 
 export interface ExtractTextResult {
@@ -23,6 +25,7 @@ export interface ExtractTextResult {
 
 /** Extract a .docx's text as plain text or Markdown. */
 export function extractTextWithCompression(input: Uint8Array | ArrayBuffer, options: ExtractTextOptions, compression: { inflateRaw: InflateBytes }): ExtractTextResult {
+  options.signal?.throwIfAborted();
   const data = input instanceof Uint8Array ? input : new Uint8Array(input);
   const doc = parseDocx(data, compression.inflateRaw, options.archiveLimits, false, true);
   return { text: documentToText(doc, options), warnings: [...new Set(doc.warnings)] };

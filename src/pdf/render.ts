@@ -22,6 +22,8 @@ export interface PdfOptions {
   paintGrid?: number;
   /** Leave out, with a warning, a picture past the image pixel limits rather than failing the conversion. */
   skipImagesOverLimits?: boolean;
+  /** Stops writing, between pages and fonts, once aborted. */
+  signal?: AbortSignal;
 }
 
 interface FontUse {
@@ -168,6 +170,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
   };
 
   for (const [pi, page] of pages.entries()) {
+    opts.signal?.throwIfAborted();
     const alphas = new Map<string, string>();
     const alphaFor = (a: number): string => {
       const key = num(a);
@@ -384,6 +387,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
 
   let fi = 0;
   for (const use of fonts.values()) {
+    opts.signal?.throwIfAborted();
     const gids = [...use.codesByGlyph.keys()].sort((a, b) => a - b);
     const read = use.face.font.readSubsetGlyphs;
     writeFont(pdf, use, fi++, compress, gids, read ? await read(gids) : undefined);
@@ -394,7 +398,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
   const info = opts.info ?? {};
   const entries = [`/Producer ${textString(opts.producer ?? '@kanera/docx2pdf')}`];
   if (info.title) entries.push(`/Title ${textString(info.title)}`);
-  if (info.creator) entries.push(`/Author ${textString(info.creator)}`);
+  if (info.author) entries.push(`/Author ${textString(info.author)}`);
   if (info.subject) entries.push(`/Subject ${textString(info.subject)}`);
   if (info.keywords) entries.push(`/Keywords ${textString(info.keywords)}`);
   // PDF dates are D:YYYYMMDDHHmmSS, here in UTC (Z); a year outside 0000-9999 has no form.

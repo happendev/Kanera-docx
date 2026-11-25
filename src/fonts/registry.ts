@@ -461,10 +461,12 @@ export class FontRegistry {
     }
   }
 
-  async prepare(requests: FontRequest[]): Promise<void> {
+  /** Loads the faces `requests` need; `signal` stops it between batches of reads. */
+  async prepare(requests: FontRequest[], signal?: AbortSignal): Promise<void> {
     // Overlap bundled reads, then register in request order. A loaded face can introduce aliases
     // that change the next request's choice, and fallbacks depend on which glyphs actually loaded.
     for (let start = 0; start < requests.length; start += 4) {
+      signal?.throwIfAborted();
       const batch = requests.slice(start, start + 4);
       const reads = new Map<PendingFont, Promise<LoadedFont>>();
       if (batch.length > 1) {

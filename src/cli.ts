@@ -40,7 +40,7 @@ async function main(argv: string[]): Promise<number> {
   let quality: number | undefined;
   let pageList: string | undefined;
   let textFormat: 'text' | 'markdown' | undefined;
-  let headersFooters = false;
+  let includeHeadersFooters = false;
   let notes = true;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -97,7 +97,7 @@ async function main(argv: string[]): Promise<number> {
       }
     } else if (a === '--text') textFormat = 'text';
     else if (a === '--markdown' || a === '--md') textFormat = 'markdown';
-    else if (a === '--headers') headersFooters = true;
+    else if (a === '--headers') includeHeadersFooters = true;
     else if (a === '--no-notes') notes = false;
     else if (a === '--quiet') quiet = true;
     else if (a === '--mac') mac = true;
@@ -125,7 +125,7 @@ async function main(argv: string[]): Promise<number> {
       console.error('--text and --markdown take only --headers, --no-notes and --quiet');
       return 2;
     }
-    const result = extractTextWithCompression(await readFile(input), { format: textFormat, headersFooters, notes }, nodeCompression);
+    const result = extractTextWithCompression(await readFile(input), { format: textFormat, includeHeadersFooters, includeNotes: notes }, nodeCompression);
     if (!quiet) for (const w of result.warnings) console.error(`warning: ${w}`);
     if (files[1] === '-') {
       process.stdout.write(result.text);
@@ -133,14 +133,14 @@ async function main(argv: string[]): Promise<number> {
     }
     const output = files[1] ?? join(dirname(input), basename(input, extname(input)) + (textFormat === 'text' ? '.txt' : '.md'));
     await writeText(input, output, result.text);
-    console.log(`${output}: ${result.text.length} characters`);
+    console.log(output);
     return 0;
   }
   if (files[1] === '-') {
     console.error('Writing to standard output (-) only applies with --text or --markdown');
     return 2;
   }
-  if (headersFooters || !notes) {
+  if (includeHeadersFooters || !notes) {
     console.error('--headers and --no-notes only apply with --text or --markdown');
     return 2;
   }
@@ -170,12 +170,15 @@ async function main(argv: string[]): Promise<number> {
       }
       pages = [...chosen].sort((a, b) => a - b);
     }
-    const result = await convertDocxToImages(data, { fonts, systemFonts, wordPlatform: options.wordPlatform, format: imageFormat, dpi, quality, pages });
-    await mkdir(imageDir, { recursive: true });
     const prefix = basename(input, extname(input));
-    const width = String(result.pageCount).length;
     const ext = imageFormat === 'png' ? 'png' : 'jpg';
-    for (const image of result.images) await writeFile(join(imageDir, `${prefix}-${String(image.page).padStart(width, '0')}.${ext}`), image.data);
+    // Each image is written as soon as it is drawn, so only the pages in flight stay in memory.
+    const onPage = async (image: { page: number; data: Uint8Array }, pageCount: number) => {
+      await mkdir(imageDir, { recursive: true });
+      await writeFile(join(imageDir, `${prefix}-${String(image.page).padStart(String(pageCount).length, '0')}.${ext}`), image.data);
+    };
+    const result = await convertDocxToImages(data, { fonts, systemFonts, wordPlatform: options.wordPlatform, format: imageFormat, dpi, quality, pages, onPage });
+    await mkdir(imageDir, { recursive: true });
     if (!quiet) for (const w of result.warnings) console.error(`warning: ${w}`);
     const n = result.images.length;
     console.log(`${imageDir}: ${n} page image${n === 1 ? '' : 's'}`);

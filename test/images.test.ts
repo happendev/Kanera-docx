@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { convertDocxToImages, docxToImages } from '../src/node.js';
+import { convertDocx, convertDocxToImages, docxToImages, extractText } from '../src/node.js';
 import { makeDocx, p } from './helpers/docx.js';
 import { inlineImage, redPng } from './helpers/sample.js';
 
@@ -112,5 +115,69 @@ describe('page images', () => {
     const png = decodePng(image.data);
     expect(count(png, dark, 72, 70, 200, 88)).toBeGreaterThan(40);
     expect(count(png, dark, 72, 88, 200, 110)).toBeGreaterThan(40);
+  });
+
+  it('fits pages to the size asked for', async () => {
+    const docx = makeDocx({ body: p('Hello') });
+    const size = async (options: Parameters<typeof docxToImages>[1]) => {
+      const [image] = await docxToImages(docx, options);
+      const png = decodePng(image.data);
+      expect([png.width, png.height]).toEqual([image.width, image.height]);
+      return [image.width, image.height];
+    };
+    // A4 (595.3 × 841.9 pt): one side given, the other follows the page's shape.
+    expect(await size({ width: 200 })).toEqual([200, 283]);
+    expect(await size({ height: 100 })).toEqual([71, 100]);
+    expect(await size({ width: 200, height: 200 })).toEqual([142, 200]);
+    expect(await size({ width: 200, height: 200, keepAspectRatio: false })).toEqual([200, 200]);
+    await expect(docxToImages(docx, { width: 0 })).rejects.toThrow(RangeError);
+    await expect(docxToImages(docx, { height: 1.5 })).rejects.toThrow(RangeError);
+  });
+
+  it('hands each image to onPage in page order instead of keeping it', async () => {
+    const docx = makeDocx({ body: [p('One'), p('Two'), p('Three')].join(pageBreak) });
+    for (const format of ['png', 'jpeg'] as const) {
+      const kept = await convertDocxToImages(docx, { dpi: 20, format, pages: [3, 1, 2] });
+      const seen: Array<{ page: number; data: Uint8Array; pageCount: number }> = [];
+      const streamed = await convertDocxToImages(docx, {
+        dpi: 20,
+        format,
+        pages: [3, 1, 2],
+        onPage: async (image, pageCount) => {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          seen.push({ page: image.page, data: image.data, pageCount });
+        },
+      });
+      expect(seen.map((s) => s.page)).toEqual([3, 1, 2]);
+      expect(seen.map((s) => s.pageCount)).toEqual([3, 3, 3]);
+      expect(seen.map((s) => s.data)).toEqual(kept.images.map((i) => i.data));
+      expect(streamed.images.map((i) => [i.page, i.width, i.height])).toEqual(kept.images.map((i) => [i.page, i.width, i.height]));
+      for (const image of streamed.images) expect(image.data).toHaveLength(0);
+    }
+  });
+
+  it('stops when the signal is aborted', async () => {
+    const docx = makeDocx({ body: [p('One'), p('Two'), p('Three')].join(pageBreak) });
+    const aborted = AbortSignal.abort();
+    await expect(convertDocx(docx, { signal: aborted })).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(docxToImages(docx, { signal: aborted })).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(extractText(docx, { signal: aborted })).rejects.toMatchObject({ name: 'AbortError' });
+    const dir = mkdtempSync(join(tmpdir(), 'kanera-abort-'));
+    try {
+      const path = join(dir, 'in.docx');
+      writeFileSync(path, docx);
+      await expect(convertDocx(path, { signal: aborted })).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    // Aborting while drawing stops before the next page.
+    const controller = new AbortController();
+    const pages: number[] = [];
+    await expect(convertDocxToImages(docx, { dpi: 20, signal: controller.signal, onPage: (image) => {
+      pages.push(image.page);
+      controller.abort();
+    } })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(pages).toEqual([1]);
   });
 });

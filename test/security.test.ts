@@ -159,7 +159,7 @@ describe('conversion limits', () => {
     ]);
     const archiveLimits = { maxPartBytes: 1024 };
     await expect(convertDocx(bytes, { archiveLimits })).rejects.toThrow(/face.odttf/);
-    await expect(convertDocx(bytes, { archiveLimits, embeddedFonts: false })).resolves.toHaveProperty('pageCount', 1);
+    await expect(convertDocx(bytes, { archiveLimits, useEmbeddedFonts: false })).resolves.toHaveProperty('pageCount', 1);
     expect(parseDocx(bytes, nodeCompression.inflateRaw, archiveLimits, false).fontHints.get('Example')?.altName).toBe('Arial');
   });
 
