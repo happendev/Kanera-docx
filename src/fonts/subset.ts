@@ -14,10 +14,15 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>, out
     if (gid < 0 || gid >= font.numGlyphs) throw new Error('Invalid glyph ID for TrueType subset');
     if (!glyphIds.has(gid)) glyphIds.set(gid, glyphIds.size);
   }
-  const components = new Map<number, ReturnType<SfntFont['compositeComponents']>>();
+  const pieces: Uint8Array[] = [];
+  const components = new Map<number, ReturnType<typeof glyphComponents>>();
+  let length = 0;
   // Iterating the map visits newly appended components as well, including nested composites.
   for (const gid of glyphIds.keys()) {
-    const children = outlines ? glyphComponents(outlines.get(gid)!) : font.compositeComponents(gid);
+    const bytes = outlines ? outlines.get(gid)! : font.data.subarray(...font.glyphRange(gid)!);
+    pieces.push(bytes);
+    length += Math.ceil(bytes.length / 4) * 4;
+    const children = bytes.length >= 10 && (bytes[0] & 0x80) ? glyphComponents(bytes) : [];
     if (children.length) components.set(gid, children);
     for (const child of children) {
       if (child.gid >= font.numGlyphs) throw new Error('Invalid component ID for TrueType subset');
@@ -25,7 +30,8 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>, out
     }
   }
 
-  const pieces: Uint8Array[] = [];
+  const glyf = new Uint8Array(length);
+  const glyph = new DataView(glyf.buffer);
   const loca = new Uint8Array((glyphIds.size + 1) * 4);
   const locaView = new DataView(loca.buffer);
   const hmtx = new Uint8Array(glyphIds.size * 4);
@@ -39,29 +45,13 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>, out
     const bearing = gid < longMetrics ? gid * 4 + 2 : (longMetrics + gid) * 2;
     metrics.setUint16(id * 4, font.advance(gid));
     metrics.setInt16(id * 4 + 2, originalMetrics.getInt16(bearing));
-    let bytes = outlines ? outlines.get(gid)! : font.data.subarray(...font.glyphRange(gid)!);
-    if (!bytes.length) continue;
+    const bytes = pieces[id];
+    glyf.set(bytes, off);
     const children = components.get(gid);
-    if (children) {
-      bytes = new Uint8Array(bytes);
-      const glyph = new DataView(bytes.buffer);
-      for (const child of children) glyph.setUint16(child.offset, glyphIds.get(child.gid)!);
-    }
-    pieces.push(bytes);
-    off += bytes.length;
-    if (off % 4) {
-      const pad = 4 - (off % 4);
-      pieces.push(new Uint8Array(pad));
-      off += pad;
-    }
+    if (children) for (const child of children) glyph.setUint16(off + child.offset, glyphIds.get(child.gid)!);
+    off += Math.ceil(bytes.length / 4) * 4;
   }
   locaView.setUint32(glyphIds.size * 4, off);
-  const glyf = new Uint8Array(off);
-  let p = 0;
-  for (const piece of pieces) {
-    glyf.set(piece, p);
-    p += piece.length;
-  }
 
   const head = new Uint8Array(font.tableBytes('head')!);
   // indexToLocFormat = 1 (long offsets); checkSumAdjustment zeroed until the end.
@@ -97,13 +87,10 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>, out
   return { data: buildSfnt(tables, 0x00010000), glyphIds };
 }
 
-function checksum(d: Uint8Array): number {
+/** Sum padded, big-endian 32-bit words in the assembled sfnt. */
+function checksum(view: DataView, start: number, end: number): number {
   let sum = 0;
-  const n = d.length;
-  for (let i = 0; i < n; i += 4) {
-    const v = ((d[i] << 24) | ((d[i + 1] ?? 0) << 16) | ((d[i + 2] ?? 0) << 8) | (d[i + 3] ?? 0)) >>> 0;
-    sum = (sum + v) >>> 0;
-  }
+  for (let i = start; i < end; i += 4) sum = (sum + view.getUint32(i)) >>> 0;
   return sum;
 }
 
@@ -129,6 +116,7 @@ export function buildSfnt(tables: Map<string, Uint8Array>, version: number): Uin
   dv.setUint16(10, numTables * 16 - searchRange);
   let offset = headerLen;
   let headOffset = -1;
+  let tableSum = 0;
   tags.forEach((tag, i) => {
     const data = tables.get(tag)!;
     const rec = 12 + i * 16;
@@ -141,11 +129,13 @@ export function buildSfnt(tables: Map<string, Uint8Array>, version: number): Uin
       // Rebuilding a collection face may copy an old adjustment into the new file.
       dv.setUint32(offset + 8, 0);
     }
-    dv.setUint32(rec + 4, checksum(out.subarray(offset, offset + data.length)));
+    const sum = checksum(dv, offset, offset + data.length);
+    dv.setUint32(rec + 4, sum);
+    tableSum = (tableSum + sum) >>> 0;
     offset += (data.length + 3) & ~3;
   });
   if (headOffset >= 0) {
-    const adj = (0xb1b0afba - checksum(out)) >>> 0;
+    const adj = (0xb1b0afba - tableSum - checksum(dv, 0, headerLen)) >>> 0;
     dv.setUint32(headOffset + 8, adj);
   }
   return out;

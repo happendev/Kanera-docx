@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "sideEffects": false,
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "exports": {
     ".": {
@@ -47,7 +47,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && esbuild src/util/pako.ts src/pdf/svg.ts --bundle --format=esm --platform=browser --target=es2022 --minify --sourcemap --sources-content=false --outbase=src --outdir=dist",
+    "build": "tsc -p tsconfig.build.json && node scripts/build.mjs",
     "prepare": "npm run build",
     "lint": "oxlint src scripts demo",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p demo/tsconfig.json",

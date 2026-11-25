@@ -9,6 +9,32 @@ export interface Relationship {
   external: boolean;
 }
 
+/** Retain a recurring template and the latest variant. Compare the complete XML before sharing a tree. */
+export class XmlTemplate {
+  static readonly theme = new XmlTemplate('a:theme');
+  private recurring?: { text: string; root: XmlElement };
+  private recent?: { text: string; root: XmlElement };
+
+  constructor(private readonly rootName: string, private readonly maxLength = 64 * 1024) {}
+
+  parse(text: string): XmlElement {
+    if (text.length > this.maxLength) return parseXml(text);
+    if (this.recurring?.text === text) return this.recurring.root;
+    if (this.recent?.text === text) {
+      const hit = this.recent;
+      this.recent = this.recurring;
+      this.recurring = hit;
+      return hit.root;
+    }
+    const root = parseXml(text);
+    if (root.name === this.rootName) this.recent = { text, root };
+    return root;
+  }
+}
+
+const packageRels = new XmlTemplate('pr:Relationships', 8192);
+const partRels = new XmlTemplate('pr:Relationships', 8192);
+
 /** OPC package access: parts, relationships and XML parsing with caching. */
 export class OpcPackage {
   readonly zip: ZipArchive;
@@ -25,14 +51,14 @@ export class OpcPackage {
     return this.zip.canonicalName(part) ?? part;
   }
 
-  xml(part: string): XmlElement | undefined {
+  xml(part: string, template?: XmlTemplate): XmlElement | undefined {
     part = this.partName(part);
     if (this.xmlCache.has(part)) return this.xmlCache.get(part) ?? undefined;
     const text = this.zip.readText(part);
     let el: XmlElement | null = null;
     if (text) {
       try {
-        el = parseXml(text);
+        el = template ? template.parse(text) : parseXml(text);
       } catch (err) {
         if (err instanceof XmlDepthError) throw err;
         el = null;
@@ -78,7 +104,7 @@ export class OpcPackage {
     const dir = slash >= 0 ? part.slice(0, slash) : '';
     const name = slash >= 0 ? part.slice(slash + 1) : part;
     const relsPart = `${dir ? dir + '/' : ''}_rels/${name}.rels`;
-    const root = this.xml(relsPart);
+    const root = this.xml(relsPart, part ? partRels : packageRels);
     for (const r of children(root, 'pr:Relationship').concat(children(root, 'Relationship'))) {
       const external = r.attrs.TargetMode === 'External';
       const target = r.attrs.Target ?? '';

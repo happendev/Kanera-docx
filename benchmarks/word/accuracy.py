@@ -8,15 +8,15 @@ from datetime import datetime, timezone
 from functools import partial
 from hashlib import file_digest, sha256
 import json
-from os import cpu_count, environ, getuid
+from os import cpu_count
 from pathlib import Path
 from queue import SimpleQueue
-from shutil import copyfile, copyfileobj, copytree, which
+from shutil import copyfile, copyfileobj, copytree
 from socket import socketpair
 from statistics import mean
 import subprocess
 import sys
-from tempfile import NamedTemporaryFile, TemporaryDirectory, TemporaryFile, gettempdir
+from tempfile import NamedTemporaryFile, TemporaryDirectory, TemporaryFile
 from time import sleep
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -27,15 +27,22 @@ import numpy
 import PIL
 from PIL import Image
 
-from fetch import CORPUS, HERE, MANIFEST, UPSTREAM, UPSTREAM_DIR, load_upstream
+from fetch import (CORPUS, HERE, MANIFEST, OUTPUT, UPSTREAM, UPSTREAM_DIR, benchmark_lock, child_environment,
+                   load_upstream)
 from ink import DPI, INK_THRESHOLD, INK_TOLERANCE_PX, page_scores, render, render_reference
 from readme import update_accuracy_readme
+from score_cache import FORMAT, ScoreCache, code_digests, digest, file_sha256, rendering_files
 
 ROOT = HERE.parents[1]
 REVISION = MANIFEST['revision']
 MANIFEST_SHA256 = '1682abfccf34d12f9da8dfff9f18087580e90065f0c3397d83321657a6458848'
-CACHE = Path(gettempdir()) / f'kanera-docx-word-{getuid()}' / REVISION
+CACHE = OUTPUT / 'huggingface' / REVISION
 REFERENCE_CACHE = ROOT / 'out' / 'word-reference-rasters'
+# Shared with score.py; see score_cache.py.
+SCORE_CACHE = OUTPUT / 'score-cache'
+SCORE_CODE = (HERE / 'accuracy.py', HERE / 'ink.py', HERE / 'score_cache.py')
+# Each run holds this directory's lock and works in an accuracy-* directory inside it.
+WORK = OUTPUT / 'accuracy'
 CONVERSION_TIMEOUT = 180
 EXPECTED_DOCUMENTS = 2925
 # Word exported the corpus's tracked changes and comments in markup view (struck-through deletions,
@@ -137,16 +144,20 @@ def run(command, **options):
     return result
 
 
-def build_renderer(workspace):
+def build_renderer(workspace, env):
     # Keep the production build and its fonts isolated from changes in the checkout.
     for name in ('package.json', 'tsconfig.json', 'tsconfig.build.json'):
         copyfile(ROOT / name, workspace / name)
+    # The build script that `pnpm build` runs after tsc, when the checkout has one.
+    if (ROOT / 'scripts' / 'build.mjs').is_file():
+        (workspace / 'scripts').mkdir()
+        copyfile(ROOT / 'scripts' / 'build.mjs', workspace / 'scripts' / 'build.mjs')
     for name in ('src', 'fonts'):
         copytree(ROOT / name, workspace / name)
     copyfile(HERE / 'accuracy-worker.mjs', workspace / 'accuracy-worker.mjs')
     (workspace / 'node_modules').symlink_to(ROOT / 'node_modules', target_is_directory=True)
     subprocess.run(['pnpm', '--config.verify-deps-before-run=false', 'run', 'build'],
-                   cwd=workspace, stdout=sys.stderr, check=True)
+                   cwd=workspace, stdout=sys.stderr, check=True, env=env)
 
 
 def stop_worker(process):
@@ -155,17 +166,19 @@ def stop_worker(process):
 
 
 class RendererWorker:
-    def __init__(self, workspace):
+    def __init__(self, workspace, env):
         self.command = ['node', workspace / 'accuracy-worker.mjs']
+        self.env = env
         self.resources = None
 
     def start(self):
         with ExitStack() as resources:
             self.channel, child = socketpair()
             resources.enter_context(self.channel)
-            self.diagnostics = resources.enter_context(TemporaryFile())
+            self.diagnostics = resources.enter_context(TemporaryFile(dir=self.env['TMPDIR']))
             with child:
-                process = subprocess.Popen(self.command, stdin=child, stdout=child, stderr=self.diagnostics)
+                process = subprocess.Popen(self.command, stdin=child, stdout=child, stderr=self.diagnostics,
+                                           env=self.env)
             resources.callback(stop_worker, process)
             self.channel.settimeout(CONVERSION_TIMEOUT)
             self.responses = resources.enter_context(self.channel.makefile('rb'))
@@ -199,28 +212,15 @@ class RendererWorker:
             raise RuntimeError(str(error)) from error
 
 
-def reference_settings(environment):
+def reference_settings(environment, env=None):
     # Poppler can substitute local fonts for fonts missing from a PDF.
-    renderer = Path(which('pdftoppm')).resolve()
-    paths = {renderer}
-    if which('fc-list'):
-        paths.update(Path(name) for name in run(['fc-list', '-f', '%{file}\n']).stdout.splitlines() if name)
-    if which('fc-conflist'):
-        for line in run(['fc-conflist']).stdout.splitlines():
-            if line.startswith('+ '):
-                paths.add(Path(line[2:].split(':', 1)[0]))
-    stats = []
-    for path in sorted(paths):
-        if path.is_file():
-            stat = path.stat()
-            stats.append((str(path), stat.st_size, stat.st_mtime_ns))
-    font_env = [environ.get(key) for key in ('FONTCONFIG_FILE', 'FONTCONFIG_PATH', 'XDG_CONFIG_HOME')]
+    stats, font_env = rendering_files(env)
     # Version the on-disk cache alongside the rendering settings.
     settings = (1, DPI, environment['poppler'], environment['pillow'], stats, font_env)
     return sha256(json.dumps(settings).encode()).hexdigest()
 
 
-def cached_reference(cache, settings, directory, row, work):
+def cached_reference(cache, settings, directory, row, work, env=None):
     source = (row['pdf_sha256'] if 'pdf' in row else
               [row['reference_dpi'], [page['sha256'] for page in row['reference_images']]])
     key = sha256(json.dumps([settings, source]).encode()).hexdigest()
@@ -237,7 +237,7 @@ def cached_reference(cache, settings, directory, row, work):
         pass
 
     with TemporaryDirectory(dir=work) as raw_dir:
-        raw = render_reference(directory, row, Path(raw_dir), raster_format='ppm')
+        raw = render_reference(directory, row, Path(raw_dir), raster_format='ppm', env=env)
         if not raw:
             raise RuntimeError(f"No reference pages for {row['id']}")
         pages = []
@@ -259,10 +259,10 @@ def cached_reference(cache, settings, directory, row, work):
     return pages
 
 
-def score_document(row, corpus, directory, workspace, raster_cache, settings, workers, images=False):
+def score_document(row, corpus, directory, workspace, raster_cache, settings, workers, images=False,
+                   scores=None, context=None, env=None):
     with TemporaryDirectory(dir=workspace) as temporary:
         work = Path(temporary)
-        reference = cached_reference(raster_cache, settings, directory, row, work)
         candidate = work / 'candidate.pdf'
         result = {
             'corpus': corpus, 'suite': row.get('suite', 'full'), 'id': row['id'],
@@ -270,9 +270,10 @@ def score_document(row, corpus, directory, workspace, raster_cache, settings, wo
             'reference': row['pdf'] if 'pdf' in row else [image['path'] for image in row['reference_images']],
             'reference_application': row['reference_application'],
             'reference_format': 'pdf' if 'pdf' in row else 'png',
-            'reference_pages': len(reference),
+            'reference_pages': 0,
             'pages': 0, 'ink_overlap_pct': 0.0, 'error': None,
         }
+        key = None
         try:
             worker = workers.get()
             try:
@@ -286,14 +287,30 @@ def score_document(row, corpus, directory, workspace, raster_cache, settings, wo
             if images:
                 pages = sorted(candidate.glob('page-*.png'), key=lambda p: int(p.stem.rsplit('-', 1)[1]))
             else:
-                pages = render(candidate, work / 'candidate', raster_format='ppm')
+                if scores is not None:
+                    # A PDF that has not changed since an earlier run keeps its cached score.
+                    source = (row['pdf_sha256'] if 'pdf' in row else
+                              [row['reference_dpi'], [page['sha256'] for page in row['reference_images']]])
+                    key = digest({**context, 'candidate': file_sha256(candidate), 'reference': source})
+                    cached = scores.get(key)
+                    if cached is not None:
+                        result.update(reference_pages=cached['reference_pages'], pages=cached['pages'],
+                                      ink_overlap_pct=100 * mean(cached['page_scores']))
+                        return result
+                pages = render(candidate, work / 'candidate', raster_format='ppm', env=env)
         except (RuntimeError, subprocess.SubprocessError) as error:
+            result['reference_pages'] = len(cached_reference(raster_cache, settings, directory, row, work, env))
             result['error'] = str(error)
             return result
+        reference = cached_reference(raster_cache, settings, directory, row, work, env)
+        result['reference_pages'] = len(reference)
         if not pages:
             result['error'] = 'No pages rasterized from candidate PDF'
             return result
-        result.update(pages=len(pages), ink_overlap_pct=100 * mean(page_scores(reference, pages)))
+        page_ink = page_scores(reference, pages)
+        if key is not None:
+            scores.put(key, {'reference_pages': len(reference), 'pages': len(pages), 'page_scores': page_ink})
+        result.update(pages=len(pages), ink_overlap_pct=100 * mean(page_ink))
         return result
 
 
@@ -337,10 +354,20 @@ def main():
                         help='Concurrent conversions (default: %(default)s)')
     parser.add_argument('--images', action='store_true',
                         help="Score the built-in page images instead of Poppler's rendering of the PDFs")
+    parser.add_argument('--no-score-cache', action='store_true',
+                        help='Score every converted PDF again instead of reusing cached scores')
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error('--jobs must be positive')
+    # One run at a time uses WORK, so any accuracy-* directory found there was left by a stopped run.
+    with (benchmark_lock(WORK, stale=[(WORK, 'accuracy-')]),
+          TemporaryDirectory(prefix='accuracy-', dir=WORK) as temporary):
+        workspace = Path(temporary)
+        # Child processes keep their temporary files in the workspace, not in /tmp.
+        return evaluate(parser, args, workspace, child_environment(workspace / 'tmp'))
 
+
+def evaluate(parser, args, workspace, env):
     sources = SOURCES if args.corpus == 'all' else {args.corpus: SOURCES[args.corpus]}
     baseline = None
     if args.baseline:
@@ -353,16 +380,21 @@ def main():
         if baseline_sources != sources or baseline.get('metric') != METRIC:
             parser.error('--baseline must use the same corpora, revisions, and ink metric')
 
-    poppler = run(['pdftoppm', '-v'])
+    poppler = run(['pdftoppm', '-v'], env=env)
     environment = {
-        'node': run(['node', '--version']).stdout.strip(),
+        'node': run(['node', '--version'], env=env).stdout.strip(),
         'poppler': (poppler.stderr or poppler.stdout).splitlines()[0],
         'numpy': numpy.__version__,
         'pillow': PIL.__version__,
     }
     raster_cache = args.reference_cache_dir.resolve()
     raster_cache.mkdir(parents=True, mode=0o700, exist_ok=True)
-    settings = reference_settings(environment)
+    settings = reference_settings(environment, env)
+    scores = None
+    if not args.images:
+        scores = ScoreCache(SCORE_CACHE, workspace, read=not args.no_score_cache)
+    context = {'format': FORMAT, 'kind': 'accuracy', 'settings': settings, 'numpy': environment['numpy'],
+               'metric': METRIC, 'code': code_digests(SCORE_CODE, ROOT)}
     corpora = {}
     if 'upstream' in sources:
         print('Verifying the vendored corpus', file=sys.stderr, flush=True)
@@ -377,13 +409,12 @@ def main():
             pass
         corpora['huggingface'] = (cache, documents)
 
-    with TemporaryDirectory(prefix='kanera-docx-accuracy-') as temporary, ExitStack() as resources:
-        workspace = Path(temporary)
+    with ExitStack() as resources:
         print('Building the current renderer', file=sys.stderr, flush=True)
-        build_renderer(workspace)
+        build_renderer(workspace, env)
         workers = SimpleQueue()
         for _ in range(args.jobs):
-            worker = RendererWorker(workspace)
+            worker = RendererWorker(workspace, env)
             resources.callback(worker.close)
             workers.put(worker)
         results = []
@@ -391,7 +422,7 @@ def main():
         for corpus, (directory, documents) in corpora.items():
             score = partial(score_document, corpus=corpus, directory=directory, workspace=workspace,
                             raster_cache=raster_cache, settings=settings, workers=workers,
-                            images=args.images)
+                            images=args.images, scores=scores, context=context, env=env)
             scored = sorted(process_all(score, documents, args.jobs, f'Scored {corpus}'),
                             key=lambda row: row['id'])
             results.extend(scored)

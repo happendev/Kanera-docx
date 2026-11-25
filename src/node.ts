@@ -62,8 +62,9 @@ async function loadPackagedFont(path: string, checkVersion: boolean, sparse: boo
 function bundledProvider(dir?: string): FontProvider {
   return {
     register(registry) {
+      const base = dir ?? packageFontDir();
       for (const b of FULL_FONTS) {
-        const path = resolve(dir ?? packageFontDir(), b.file);
+        const path = resolve(base, b.file);
         const sparse = dir === undefined && !registry.needsGlyphBounds && CJK_FILES.has(b.file);
         const load = () => loadPackagedFont(path, dir !== undefined, sparse);
         registry.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load }, 'bundled');

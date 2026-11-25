@@ -13,6 +13,8 @@ export class Coverage {
   w = 0;
   h = 0;
   private stride = 2;
+  private gapStart = Infinity;
+  private gapWidth = 0;
   private cells = new Float32Array(0);
   private minX = new Int32Array(0);
   private maxX = new Int32Array(0);
@@ -22,7 +24,7 @@ export class Coverage {
   private rowBuf = new Float32Array(0);
 
   /** Start a window [x0, x1) × [y0, y1) of whole device pixels; false when it is empty. */
-  begin(x0: number, y0: number, x1: number, y1: number): boolean {
+  begin(x0: number, y0: number, x1: number, y1: number, gapStart = Infinity, gapWidth = 0): boolean {
     const w = x1 - x0;
     const h = y1 - y0;
     if (w <= 0 || h <= 0) return false;
@@ -30,7 +32,11 @@ export class Coverage {
     this.y0 = y0;
     this.w = w;
     this.h = h;
-    this.stride = w + 2;
+    // A shadow may omit an interior band crossed only by horizontal edges.
+    // Keep geometry in the original coordinates and pack the cell storage only.
+    this.gapStart = gapStart;
+    this.gapWidth = gapWidth;
+    this.stride = w - gapWidth + 2;
     const size = this.stride * h;
     if (this.cells.length < size) this.cells = new Float32Array(Math.max(size, this.cells.length * 2));
     if (this.minX.length < h) {
@@ -125,6 +131,7 @@ export class Coverage {
       x1 = t;
     }
     const { cells, stride, minX, maxX } = this;
+    const shift = Math.min(x0, x1) >= this.gapStart ? this.gapWidth : 0;
     const dxdy = (x1 - x0) / (y1 - y0);
     let x = x0;
     const first = Math.floor(y0);
@@ -143,9 +150,9 @@ export class Coverage {
       }
       if (xa < 0) xa = 0;
       const xaf = Math.floor(xa);
-      const xai = xaf | 0;
+      const xai = (xaf | 0) - shift;
       const xbc = Math.ceil(xb);
-      const xbi = xbc | 0;
+      const xbi = (xbc | 0) - shift;
       const line = y * stride;
       if (xbi <= xai + 1) {
         const xmf = 0.5 * (x + xnext) - xaf;
@@ -182,7 +189,8 @@ export class Coverage {
    * and clear the window for the next path.
    */
   sweep(evenOdd: boolean, emit: CoverageRow): void {
-    const { cells, stride, minX, maxX, w } = this;
+    const { cells, stride, minX, maxX } = this;
+    const w = stride - 2;
     const row = this.rowBuf;
     for (let y = this.top; y < this.bottom; y++) {
       const lo = minX[y];

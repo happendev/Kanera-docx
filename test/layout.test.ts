@@ -19,7 +19,7 @@ import type { DrawOp as DrawOpLike, PathOp, ShadeOp } from '../src/layout/types.
 import { convertDocx } from '../src/node.js';
 import type { DrawingInline, Paragraph } from '../src/ooxml/model.js';
 import { ghostscript, ghostscriptPixels, pdfStreams } from './helpers/pdf.js';
-import { decodeDib } from '../src/image/image.js';
+import { solidPixels } from '../src/image/pixels.js';
 import { ImageBudget } from '../src/image/budget.js';
 
 const ARIAL_STYLES =
@@ -1021,14 +1021,14 @@ describe('floating objects', () => {
     // 1.81pt down; reaching the 3.15pt blur past the 1pt outline's outer edge.
     expect(image.x).toBeCloseTo(Math.min(...xs) - 0.5 - 3.15, 2);
     expect(image.y).toBeCloseTo(Math.min(...ys) + 1.811 - 0.5 - 3.15, 2);
-    const dib = decodeDib(image.image.data, image.image.dibBits!, new ImageBudget())!;
-    expect(dib.width).toBe(Math.ceil((100 + 1 + 6.3) * (300 / 72)));
+    const pixels = solidPixels(image.image.solid!, image.image.data, new ImageBudget());
+    expect(pixels.width).toBe(Math.ceil((100 + 1 + 6.3) * (300 / 72)));
     // 35% black inside; half of it on the outline's outer edge.
-    const row = Math.floor(dib.height / 2) * dib.width;
-    expect(dib.alpha![row + Math.floor(dib.width / 2)]).toBe(89);
+    const row = Math.floor(pixels.height / 2) * pixels.width;
+    expect(pixels.data[4 * (row + Math.floor(pixels.width / 2)) + 3]).toBe(89);
     const edge = Math.round(3.15 * (300 / 72));
-    expect(dib.alpha![row + edge]).toBeGreaterThan(35);
-    expect(dib.alpha![row + edge]).toBeLessThan(55);
+    expect(pixels.data[4 * (row + edge) + 3]).toBeGreaterThan(35);
+    expect(pixels.data[4 * (row + edge) + 3]).toBeLessThan(55);
     // A shape turned a quarter keeps its shadow below it on the page: in its own turned frame, to its right.
     const turned = await draw(' rot="5400000"');
     const local = turned.image.y - Math.min(...turned.fill.segs.flatMap((q) => q.pts.filter((_, i) => i % 2 === 1)));

@@ -13,7 +13,9 @@ function inflate(data: Uint8Array, limit: number, raw: boolean): Uint8Array {
   let result: Buffer;
   try {
     // Node requires a positive maxOutputLength, including for empty ZIP entries.
-    result = decode(data, { maxOutputLength: Math.max(1, limit) });
+    const maxOutputLength = Math.max(1, limit);
+    const chunkSize = Math.max(64, Math.min(65536, limit + 1));
+    result = decode(data, { maxOutputLength, chunkSize });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ERR_BUFFER_TOO_LARGE') throw new Error('inflate: decoded size exceeds limit', { cause: err });
@@ -107,6 +109,7 @@ export const nodeCompression: Compression = {
     for await (const chunk of decoder) write(chunk);
   },
   deflateZlib: (data, level) => resultBytes(deflateSync(data, level === undefined ? undefined : { level })),
+  deflateZlibExactAsync: async (data) => resultBytes(await deflateAsync(data, {})),
   // Runs on libuv's thread pool, so the next page can be drawn meanwhile.
   // zlib.crc32 arrived in Node 20.15 and 22.2.
   crc32: typeof zlib.crc32 === 'function' ? (data) => zlib.crc32(data) : undefined,

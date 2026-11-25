@@ -1,6 +1,6 @@
 import { deflateRawSync, deflateSync, inflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { imageSize, toPdfImage } from '../src/image/image.js';
+import { imageSize, toPdfImage, unfilter } from '../src/image/image.js';
 import { decodeTiff } from '../src/image/tiff.js';
 import { nodeCompression } from '../src/util/node-compression.js';
 import { pakoCompression } from '../src/util/pako.js';
@@ -145,7 +145,10 @@ describe.each(codecs)('$name PNG decoding', ({ codec }) => {
 
   it('splits RGBA into colour and a soft mask', async () => {
     const img = (await toPdfImage(png(2, 1, 6, [[10, 20, 30, 255, 40, 50, 60, 0]]), codec))!;
-    expect(Array.from(inflateSync(img.data))).toEqual([10, 20, 30, 40, 50, 60]);
+    const [filter, ...residuals] = inflateSync(img.data);
+    const rgb = Uint8Array.from(residuals);
+    unfilter(filter, rgb, new Uint8Array(rgb.length), 3);
+    expect([...rgb]).toEqual([10, 20, 30, 40, 50, 60]);
     expect(Array.from(inflateSync(img.smask!))).toEqual([255, 0]);
   });
 
@@ -169,6 +172,19 @@ describe.each(codecs)('$name PNG decoding', ({ codec }) => {
     }
     expect(rgb.equals(Buffer.from(rows.flatMap((row) => row.flatMap((pixel) => pixel.slice(0, 3)))))).toBe(true);
     expect(inflateSync(image.smask!).equals(Buffer.from(rows.flatMap((row) => row.map((pixel) => pixel[3]))))).toBe(true);
+  });
+
+  it('keeps RGB predictors independent of alpha for all five PNG filters', async () => {
+    // Each input row uses the same two filtered RGBA pixels. Their RGB residuals
+    // survive splitting, while the decoded alpha depends on the row above.
+    const rows = Uint8Array.from([0, 1, 2, 3, 4].flatMap(f => [f, 10, 20, 30, 50, 40, 50, 60, 20]));
+    const image = (await toPdfImage(png(2, 5, 6, rows), codec))!;
+    const colors = [1, 10, 20, 30, 30, 30, 30,
+      ...[1, 2, 3, 4].flatMap(f => [f, 10, 20, 30, 40, 50, 60])];
+    expect([...inflateSync(image.data)]).toEqual(colors);
+    expect([...inflateSync(image.smask!)]).toEqual([50, 20, 50, 70, 100, 90, 100, 115, 150, 170]);
+    rows[0] = 5;
+    await expect(toPdfImage(png(2, 5, 6, rows), codec)).rejects.toThrow(/filter/);
   });
 
   it('applies a palette transparency chunk', async () => {

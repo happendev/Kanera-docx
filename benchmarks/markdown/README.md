@@ -19,6 +19,12 @@ Every other engine runs with its default options.
 
 ## Results
 
+The November 2026 baseline shares the measured Pandoc, Docling, MarkItDown, mammoth and
+LibreOffice conversions with the DocFoundry comparison. Both runs used the same verified documents,
+provider versions and converter settings on the same Linux host. Kanera was remeasured locally after the parser changes.
+The Aspose and Syncfusion rows use the .NET 10 adapters measured here. All eight engines were scored with this repository's
+scorer. [DocFoundry Markdown benchmark](https://github.com/happendev/DocFoundry/blob/main/tools/bench/markdown/README.md)
+
 <!-- markdown-accuracy:start -->
 | Converter | Markdown accuracy | Text | Order | Headings | Lists | Tables | Bold | Italic | Links | Images | Leaked syntax | Failed |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -35,16 +41,16 @@ Every other engine runs with its default options.
 <!-- markdown-speed:start -->
 | Converter | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **58.8 ms** | **3.6 ms** | **16.0 ms** | **193.2** | **70.5 MiB** | **105.5 MiB** |
-| Pandoc 3.9 | 83.5 ms | 82.0 ms | 151.4 ms | 14.1 | 174.2 MiB | 180.4 MiB |
-| MarkItDown 0.1.9 | 787.0 ms | 168.9 ms | 335.1 ms | 5.9 | 159.8 MiB | 187.7 MiB |
-| mammoth 1.13.0 + turndown 7.2.5 | 153.9 ms | 26.1 ms | 52.1 ms | 40.0 | 97.3 MiB | 179.4 MiB |
-| Syncfusion DocIO (.NET) 28.2.4.0 | 215.3 ms | 24.2 ms | 89.2 ms | 30.8 | 74.3 MiB | 175.1 MiB |
-| LibreOffice 26.8.3.1 | 820.5 ms | 52.4 ms | 151.0 ms | 14.9 | – | – |
-| Docling 2.151.1 | 2747.4 ms | 19.1 ms | 1378.3 ms | 3.2 | 382.1 MiB | 490.7 MiB |
-| Aspose.Words (.NET) 26.11.0.0 | 711.0 ms | 27.9 ms | 223.3 ms | 14.9 | 91.7 MiB | 714.1 MiB |
+| @kanera/docx2pdf 1.0.0 | **66.0 ms** | **1.9 ms** | **17.8 ms** | **244.5** | **70.4 MiB** | **105.4 MiB** |
+| Pandoc 3.9 | 92.6 ms | 85.6 ms | 157.5 ms | 13.8 | 167.8 MiB | 173.1 MiB |
+| MarkItDown 0.1.9 | 685.8 ms | 155.2 ms | 309.9 ms | 6.5 | 157.0 MiB | 184.5 MiB |
+| mammoth 1.13.0 + turndown 7.2.5 | 159.1 ms | 26.0 ms | 52.3 ms | 40.5 | 98.7 MiB | 180.2 MiB |
+| Syncfusion DocIO (.NET) 28.2.4.0 | 222.8 ms | 26.6 ms | 89.1 ms | 30.4 | 73.8 MiB | 188.1 MiB |
+| LibreOffice 26.8.3.1 | 782.8 ms | 47.3 ms | 126.0 ms | 17.0 | 249.7 MiB | 416.2 MiB |
+| Docling 2.151.1 | 2432.5 ms † | 19.6 ms † | 717.5 ms † | 6.6 † | 376.7 MiB † | 401.0 MiB † |
+| Aspose.Words (.NET) 26.11.0.0 | 741.3 ms | 26.0 ms | 233.1 ms | 14.4 | 90.9 MiB | 750.2 MiB |
 
-LibreOffice memory is unavailable because GNU time measured its launcher.
+† Timings and memory use a fixed 50-document sample. Accuracy and failure counts cover all 278 documents.
 <!-- markdown-speed:end -->
 
 Bold marks the best value in each column, ties included.
@@ -112,8 +118,8 @@ Some content has no single right answer in Markdown. It doesn't count for or aga
   bold can take a matching word out of the body's bold.
 - Header lines are recognised by their words. A body line made only of header words, at the top of a
   page and repeated on another page, is also left out.
-- Speed and memory are measured on Linux. LibreOffice runs through Flatpak here, so its memory is not
-  available.
+- Speed and memory are measured on Linux. The shared baseline measures LibreOffice peak memory
+  inside the Flatpak sandbox.
 
 ## Run from the repository root
 
@@ -141,6 +147,11 @@ out/benchmark-markdown/venv/bin/python benchmarks/markdown/score.py
 - `convert.py --engines kanera,pandoc` reruns only the named engines and keeps the other results.
   `--no-warm` skips the warm runs.
 - Converting with every engine takes about an hour, most of it Docling and LibreOffice.
+- One `convert.py` run at a time, Markdown or [text](../text/README.md), holds a lock on
+  `out/benchmark-markdown/`. Each engine works in a
+  `work-<engine>-*` directory there, which also holds the converters' `TMPDIR`, `TMP` and `TEMP`,
+  and is deleted when the engine finishes or the run stops. A new run deletes the work directories
+  that a killed run left behind.
 
 ### Outputs
 

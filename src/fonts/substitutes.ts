@@ -9,6 +9,8 @@
 
 import { APP, FONT_NAME_VARIANTS, MISSING_FONT } from '../profile.js';
 
+const normalizedFamilies = new Map<string, string>();
+
 export type GenericFamily = 'serif' | 'sans' | 'mono' | 'cjk' | 'symbol';
 
 // Name matching for PostScript and web font names; see squeezedRule.
@@ -256,6 +258,8 @@ function languageRegion(lang: string | undefined): CjkRegion | undefined {
   return undefined;
 }
 
+const cjkFamilies = new Map<string, string[]>();
+
 /**
  * East Asian fallback families for a font, in order: those in the font's style (Mincho and Song are
  * serif, Gothic and Hei sans; a Latin font's own class otherwise), the font's own region first (from
@@ -268,6 +272,10 @@ export function cjkFallbacks(family: string, lang?: string, hints?: FontTableHin
     ?? (generic === 'cjk' ? CJK_CHARSETS[hints?.charset?.toLowerCase() ?? ''] : undefined)
     ?? languageRegion(lang);
   const serif = generic === 'cjk' ? CJK_SERIF.test(family) : generic === 'serif';
+  // Only two styles and five regions (or no preference) can reach this cache.
+  const key = `${serif}/${region ?? ''}`;
+  const cached = cjkFamilies.get(key);
+  if (cached) return cached.slice();
   const regions = region ? [region, ...(region === 'hk' ? ['tc' as const] : region === 'tc' ? ['hk' as const] : []), ...CJK_REGIONS] : CJK_REGIONS;
   const sourceHan: Record<CjkRegion, string> = { sc: 'sc', tc: 'tc', hk: 'hc', jp: 'jp', kr: 'k' };
   const out: string[] = [];
@@ -279,7 +287,9 @@ export function cjkFallbacks(family: string, lang?: string, hints?: FontTableHin
     }
   }
   out.push('noto sans cjk', 'source han sans', 'droid sans fallback');
-  return [...new Set(out)];
+  const families = [...new Set(out)];
+  cjkFamilies.set(key, families);
+  return families.slice();
 }
 
 export const GENERIC_FALLBACKS: Record<GenericFamily, string[]> = {
@@ -351,11 +361,18 @@ export function glyphFallbacks(cjk: string[]): string[] {
 }
 
 export function normalizeFamily(name: string): string {
-  return name
+  const known = normalizedFamilies.get(name);
+  if (known !== undefined) return known;
+  const normalized = name
     .toLowerCase()
     .replace(/\s*\((w1|tt|ce|cyr|greek|tur|baltic|vietnamese|hebrew|arabic|body|headings)\)\s*$/i, '')
     .replace(/\s+/g, ' ')
     .trim();
+  if (name.length <= 128) {
+    if (normalizedFamilies.size >= 512) normalizedFamilies.clear();
+    normalizedFamilies.set(name, normalized);
+  }
+  return normalized;
 }
 
 /** Strip a face's style suffix after trying the full name as a family. */

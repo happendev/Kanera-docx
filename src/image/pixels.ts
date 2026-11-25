@@ -1,9 +1,10 @@
 // Raster images decoded to RGBA pixels, for drawing page images: the same formats and colour
 // adjustments as the PDF writer embeds, but decoded rather than passed through.
 
+import type { SolidImage } from '../ooxml/model.js';
 import type { Compression } from '../util/compression.js';
 import { ImageBudget } from './budget.js';
-import { decodeAdam7, decodeDib, decodeGif, le32s, readPng, sniffImage, unfilter, writePixel, type PngInfo } from './image.js';
+import { decodeAdam7, decodeDib, decodeGif, hasDibAlpha, le32s, readPng, sniffImage, unfilter, writePixel, type PngInfo } from './image.js';
 import { decodeJpegPixels, JpegScanLimit } from './jpeg-decoder.js';
 import type { TiffPixels } from './tiff.js';
 
@@ -24,6 +25,23 @@ export interface Pixmap {
   data: Uint8Array;
   /** Whether every pixel's alpha is 255. */
   opaque: boolean;
+}
+
+/** Expand a generated shadow only when painting a page image. */
+export function solidPixels(solid: SolidImage, opacity: Uint8Array, budget: ImageBudget, adjust?: ColorAdjust): Pixmap {
+  const { width, height, rgb } = solid;
+  budget.reserve(width, height);
+  const opaque = !hasDibAlpha(opacity);
+  const data = new Uint8Array(width * height * 4);
+  for (let i = 0, o = 0; i < opacity.length; i++, o += 4) {
+    data[o] = rgb >> 16;
+    data[o + 1] = (rgb >> 8) & 255;
+    data[o + 2] = rgb & 255;
+    data[o + 3] = opaque ? 255 : opacity[i];
+  }
+  const pixmap = { width, height, data, opaque };
+  if (adjust) applyAdjust(pixmap, adjust);
+  return pixmap;
 }
 
 /** Each colour component c (0–1) drawn as slope·c + offset, clipped to 0–1. */

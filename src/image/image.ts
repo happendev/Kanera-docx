@@ -1,3 +1,4 @@
+import type { SolidImage } from '../ooxml/model.js';
 import type { Compression } from '../util/compression.js';
 import { ImageBudget } from './budget.js';
 
@@ -137,6 +138,34 @@ function rgbaToPdf(width: number, height: number, rgba: Uint8Array, compression:
     if (a !== 255) hasAlpha = true;
   }
   return rgbToPdf(width, height, rgb, hasAlpha ? alpha : undefined, compression);
+}
+
+/** A shadow's RGB stream repeats one pixel. Deflate can encode that repetition
+ * directly, so there is no need to build or trial-compress predictor rows. */
+export async function solidToPdf(solid: SolidImage, opacity: Uint8Array, compression: Compression, budget: ImageBudget): Promise<PdfImage> {
+  const { width, height, rgb } = solid;
+  budget.reserve(width, height);
+  const pixels = new Uint8Array(width * height * 3);
+  if (rgb !== 0) {
+    pixels.set([rgb >> 16, (rgb >> 8) & 255, rgb & 255]);
+    for (let n = 3; n < pixels.length; n *= 2) pixels.copyWithin(n, 0, n);
+  }
+  return {
+    width,
+    height,
+    colorSpace: '/DeviceRGB',
+    bitsPerComponent: 8,
+    filter: 'FlateDecode',
+    ...await deflatePlanes(pixels, hasDibAlpha(opacity) ? opacity : undefined, compression),
+  };
+}
+
+/** Compress independent colour and soft-mask planes together when the host supports it. */
+async function deflatePlanes(rgb: Uint8Array, alpha: Uint8Array | undefined, compression: Compression, level?: number) {
+  const deflate = (plane: Uint8Array) => plane.length >= 32768 && compression.deflateZlibAsync
+    ? compression.deflateZlibAsync(plane, level) : compression.deflateZlib(plane, level);
+  const [data, smask] = await Promise.all([deflate(rgb), alpha ? deflate(alpha) : undefined]);
+  return { data, smask };
 }
 
 function rgbToPdf(width: number, height: number, rgb: Uint8Array, alpha: Uint8Array | undefined, compression: Compression): PdfImage {
@@ -311,9 +340,54 @@ async function pngToPdf(d: Uint8Array, compression: Compression, budget: ImageBu
       decodeParms: `<< /Predictor 15 /Colors ${channels} /BitsPerComponent ${bitDepth} /Columns ${width} >>`,
     };
   }
+  // Compact a bounded RGBA plane in place. Larger images keep the streaming decoder.
+  if (!interlace && bitDepth === 8 && colorType === 6 && (4 * width + 1) * height <= 16 * 1024 * 1024)
+    return rgbaPngToPdf(info, compression);
   if (!interlace) return decodePngRows(info, compression);
   const rgba = decodeAdam7(info, compression);
   return rgbaToPdf(width, height, rgba, compression);
+}
+
+/** PNG predicts each channel independently. Removing every fourth filtered byte
+ * gives a valid RGB predictor stream. Only the alpha channel needs unfiltering. */
+async function rgbaPngToPdf({ width, height, idat }: PngInfo, compression: Compression): Promise<PdfImage> {
+  const size = (4 * width + 1) * height;
+  const raw = compression.inflateZlib(idat, size);
+  if (raw.length !== size) throw new Error('PNG: truncated scanlines');
+  const samples = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  const rgb = raw.subarray(0, (3 * width + 1) * height);
+  const alpha = new Uint8Array(width * height);
+  let prev = new Uint8Array(width);
+  let opaque = true;
+  let src = 0, dst = 0;
+  for (let y = 0; y < height; y++) {
+    const filter = raw[src++];
+    rgb[dst++] = filter || 1;
+    const row = alpha.subarray(y * width, (y + 1) * width);
+    let left = 0;
+    for (let x = 0; x < width; x++, src += 4) {
+      // Read the entire pixel before compacting into the same buffer.
+      const word = samples.getUint32(src, true);
+      rgb[dst++] = word - left;
+      rgb[dst++] = (word >>> 8) - (left >>> 8);
+      rgb[dst++] = (word >>> 16) - (left >>> 16);
+      row[x] = word >>> 24;
+      // Write Sub for unfiltered rows so smooth colours still compress well.
+      if (filter === 0) left = word;
+    }
+    unfilter(filter, row, prev, 1);
+    if (opaque) {
+      let all = 255;
+      for (let x = 0; x < width; x++) all &= row[x];
+      opaque = all === 255;
+    }
+    prev = row;
+  }
+  return {
+    width, height, colorSpace: '/DeviceRGB', bitsPerComponent: 8, filter: 'FlateDecode',
+    decodeParms: `<< /Predictor 15 /Colors 3 /BitsPerComponent 8 /Columns ${width} >>`,
+    ...await deflatePlanes(rgb, opaque ? undefined : alpha, compression, 4),
+  };
 }
 
 /** Inflate one row at a time into the PDF colour and alpha planes at source resolution. */
@@ -854,8 +928,19 @@ export function decodeDib(header: Uint8Array, pixels: Uint8Array, budget: ImageB
   };
   const out = new Uint8Array(width * height * 3);
   const alpha = (bpp === 16 || bpp === 32) && masks[3] ? new Uint8Array(width * height) : undefined;
+  // Standard BGRA stores the channels as whole bytes.
+  const bgra = bpp === 32 && masks[0] === 0xff0000 && masks[1] === 0xff00 && masks[2] === 0xff && (masks[3] >>> 0) === 0xff000000;
   for (let y = 0; y < height; y++) {
     const row = (topDown ? y : height - 1 - y) * stride;
+    if (bgra && alpha) {
+      for (let x = 0, p = row, a = y * width, o = a * 3; x < width; x++, p += 4, a++, o += 3) {
+        out[o] = pixels[p + 2];
+        out[o + 1] = pixels[p + 1];
+        out[o + 2] = pixels[p];
+        alpha[a] = pixels[p + 3];
+      }
+      continue;
+    }
     for (let x = 0; x < width; x++) {
       const o = (y * width + x) * 3;
       if (bpp === 24) {
@@ -883,6 +968,11 @@ export function decodeDib(header: Uint8Array, pixels: Uint8Array, budget: ImageB
     }
   }
   // Writers often leave the alpha of opaque pixels at zero, so, as browsers do, an image with no visible pixel is opaque.
-  const translucent = alpha && alpha.some((a) => a !== 0) && alpha.some((a) => a !== 255);
+  const translucent = alpha && hasDibAlpha(alpha);
   return { width, height, rgb: out, alpha: translucent ? alpha : undefined };
+}
+
+/** All-zero alpha in a DIB is treated as opaque, including for generated shadow images. */
+export function hasDibAlpha(alpha: Uint8Array): boolean {
+  return alpha.some((a) => a !== 0) && alpha.some((a) => a !== 255);
 }

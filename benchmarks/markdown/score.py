@@ -1,6 +1,9 @@
-"""Score the Markdown of each engine and write the report.
+"""Score the Markdown or plain text of each engine and write the report.
 
-Run convert.py first. Each engine's Markdown is rendered with one CommonMark renderer (GFM tables,
+Run convert.py first (with the same --format). Plain text (--format text, which benchmarks/text/score.py
+passes) is scored on its words and reading order against the same references, on the share of body
+paragraphs it keeps whole on one line, and on Markdown or HTML markup it leaks; the rest of this note
+is about Markdown. Each engine's Markdown is rendered with one CommonMark renderer (GFM tables,
 strikethrough, footnotes and $ math, with GitHub's rules) and scored on what a viewer would show,
 so syntax the renderer does not understand counts against the engine.
 
@@ -41,14 +44,38 @@ sys.path.insert(0, str(ROOT / 'benchmarks' / 'word'))
 from fetch import BENCHMARK_FIXTURES, OUTPUT as WORD_OUTPUT, UPSTREAM_DIR  # noqa: E402
 from readme import edit_main_readme, replace_section  # noqa: E402
 
-OUTPUT = ROOT / 'out' / 'benchmark-markdown'
-MARKDOWN = OUTPUT / 'md'
+OUTPUTS = {'markdown': ROOT / 'out' / 'benchmark-markdown', 'text': ROOT / 'out' / 'benchmark-text'}
 CASES = WORD_OUTPUT / 'cases'
+
+
+class Format:
+    """What is scored, set once in main() and in each scoring process: Markdown, or plain text with --format text."""
+    name = 'markdown'
+    extension = 'md'
+    output = OUTPUTS['markdown']
+    results = output / 'md'
+
+    @classmethod
+    def use(cls, name, output=None):
+        cls.name = name
+        cls.extension = 'md' if name == 'markdown' else 'txt'
+        cls.output = output or OUTPUTS[name]
+        cls.results = cls.output / cls.extension
+
+    @classmethod
+    def markdown(cls):
+        return cls.name == 'markdown'
+
 ENGINE_NAMES = {
     'kanera': '@kanera/docx2pdf', 'aspose': 'Aspose.Words (.NET)', 'syncfusion': 'Syncfusion DocIO (.NET)',
     'pandoc': 'Pandoc', 'docling': 'Docling', 'markitdown': 'MarkItDown', 'mammoth': 'mammoth + turndown',
     'libreoffice': 'LibreOffice',
 }
+
+
+def engine_name(e):
+    # Plain text from mammoth is its own raw text, without turndown.
+    return 'mammoth' if e == 'mammoth' and not Format.markdown() else ENGINE_NAMES.get(e, e)
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 MATH = '{http://schemas.openxmlformats.org/officeDocument/2006/math}'
@@ -240,7 +267,7 @@ def docx_oracle(path):
                 out.append(' ')
         return ''.join(out)
 
-    headings, neutral_headings, list_items, tables = [], set(), [], []
+    headings, neutral_headings, list_items, tables, paragraphs = [], set(), [], [], []
     images = 0
     body = doc.find('w:body', NS)
     source = []
@@ -292,6 +319,10 @@ def docx_oracle(path):
             outline = int(m.group(1)) - 1
         if in_table:
             continue
+        # A body paragraph is one line of plain text, unless it holds a line break, a text box, or a
+        # note mark that an engine may or may not write into the line.
+        if not any(True for _ in p.iter(q('br'), q('cr'), q('txbxContent'), q('footnoteReference'), q('endnoteReference'))):
+            paragraphs.append(norm_label(text))
         if sname.startswith('toc') or sname in ('title', 'subtitle'):
             neutral_headings.add(norm_label(text))
             continue
@@ -355,7 +386,7 @@ def docx_oracle(path):
         parts = [t.text or '' for t in eq.iter(MATH + 't')]
         math += tokens(''.join(parts)) + [t for part in parts for t in tokens(part)]
     return {'headings': headings, 'neutral': neutral_headings, 'lists': list_items, 'tables': tables,
-            'links': links, 'images': images, 'text': '\n'.join(source),
+            'links': links, 'images': images, 'text': '\n'.join(source), 'paragraphs': paragraphs,
             'neutral_table': neutral_table, 'chart': chart_words(z, names, body, folder, rel_target),
             'furniture': furniture, 'boxes': boxes, 'math': math, 'margins': margins}
 
@@ -458,6 +489,17 @@ def syntax(text, paragraphs=None):
     heading, list, quote and table-row markers starting a plain paragraph."""
     found = Counter(m.group(0)[:3] for m in LEAK_INLINE.finditer(text))
     found.update(m.group(0).strip()[:3] for m in LEAK_BLOCK.finditer(text if paragraphs is None else paragraphs))
+    return found
+
+
+HTML_TAG = re.compile(r'</?[a-zA-Z][\w-]*(?:\s[^<>]*)?/?>')
+
+
+def markup(text):
+    """Markdown emphasis and link syntax and HTML tags in plain text. List markers and numbers
+    are plain text's own."""
+    found = Counter(m.group(0)[:3] for m in LEAK_INLINE.finditer(text))
+    found.update('<>' for _ in HTML_TAG.finditer(text))
     return found
 
 
@@ -579,21 +621,18 @@ def score_case(job):
     heading_tokens = Counter(t for h in [h for _, h in oracle['headings']] + list(oracle['neutral']) for t in h.split())
     rows = []
     for engine in engines:
-        path = MARKDOWN / engine / f'{case}.md'
+        path = Format.results / engine / f'{case}.{Format.extension}'
         ok = path.exists() and (engine, case) not in failed
         md_text = path.read_text(encoding='utf-8', errors='replace') if ok else ''
+        row = {'case': case, 'engine': engine, 'converted': ok, 'reference': 'word-pdf' if pdf else 'docx-text'}
+        if not Format.markdown():
+            rows.append(score_text(row, md_text, oracle, words))
+            continue
         r = rendered(md_text)
         out = tokens(r['text'])
-        row = {'case': case, 'engine': engine, 'converted': ok, 'reference': 'word-pdf' if pdf else 'docx-text'}
         row.update(raw_noise(md_text))
         row['leaked_syntax'] = sum((r['leaks'] - source_syntax).values())
-        # Words of charts, equations, headers, footers and text boxes beyond those in the reference are
-        # neutral, and so are chart and equation words an engine leaves out.
-        ref_count, out_count = Counter(words), Counter(out)
-        extra = sum(((out_count - ref_count) & Counter(oracle['chart'] + oracle['math'] + oracle['furniture'] + oracle['boxes'])).values())
-        missing = sum(((ref_count - out_count) & Counter(oracle['chart'] + oracle['math'])).values())
-        row['ref_words'], row['out_words'], row['common_words'] = len(words) - missing, len(out) - extra, overlap(words, out)
-        row['order'] = Indel.normalized_similarity(words[:20000], out[:20000]) if words or out else None
+        score_words(row, oracle, words, out)
         if bold is not None:
             # Emphasis inside headings and title paragraphs is not compared: the heading is the emphasis.
             # Word's PDF has no blocks, so its heading words are taken out by count.
@@ -638,6 +677,36 @@ def score_case(job):
     return rows
 
 
+def score_words(row, oracle, words, out):
+    """Words and reading order against the reference. Words of charts, equations, headers, footers
+    and text boxes beyond those in the reference are neutral, and so are chart and equation words
+    an engine leaves out."""
+    ref_count, out_count = Counter(words), Counter(out)
+    extra = sum(((out_count - ref_count) & Counter(oracle['chart'] + oracle['math'] + oracle['furniture'] + oracle['boxes'])).values())
+    missing = sum(((ref_count - out_count) & Counter(oracle['chart'] + oracle['math'])).values())
+    row['ref_words'], row['out_words'], row['common_words'] = len(words) - missing, len(out) - extra, overlap(words, out)
+    row['order'] = Indel.normalized_similarity(words[:20000], out[:20000]) if words or out else None
+
+
+def score_text(row, text, oracle, words):
+    """A document's plain text: its words and their order, the body paragraphs it keeps whole on a
+    line of their own (list labels aside), and the markup it leaks."""
+    score_words(row, oracle, words, tokens(text))
+    ref_paragraphs = Counter(p for p in oracle['paragraphs'] if p)
+    lines = Counter(norm_label(line) for line in text.splitlines())
+    row['ref_paragraphs'] = sum(ref_paragraphs.values())
+    row['common_paragraphs'] = sum((ref_paragraphs & lines).values())
+    row['markup'] = sum((markup(text) - markup(oracle['text'])).values())
+    parts = {
+        'text': f1(row['ref_words'], row['out_words'], row['common_words']),
+        'order': row['order'],
+        'paragraphs': row['common_paragraphs'] / row['ref_paragraphs'] if row['ref_paragraphs'] else None,
+    }
+    scores = [v for v in parts.values() if v is not None]
+    row['accuracy'] = (statistics.mean(scores) if scores else 1.0) if row['converted'] else 0.0
+    return row
+
+
 def summarize(rows, conversion, engines):
     by_engine = {e: [r for r in rows if r['engine'] == e] for e in engines}
     timing = {}
@@ -651,10 +720,30 @@ def summarize(rows, conversion, engines):
             out = sum(r.get(f'out_{name}', 0) for r in group)
             common = sum(r.get(f'common_{name}', 0) for r in group)
             return f1(ref, out, common) or 0.0
-        t = timing.get(engine, [])
+        conversions = timing.get(engine, [])
+        t = [row for row in conversions if not row.get('untimed')]
         cold = sorted(r['cold_ms'] for r in t if 'cold_ms' in r)
         warm = sorted(r['warm_ms'] for r in t if 'warm_ms' in r)
         rss = sorted(r['peak_rss_kib'] for r in t if r.get('peak_rss_kib'))
+        if not Format.markdown():
+            summary[engine] = {
+                'documents': len(rs),
+                'failed': sum(not r['converted'] for r in rs),
+                'accuracy': statistics.mean(r['accuracy'] for r in rs),
+                'text': micro(rs, 'words'),
+                'order': statistics.mean(r['order'] or 0 for r in rs),
+                'paragraphs': sum(r['common_paragraphs'] for r in rs) / max(sum(r['ref_paragraphs'] for r in rs), 1),
+                'markup': sum(r['markup'] for r in rs),
+                'cold_median_ms': statistics.median(cold) if cold else None,
+                'warm_median_ms': statistics.median(warm) if warm else None,
+                'warm_p95_ms': warm[min(len(warm) - 1, int(0.95 * len(warm)))] if warm else None,
+                'warm_docs_per_s': len(warm) / (sum(warm) / 1000) if warm else None,
+                'rss_median_mib': statistics.median(rss) / 1024 if rss else None,
+                'rss_max_mib': rss[-1] / 1024 if rss else None,
+                'version': conversion['versions'].get(engine, engine),
+                'sampled': len(t) != len(conversions),
+            }
+            continue
         summary[engine] = {
             'documents': len(rs),
             'failed': sum(not r['converted'] for r in rs),
@@ -679,17 +768,23 @@ def summarize(rows, conversion, engines):
             'rss_median_mib': statistics.median(rss) / 1024 if rss else None,
             'rss_max_mib': rss[-1] / 1024 if rss else None,
             'version': conversion['versions'].get(engine, engine),
+            'sampled': len(t) != len(conversions),
         }
     return summary
 
 
-def tables(summary):
+def formatter(summary):
+    """The engines by accuracy and a cell formatter that bolds the best value in each column."""
     engines = sorted(summary, key=lambda e: -summary[e]['accuracy'])
     best = {}
-    higher = ['accuracy', 'text', 'order', 'headings', 'lists', 'tables', 'bold', 'italic', 'links', 'images', 'warm_docs_per_s']
-    lower = ['failed', 'leaked_syntax', 'cold_median_ms', 'warm_median_ms', 'warm_p95_ms', 'rss_median_mib', 'rss_max_mib']
+    higher = ['accuracy', 'text', 'order', 'paragraphs', 'headings', 'lists', 'tables', 'bold', 'italic', 'links', 'images', 'warm_docs_per_s']
+    lower = ['failed', 'leaked_syntax', 'markup', 'cold_median_ms', 'warm_median_ms', 'warm_p95_ms', 'rss_median_mib', 'rss_max_mib']
+    timing = {'cold_median_ms', 'warm_median_ms', 'warm_p95_ms', 'warm_docs_per_s', 'rss_median_mib', 'rss_max_mib'}
     for k in higher + lower:
-        values = [summary[e][k] for e in engines if summary[e][k] is not None]
+        if k not in summary[engines[0]]:
+            continue  # a Markdown measure in the text summary, or the other way round
+        values = [summary[e][k] for e in engines if summary[e][k] is not None
+                  and (k not in timing or not summary[e]['sampled'])]
         if values:
             best[k] = max(values) if k in higher else min(values)
     def cell(e, k, fmt):
@@ -697,30 +792,63 @@ def tables(summary):
         if v is None:
             return '–'
         text = fmt(v)
+        if k in timing and summary[e]['sampled']:
+            return f'{text} †'
         # A tie is a tie as shown.
         return f'**{text}**' if k in best and text == fmt(best[k]) else text
-    pct = lambda v: f'{v:.1%}'
+    return engines, cell
+
+
+pct = lambda v: f'{v:.1%}'
+ms = lambda v: f'{v:.1f} ms'
+mib = lambda v: f'{v:.1f} MiB'
+per_s = lambda v: f'{v:.1f}'
+
+
+def tables(summary):
+    """The full accuracy and speed tables for the benchmark's README."""
+    engines, cell = formatter(summary)
     n = summary[engines[0]]['documents']
     def name(e):
         # The converter and its version number; mammoth's turndown version is named too.
         numbers = re.findall(r'\d+(?:\.\d+)+', summary[e]['version'])
         if e == 'mammoth' and len(numbers) > 1:
             return f'mammoth {numbers[0]} + turndown {numbers[1]}'
-        return f"{ENGINE_NAMES.get(e, e)} {numbers[0] if numbers else ''}".strip()
-    accuracy = ['| Converter | Markdown accuracy | Text | Order | Headings | Lists | Tables | Bold | Italic | Links | Images | Leaked syntax | Failed |',
-                '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
+        return f"{engine_name(e)} {numbers[0] if numbers else ''}".strip()
+    if Format.markdown():
+        accuracy = ['| Converter | Markdown accuracy | Text | Order | Headings | Lists | Tables | Bold | Italic | Links | Images | Leaked syntax | Failed |',
+                    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
+        measures, leaks = ('text', 'order', 'headings', 'lists', 'tables', 'bold', 'italic', 'links', 'images'), 'leaked_syntax'
+    else:
+        accuracy = ['| Converter | Text accuracy | Words | Order | Paragraphs | Leaked markup | Failed |',
+                    '| --- | ---: | ---: | ---: | ---: | ---: | ---: |']
+        measures, leaks = ('text', 'order', 'paragraphs'), 'markup'
     speed = ['| Converter | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS |',
              '| --- | ---: | ---: | ---: | ---: | ---: | ---: |']
     for e in engines:
-        accuracy.append(f"| {name(e)} | " + ' | '.join([cell(e, 'accuracy', pct), *(cell(e, k, pct) for k in ('text', 'order', 'headings', 'lists', 'tables', 'bold', 'italic', 'links', 'images')),
-                                                          cell(e, 'leaked_syntax', str), cell(e, 'failed', lambda v: f'{v}/{n}')]) + ' |')
-        ms = lambda v: f'{v:.1f} ms'
-        mib = lambda v: f'{v:.1f} MiB'
+        accuracy.append(f"| {name(e)} | " + ' | '.join([cell(e, 'accuracy', pct), *(cell(e, k, pct) for k in measures),
+                                                          cell(e, leaks, str), cell(e, 'failed', lambda v: f'{v}/{n}')]) + ' |')
         speed.append(f"| {name(e)} | " + ' | '.join([cell(e, 'cold_median_ms', ms), cell(e, 'warm_median_ms', ms), cell(e, 'warm_p95_ms', ms),
-                                                       cell(e, 'warm_docs_per_s', lambda v: f'{v:.1f}'), cell(e, 'rss_median_mib', mib), cell(e, 'rss_max_mib', mib)]) + ' |')
-    if 'libreoffice' in summary:
+                                                       cell(e, 'warm_docs_per_s', per_s), cell(e, 'rss_median_mib', mib), cell(e, 'rss_max_mib', mib)]) + ' |')
+    if any(report['sampled'] for report in summary.values()):
+        speed.append('\n† Timings and memory use a fixed 50-document sample. Accuracy and failure counts cover all 278 documents.')
+    if 'libreoffice' in summary and summary['libreoffice']['rss_median_mib'] is None:
         speed.append('\nLibreOffice memory is unavailable because GNU time measured its launcher.')
     return '\n'.join(accuracy), '\n'.join(speed)
+
+
+def compact_table(summary):
+    """The summary table for the main README, named like the Word benchmark's summary."""
+    engines, cell = formatter(summary)
+    what = 'Markdown' if Format.markdown() else 'Text'
+    lines = [f'| Converter | {what} accuracy | Fresh process | Reused process | Warm docs/sec | Median peak memory |',
+             '| --- | ---: | ---: | ---: | ---: | ---: |']
+    for e in engines:
+        name = 'Kanera' if e == 'kanera' else engine_name(e)
+        lines.append(f'| {name} | ' + ' | '.join([
+            cell(e, 'accuracy', pct), cell(e, 'cold_median_ms', ms), cell(e, 'warm_median_ms', ms),
+            cell(e, 'warm_docs_per_s', per_s), cell(e, 'rss_median_mib', mib)]) + ' |')
+    return '\n'.join(lines)
 
 
 def replace_block(path, marker, content):
@@ -733,42 +861,41 @@ def replace_block(path, marker, content):
     path.write_text(f'{before}{start}\n{content}\n{end}{after}', encoding='utf-8')
 
 
-def update_main_readme(text, summary, report):
-    text = replace_section(text, 'markdown-benchmark', report)
-    if 'kanera' in summary:
-        kanera = summary['kanera']
-        headline = (
-            f'Kanera scored **{kanera["accuracy"]:.1%} Markdown accuracy** across '
-            f'{kanera["documents"]:,} DOCX documents. [Markdown benchmark](#markdown-benchmark)'
-        )
-        text = replace_section(text, 'markdown-summary', headline)
-    return text
+def update_main_readme(text, summary):
+    # The main README has the compact table; the full tables are in this benchmark's README.
+    return replace_section(text, f'{Format.name}-benchmark-summary', compact_table(summary))
 
 
-def main():
+def main(argv=None):
     parser = ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('--format', choices=('markdown', 'text'), default='markdown', help='what to score (default: %(default)s)')
     parser.add_argument('--engines', help='comma-separated engines to score (default: every engine converted)')
     parser.add_argument('--no-readme', action='store_true', help='do not update the README tables')
-    args = parser.parse_args()
-    conversion = json.loads((OUTPUT / 'conversion.json').read_text())
+    parser.add_argument('--limit', type=int, help='score only the first N documents, as convert.py --limit '
+                                                  'converted; the READMEs are left unchanged')
+    args = parser.parse_args(argv)
+    Format.use(args.format)
+    fixtures = BENCHMARK_FIXTURES if args.limit is None else BENCHMARK_FIXTURES[:args.limit]
+    conversion = json.loads((Format.output / 'conversion.json').read_text())
     engines = args.engines.split(',') if args.engines else list(dict.fromkeys(r['engine'] for r in conversion['results']))
     failed = {(r['engine'], r['case']) for r in conversion['results'] if 'error' in r}
-    with ProcessPoolExecutor() as pool:
-        rows = [row for rows in pool.map(score_case, [(f, engines, failed) for f in BENCHMARK_FIXTURES]) for row in rows]
-    with (OUTPUT / 'results.csv').open('w', newline='', encoding='utf-8') as f:
+    with ProcessPoolExecutor(initializer=Format.use, initargs=(Format.name, Format.output)) as pool:
+        rows = [row for rows in pool.map(score_case, [(f, engines, failed) for f in fixtures]) for row in rows]
+    with (Format.output / 'results.csv').open('w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=list(dict.fromkeys(k for r in rows for k in r)))
         writer.writeheader()
         writer.writerows(rows)
     summary = summarize(rows, conversion, engines)
-    (OUTPUT / 'summary.json').write_text(json.dumps(summary, indent=1))
+    (Format.output / 'summary.json').write_text(json.dumps(summary, indent=1))
     accuracy, speed = tables(summary)
     report = f"{accuracy}\n\n{speed}\n"
-    (OUTPUT / 'report.md').write_text(report, encoding='utf-8')
+    (Format.output / 'report.md').write_text(report, encoding='utf-8')
     print(report)
-    if not args.no_readme and len(engines) > 1:
-        replace_block(HERE / 'README.md', 'markdown-accuracy', accuracy)
-        replace_block(HERE / 'README.md', 'markdown-speed', speed)
-        edit_main_readme(ROOT, lambda text: update_main_readme(text, summary, report.rstrip('\n')))
+    if not args.no_readme and args.limit is None and len(engines) > 1:
+        readme = (HERE if Format.markdown() else HERE.parent / 'text') / 'README.md'
+        replace_block(readme, f'{Format.name}-accuracy', accuracy)
+        replace_block(readme, f'{Format.name}-speed', speed)
+        edit_main_readme(ROOT, lambda text: update_main_readme(text, summary))
 
 
 if __name__ == '__main__':

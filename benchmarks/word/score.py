@@ -4,21 +4,25 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from html import escape
 from os import cpu_count
+from pathlib import Path
 from platform import platform, processor
 import csv
 import json
 import statistics
 import subprocess
+from tempfile import TemporaryDirectory
 import unicodedata
 
 import numpy as np
+import PIL
 import pymupdf
 from PIL import Image, ImageDraw, ImageFont
 
 from fetch import (BENCHMARK_FIXTURES, HERE, MANIFEST, UPSTREAM, OUTPUT, benchmark_lock,
-                   benchmark_reference, verify_reference)
+                   benchmark_reference, child_environment, verify_reference)
 from pdf_text import extract as extract_text
-from ink import page_scores, render, render_reference
+from ink import DPI, INK_THRESHOLD, INK_TOLERANCE_PX, page_scores, render, render_reference
+from score_cache import FORMAT, ScoreCache, code_digests, digest, file_sha256, rendering_files
 from readme import (markdown_table, sampled_note, update_measured_readme, update_mini_pdf_breakdown, update_readmes,
                     update_suite_scores)
 
@@ -48,6 +52,11 @@ LICENSED = {
     'aspose': 'evaluation only. created with aspose.words',
     'syncfusion': 'trial version of syncfusion',
 }
+# Scores and reference pages are reused while their inputs, tools and the code below are unchanged
+# (see score_cache.py). The cache is shared by every mode and by accuracy.py.
+SCORE_CACHE = OUTPUT / 'score-cache'
+SCORE_CODE = (HERE / 'score.py', HERE / 'ink.py', HERE / 'pdf_text.py', HERE / 'score_cache.py')
+REFERENCE_CODE = (HERE / 'ink.py', HERE / 'score_cache.py')
 
 
 def words(doc):
@@ -128,12 +137,60 @@ def comparison(fixture, rasters, rows, page, out):
     canvas.save(out / f'{case}-{page + 1:02d}.png')
 
 
-def score_case(fixture, engines, metrics, visuals, *, output=None):
+def cache_context(poppler, env):
+    """What every cached score and reference page depends on besides its own inputs."""
+    root = HERE.parents[1]
+    stats, font_env = rendering_files(env)
+    tools = {'poppler': poppler, 'fonts': digest([stats, font_env]), 'pillow': PIL.__version__}
+    settings = {'dpi': DPI, 'ink_threshold': INK_THRESHOLD, 'tolerance_px': INK_TOLERANCE_PX}
+    return {
+        'reference': {'format': FORMAT, 'kind': 'reference', 'tools': tools, 'dpi': DPI,
+                      'code': code_digests(REFERENCE_CODE, root)},
+        'score': {'format': FORMAT, 'kind': 'score',
+                  'tools': dict(tools, pymupdf=pymupdf.version, numpy=np.__version__),
+                  'settings': settings, 'code': code_digests(SCORE_CODE, root)},
+    }
+
+
+def reference_source(fixture):
+    """The digests a reference's pages are rendered from."""
+    if 'pdf' in fixture:
+        return {'pdf': fixture['pdf_sha256']}
+    return {'images': [image['sha256'] for image in fixture['reference_images']], 'dpi': fixture['reference_dpi']}
+
+
+def score_pdf(pdf, reference, reference_words, env):
+    """Score one converted PDF against the reference pages. Returns the result and the rendered pages."""
+    text = extract_text(pdf, env)
+    if text is None:
+        return {'unreadable': 'text extraction crashed'}, []
+    pdf_words, pdf_text = text
+    # Recorded for every licensed engine, so the result does not depend on which engine wrote the PDF.
+    watermarks = sorted(engine for engine, mark in LICENSED.items() if mark in pdf_text)
+    try:
+        pages = render(pdf, env=env)
+    except subprocess.CalledProcessError:
+        return {'unreadable': 'rasterization failed', 'watermarks': watermarks}, []
+    if len(pdf_words) != len(pages):
+        return {'unreadable': 'page counts disagree between text extraction and rasterization',
+                'watermarks': watermarks}, []
+    text_metrics = page_metrics(reference_words, pdf_words) if reference_words is not None else (None, None, None)
+    return {'unreadable': None, 'watermarks': watermarks, 'pages': len(pages),
+            'page_scores': page_scores(reference, pages), 'text_metrics': list(text_metrics)}, pages
+
+
+def score_case(fixture, engines, metrics, visuals, *, output=None, cache=None, context=None, env=None):
     name = fixture['case']
     directory = (output or OUTPUT) / 'cases' / name
     reference_dir, reference_fixture = benchmark_reference(fixture)
     verify_reference(reference_dir, reference_fixture)
-    reference = render_reference(reference_dir, reference_fixture, directory / 'raster')
+    source = reference_source(reference_fixture)
+    if cache is None:
+        reference = render_reference(reference_dir, reference_fixture, directory / 'raster', env=env)
+    else:
+        reference = cache.reference_pages(
+            digest({**context['reference'], 'reference': source}),
+            lambda target: render_reference(reference_dir, reference_fixture, target, env=env))
     if not reference:
         raise ValueError(f'No reference pages for {name}')
     reference_words = None
@@ -146,47 +203,47 @@ def score_case(fixture, engines, metrics, visuals, *, output=None):
     # A sampled engine skips documents that nothing scores; they are left out of everything.
     engines = [engine for engine in engines[1:] if not metrics[name, engine].get('skipped')]
     rasters = {'reference': reference}
-    extracted = {}
+    results = {}
     invalid = {}
     for engine in engines:
         pdf = directory / f'{engine}.pdf'
+        rasters[engine] = []
         if 'error' in metrics[name, engine]:
             # A failed conversion has no pages, so every reference page scores zero.
-            rasters[engine] = []
-            extracted[engine] = []
             continue
-        unreadable = None
-        text = extract_text(pdf)
-        if text is None:
-            unreadable = 'text extraction crashed'
-        else:
-            pdf_words, pdf_text = text
-            if engine in LICENSED and LICENSED[engine] in pdf_text:
-                raise ValueError(f'Evaluation watermark detected in {name}')
-            try:
-                pages = render(pdf)
-            except subprocess.CalledProcessError:
-                pages = None
-                unreadable = 'rasterization failed'
-            if pages is not None and len(pdf_words) != len(pages):
-                unreadable = 'page counts disagree between text extraction and rasterization'
-        if unreadable:
+        key = result = None
+        if cache is not None:
+            key = digest({**context['score'], 'candidate': file_sha256(pdf), 'reference': source})
+            result = cache.get(key)
+        if result is None:
+            result, rasters[engine] = score_pdf(pdf, reference, reference_words, env)
+            # An unreadable PDF can be a passing crash or timeout, so it is not cached.
+            if key is not None and result['unreadable'] is None:
+                cache.put(key, result)
+        elif visuals is not None:
+            # The side-by-side images need the pages even when the score is cached.
+            rasters[engine] = render(pdf, env=env)
+        if engine in result.get('watermarks', ()):
+            raise ValueError(f'Evaluation watermark detected in {name}')
+        if result['unreadable']:
             # A PDF the readers cannot process counts as a failed conversion and scores zero.
-            print(f'Unreadable PDF for {name} ({engine}): {unreadable}; scoring it as failed', flush=True)
-            invalid[engine] = unreadable
+            print(f"Unreadable PDF for {name} ({engine}): {result['unreadable']}; scoring it as failed", flush=True)
+            invalid[engine] = result['unreadable']
             rasters[engine] = []
-            extracted[engine] = []
             continue
-        rasters[engine] = pages
-        extracted[engine] = pdf_words
+        results[engine] = result
 
     rows = []
     for engine in engines:
-        pages = rasters[engine]
         failed = 'error' in metrics[name, engine] or engine in invalid
-        scores = page_scores(reference, pages)
-        recall, offset, matched = (page_metrics(reference_words, extracted[engine])
-                                   if reference_words is not None else (None, None, None))
+        if engine in results:
+            result = results[engine]
+            page_count, scores = result['pages'], result['page_scores']
+            recall, offset, matched = result['text_metrics']
+        else:
+            page_count, scores = 0, page_scores(reference, [])
+            recall, offset, matched = (page_metrics(reference_words, [])
+                                       if reference_words is not None else (None, None, None))
         rows.append({
             'case': name,
             'corpus': fixture['corpus'],
@@ -203,7 +260,7 @@ def score_case(fixture, engines, metrics, visuals, *, output=None):
             'warm_ms': None if failed else metrics[name, engine].get('warm_ms'),
             'peak_rss_kib': metrics[name, engine]['peak_rss_kib'],
             'reference_pages': len(reference),
-            'pages': len(pages),
+            'pages': page_count,
             'ink_f1': round(statistics.mean(scores) * 100, 2),
             'same_page_words': round(recall * 100, 2) if recall is not None else None,
             'median_offset_pt': round(offset, 2) if offset is not None else None,
@@ -327,7 +384,7 @@ figcaption { margin-bottom: .3rem; }
     yield '</html>'
 
 
-def score_outputs(args):
+def score_outputs(args, work):
     standalone = 'ours' if args.kanera_only else 'minipdf' if args.minipdf_only else None
     directory = 'kanera-only' if args.kanera_only else 'minipdf-only' if args.minipdf_only else ''
     output = OUTPUT / directory
@@ -343,8 +400,12 @@ def score_outputs(args):
     run_date = completed_at.astimezone(timezone.utc).date().isoformat()
     versions = data['versions']
     metrics = {(row['case'], row['engine']): row for row in data['results']}
-    poppler = subprocess.run(['pdftoppm', '-v'], check=True, capture_output=True, text=True)
+    # Child processes keep their temporary files in this run's work directory.
+    env = child_environment(work / 'tmp')
+    poppler = subprocess.run(['pdftoppm', '-v'], check=True, capture_output=True, text=True, env=env)
     versions['poppler'] = (poppler.stderr or poppler.stdout).splitlines()[0]
+    cache = ScoreCache(SCORE_CACHE, work, read=not args.no_cache)
+    context = cache_context(versions['poppler'], env)
     expected = {(fixture['case'], engine) for fixture in BENCHMARK_FIXTURES for engine in engines[1:]}
     if metrics.keys() != expected or len(metrics) != len(data['results']):
         raise ValueError('Conversion logs do not cover the requested engines and fixtures')
@@ -364,7 +425,8 @@ def score_outputs(args):
         for fixture in BENCHMARK_FIXTURES:
             name = fixture['case']
             case_metrics = {(name, engine): metrics[name, engine] for engine in engines[1:]}
-            future = pool.submit(score_case, fixture, engines, case_metrics, visuals, output=output)
+            future = pool.submit(score_case, fixture, engines, case_metrics, visuals, output=output,
+                                 cache=cache, context=context, env=env)
             futures[future] = name
         try:
             for future in as_completed(futures):
@@ -417,6 +479,8 @@ def main():
     parser.add_argument('--syncfusion', action='store_true', help='Include the licensed Syncfusion DocIO run.')
     parser.add_argument('--minipdf', action='store_true', help='Include MiniPdf in the full comparison.')
     parser.add_argument('--rust', action='store_true', help='Include the dxpdf, rdocx and office2pdf runs.')
+    parser.add_argument('--no-cache', action='store_true',
+                        help='Score every PDF and render every reference again instead of reusing cached results.')
     args = parser.parse_args()
     if args.all:
         args.aspose = args.syncfusion = args.minipdf = args.rust = True
@@ -424,8 +488,9 @@ def main():
         parser.error('Standalone modes cannot be combined with full-comparison engine flags')
     if args.jobs < 1:
         parser.error('--jobs must be positive')
-    with benchmark_lock(OUTPUT):
-        score_outputs(args)
+    with (benchmark_lock(OUTPUT, stale=[(OUTPUT, 'scoring-')]),
+          TemporaryDirectory(prefix='scoring-', dir=OUTPUT) as work):
+        score_outputs(args, Path(work))
 
 
 if __name__ == '__main__':

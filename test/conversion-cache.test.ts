@@ -30,6 +30,19 @@ const right = '<w:jc w:val="right"/>';
 const section = (width: number) => '<w:sectPr><w:pgSz w:w="' + width * 20 + '" w:h="12000"/><w:pgMar w:left="1000" w:right="1000"/></w:sectPr>';
 
 describe('conversion caches', () => {
+  it('resolves reused Word styles against each document’s theme', async () => {
+    const resolve = async (accent: string, slot = 'accent1') => {
+      const styles = `<w:style w:type="paragraph" w:styleId="Heading"><w:rPr><w:color w:themeColor="${slot}"/></w:rPr></w:style>`;
+      const theme = `<a:clrScheme><a:accent1><a:srgbClr val="${accent}"/></a:accent1><a:accent2><a:srgbClr val="112233"/></a:accent2></a:clrScheme>`;
+      const doc = makeDocx({ styles, theme, body: p('Title', '<w:pStyle w:val="Heading"/>') });
+      return lines((await layout(doc)).pages[0].body)[0].ops[0].color;
+    };
+    expect(await resolve('FF0000')).toBe('FF0000');
+    expect(await resolve('00FF00')).toBe('00FF00');
+    expect(await resolve('0000FF')).toBe('0000FF');
+    expect(await resolve('0000FF', 'accent2')).toBe('112233');
+  });
+
   it('lays out the same separator and note at each section width', async () => {
     const footnotes = '<w:footnote w:type="separator" w:id="-1">' + p('Rule', right) + '</w:footnote><w:footnote w:id="1">' + p('Note', right) + '</w:footnote>';
     const { pages } = await layout(makeDocx({ body: ref + p('', section(700)) + ref, sectPr: section(400), footnotes }));

@@ -488,6 +488,7 @@ export class FontRegistry {
         .filter((cp) => cp >= 32 && !primary.face.font.hasGlyph(cp) && !synthesized(primary.face.font, cp));
       const lacks = new Set(missing);
       if (!kind && [...codePoints].some((cp) => mayPrintAsEmoji(cp, codePoints, lacks.has(cp)))) await this.loadEmoji(bold, italic);
+      if (!missing.length) continue;
       const unfound = await this.loadFallbacks(family, bold, italic, missing, lang);
       // A dingbat no font has can still be drawn with an older look-alike, as can one only an emoji
       // font has: the look-alike is drawn more like the symbol font's glyph (Webdings' box, not ⬜).

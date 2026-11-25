@@ -5,6 +5,69 @@ with Microsoft Word for Mac references and uses all [178 vendored cases](upstrea
 Both sets are verified against SHA-256 hashes. See the [Hugging Face corpus](https://huggingface.co/datasets/arthrod/neurotic_docx_bench-fixtures)
 for attribution and notices about individual files.
 
+## Results
+
+The [main README](../../README.md#word-to-pdf) shows a summary of these results.
+
+The November 2026 baseline shares cold conversions, measurements and scores for EigenPal,
+LibreOffice, dxpdf, rdocx and office2pdf with the DocFoundry comparison. Both used the same
+SHA-256-verified inputs and references, provider versions and cold invocation settings on the same
+Linux host. Kanera and the three .NET 10 providers were measured and scored here. All nine engines
+ran this repository's warm benchmark. [DocFoundry Word benchmark](https://github.com/happendev/DocFoundry/blob/main/tools/bench/README.md)
+
+<!-- benchmark-results:start -->
+| Converter | Mean ink overlap | Matching page count | Failed conversions | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS | Total PDF size |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| @kanera/docx2pdf 1.0.0 | **92.6%** | **273/278** | **0/278** | **105.2 ms** | **4.9 ms** | **80.6 ms** | **58.7** | 80.1 MiB | **161.2 MiB** | **17.72 MiB** |
+| LibreOffice 26.8.3.1 | 80.3% | 256/278 | **0/278** | 791.6 ms | 59.6 ms | 248.2 ms | 10.3 | 252.7 MiB | 417.9 MiB | 44.46 MiB |
+| EigenPal 2.39.0 | 70.9% | 257/278 | 1/278 | 766.1 ms | 255.3 ms | 645.4 ms | 3.7 | 276.6 MiB | 576.1 MiB | 21.98 MiB |
+| Syncfusion DocIO (.NET) 28.2.4.0 | 56.8% | 246/278 | 1/278 | 589.2 ms | 60.7 ms | 2416.2 ms | 1.1 | 121.4 MiB | 1024.8 MiB | 18.91 MiB |
+| Aspose.Words (.NET) 26.11.0.0 | 51.9% | 250/278 | **0/278** | 1040.4 ms | 36.6 ms | 368.6 ms | 11.2 | 105.3 MiB | 240.0 MiB | 19.84 MiB |
+| office2pdf (Rust) 0.11.0 | 49.1% | 240/278 | 1/278 | 321.6 ms | 114.6 ms | 283.1 ms | 7.5 | **42.8 MiB** | 248.4 MiB | 30.30 MiB |
+| MiniPdf (.NET) 0.43.2 | 43.8% | 247/278 | **0/278** | 351.9 ms | 163.6 ms | 196.2 ms | 6.2 | 135.4 MiB | 212.0 MiB | 2532.58 MiB |
+| rdocx (Rust) 0.17.0 | 40.5% | 214/278 | 44/278 | 208.8 ms | 26.0 ms | 264.8 ms | 13.7 | 146.1 MiB | 466.1 MiB | 24.12 MiB |
+| dxpdf (Rust) 0.8.1 | 36.4% | 236/278 | 9/278 | 986.7 ms | 1011.6 ms | 1360.8 ms | 1.0 | 257.5 MiB | 341.2 MiB | 15.80 MiB |
+
+Peak RSS is the peak resident memory during a successful cold conversion.
+
+The smallest total PDF size is determined among converters that completed every document.
+<!-- benchmark-results:end -->
+
+### By suite
+
+Ink overlap by suite and head-to-head counts against each converter.
+
+<!-- benchmark-breakdown:start -->
+278 documents.
+
+| Cases | Reference | @kanera/docx2pdf | EigenPal | LibreOffice | Aspose.Words (.NET) | Syncfusion DocIO (.NET) | MiniPdf (.NET) | dxpdf (Rust) | rdocx (Rust) | office2pdf (Rust) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 150 classic | Microsoft 365 Word page images | **99.1%** | 74.0% | 91.2% | 51.0% | 59.3% | 55.9% | 36.9% | 44.8% | 57.1% |
+| 100 Hugging Face | Word for Mac PDFs | **86.1%** | 66.9% | 70.3% | 54.1% | 54.5% | 28.8% | 37.7% | 39.4% | 40.9% |
+| 20 issues | Microsoft 365 Word PDFs | **90.5%** | 71.1% | 53.7% | 49.4% | 52.3% | 31.4% | 31.2% | 18.7% | 32.3% |
+| 8 issues | LibreOffice PDFs | 58.6% | 62.9% | **68.1%** | 49.4% | 49.0% | 36.7% | 24.7% | 26.8% | 42.4% |
+
+The head-to-head counts use the full comparison. Per-document ink overlap differences under half a percentage point count as ties.
+
+| Compared with | Kanera higher | Kanera lower | Ties |
+| --- | ---: | ---: | ---: |
+| EigenPal | 217 | 21 | 40 |
+| LibreOffice | 165 | 23 | 90 |
+| Aspose.Words (.NET) | 255 | 13 | 10 |
+| Syncfusion DocIO (.NET) | 254 | 10 | 14 |
+| MiniPdf (.NET) | 272 | 3 | 3 |
+| dxpdf (Rust) | 270 | 5 | 3 |
+| rdocx (Rust) | 243 | 2 | 33 |
+| office2pdf (Rust) | 272 | 3 | 3 |
+<!-- benchmark-breakdown:end -->
+
+LibreOffice ran as a Flatpak on the host, launched from a container. The timings include that
+launch, and GNU time measured the launcher’s memory. LibreOffice used the host’s
+Microsoft fonts, including Arial, Aptos and Times New Roman. Aspose and Syncfusion fell back to
+Liberation and DejaVu.
+
+## Corpus
+
 MiniPdf published the classic Microsoft 365 Word reference images used for ink scoring.
 The vendored PNGs come from the [pinned MiniPdf benchmark site](https://github.com/mini-software/minipdf-web-page/tree/96c015dffad995f4e03ab07b25c073d424ddb1c5/assets/benchmarks/dotnet/classic/docx).
 The site repository leaves redistribution terms for these images unspecified. The GitHub Pages
@@ -56,8 +119,8 @@ out/benchmark-word/venv/bin/python benchmarks/word/score.py --all
 ```
 
 `--all` requires the [comparison engines](#include-asposewords-for-net) and their licenses where
-applicable. Scoring the full comparison updates the benchmark summary and comparison table in the
-main README and the breakdown below. Bold marks the best comparable values, including ties.
+applicable. Scoring the full comparison updates the summary table in the main README and the
+[results and breakdown](#results) above. Bold marks the best comparable values, including ties.
 Scoring uses up to eight processes by default. Use `score.py --jobs 1` to score one case at a
 time, or set a different worker count with `--jobs`. Cold and warm conversion timings are serial.
 
@@ -70,10 +133,24 @@ successfully.
 Each comparison engine's results and PDFs are saved in `out/benchmark-word/cache/<engine>-<key>/`
 as soon as that engine finishes, and later runs reuse them instead of measuring it again. The key
 covers the engine and runtime versions, its runner files and lock files, the input and reference
-digests, the scoring code, the CPU model, and the timing settings. Kanera is always measured.
+digests, the CPU model, and the timing settings. Scores are cached separately, so changing the
+scoring code does not measure the engines again. Kanera is always measured.
 Scoring and the README tables treat cached engines like measured ones. Use `--no-cache` to
 measure every engine again, for example after changing fonts. Raise `CACHE_FORMAT` in
 `convert.py` when the measurement changes.
+
+`score.py` keeps each PDF's score in `out/benchmark-word/score-cache/`, so a PDF that has not
+changed, including a cached engine's or an unchanged Kanera PDF, is not rasterized or scored
+again. The key covers the PDF's SHA-256, the reference digests, the Poppler, PyMuPDF, Pillow and
+NumPy versions, the font files Poppler can substitute, the DPI and ink settings, and the SHA-256
+of the scoring code. Rendered reference pages are cached there too. Unreadable PDFs are scored
+again on every run. The gallery still renders every page for its side-by-side images. Use
+`score.py --no-cache` to score everything again, and delete the directory to reclaim its space.
+
+Each run gives the converters and scoring tools it starts a `TMPDIR`, `TMP` and `TEMP` inside its
+own work directory under `out/benchmark-word/` (`convert-*` or `scoring-*`), not `/tmp`, and
+deletes it when the run ends, including on an error or Ctrl-C. Runs take a lock on the output
+directory, and a new run deletes the work directories that a killed run left behind.
 
 ### Fast Kanera-only run
 
@@ -88,8 +165,8 @@ out/benchmark-word/venv/bin/python benchmarks/word/score.py --kanera-only
 The results go in `out/benchmark-word/kanera-only/`. Add `--gallery` to the scoring command to
 generate the side-by-side screenshots. The full comparison generates a gallery by default and
 accepts `--no-gallery` for a report and CSV without screenshots.
-Scoring a Kanera-only run refreshes the Kanera rows in the main README and the Kanera suite scores
-below.
+Scoring a Kanera-only run refreshes the Kanera rows in the main README and in the results and suite
+scores below.
 
 ### Text extraction accuracy
 
@@ -105,9 +182,10 @@ compares the words with those PyMuPDF reads from the Word PDF, as a bag, so read
 count. Recall is the share of the reference's words that the extracted text has, and precision is
 the share of the extracted words found in the reference. The run prints the median extraction
 time, lists the fixtures with the lowest scores (`--worst N`), and writes per-fixture counts to
-`out/benchmark-word/text-accuracy.json`. Most remaining differences are in the reference, not the
-extraction: comment balloons and deletions printed in markup view, header text and page numbers
-repeated on every page, and words split at superscripts or by PDF glyph mapping.
+`out/benchmark-word/text-accuracy.json`. On 25 November 2026, extraction took a median
+1.2 ms across 278 documents. The 120 Microsoft Word PDF references yielded 98.41% word recall and
+99.38% precision. Reference text can include repeated headers, page numbers, comments and
+deletions. Superscripts and PDF glyph mappings can also split words.
 
 ### Compare bundled CJK font loading
 
@@ -220,42 +298,6 @@ column of `results.csv`. The report
 counts failed conversions for every engine. Speed and memory figures cover successful conversions
 only.
 
-## Latest results
-
-Ink overlap by suite for the [benchmark comparison](../../README.md#benchmark).
-
-<!-- benchmark-breakdown:start -->
-278 documents.
-
-| Cases | Reference | @kanera/docx2pdf | EigenPal | LibreOffice | Aspose.Words (.NET) | Syncfusion DocIO (.NET) | dxpdf (Rust) | rdocx (Rust) | office2pdf (Rust) | MiniPdf (.NET) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 150 classic | Microsoft 365 Word page images | **99.1%** | 74.0% | 91.2% | 51.0% | 58.4% | 36.9% | 44.8% | 57.1% | 55.9% |
-| 100 Hugging Face | Word for Mac PDFs | **86.1%** | 66.9% | 70.3% | 54.4% | 54.2% | 37.7% | 39.4% | 40.9% | 28.8% |
-| 20 issues | Microsoft 365 Word PDFs | **90.5%** | 71.1% | 53.7% | 49.8% | 51.9% | 31.2% | 18.7% | 32.3% | 31.4% |
-| 8 issues | LibreOffice PDFs | 58.6% | 62.9% | **68.1%** | 49.4% | 48.6% | 24.7% | 26.8% | 42.4% | 36.7% |
-
-The head-to-head counts use the full comparison. Per-document ink overlap differences under half
-a percentage point count as ties.
-
-| Compared with | Kanera higher | Kanera lower | Ties |
-| --- | ---: | ---: | ---: |
-| EigenPal | 216 | 26 | 36 |
-| LibreOffice | 163 | 25 | 90 |
-| Aspose.Words (.NET) | 252 | 15 | 11 |
-| Syncfusion DocIO (.NET) | 252 | 13 | 13 |
-| dxpdf (Rust) | 269 | 6 | 3 |
-| rdocx (Rust) | 242 | 3 | 33 |
-| office2pdf (Rust) | 270 | 5 | 3 |
-| MiniPdf (.NET) | 270 | 5 | 3 |
-
-MiniPdf results come from a standalone run.
-<!-- benchmark-breakdown:end -->
-
-LibreOffice ran as a Flatpak on the host, launched from a container. The timings include that
-launch, and GNU time measured the launcher’s memory. LibreOffice used the host’s
-Microsoft fonts, including Arial, Aptos and Times New Roman. Aspose and Syncfusion fell back to
-Liberation and DejaVu.
-
 ## Measurement
 
 - **Cold speed.** The benchmark launches a fresh process for each converter and document.
@@ -317,6 +359,11 @@ converted PDFs, images, results, and build outputs are Git-ignored.
 
 ## Full corpus accuracy
 
+The November 2026 baseline shares the DocFoundry accuracy score on the same reference corpus.
+The parity run compared the PDF objects and decompressed streams for all 2,649 successful
+conversions. Both builds rejected the same remaining document at the image pixel limit.
+[DocFoundry output parity](https://github.com/happendev/DocFoundry/blob/main/benchmarks/README.md#output-parity-with-kanera)
+
 Run this accuracy check from the repository root on Linux. It builds the current checkout and
 scores 2,650 DOCX files from two sources.
 
@@ -352,9 +399,16 @@ out/word-accuracy-venv/bin/python benchmarks/word/accuracy.py \
 Use `--corpus upstream` to run only the vendored cases, or `--corpus huggingface` to run only
 the Hugging Face pairs and compare with an earlier Hugging Face-only report.
 
-The first Hugging Face run downloads missing pairs into the system temporary directory and
-waits for any rate-limit windows to reset. Later runs verify SHA-256 hashes and reuse the files.
+The first Hugging Face run downloads missing pairs into `out/benchmark-word/huggingface/<revision>/`
+and waits for any rate-limit windows to reset. Later runs verify SHA-256 hashes and reuse the files.
 Use `--cache-dir` to point to the `word/` directory of an existing Hugging Face snapshot or to
-choose where to cache the download. The JSON report includes overall and per-corpus accuracy,
+choose where to cache the download.
+
+Each converted PDF's score is kept in `out/benchmark-word/score-cache/`, keyed like the
+benchmark's scores, so a document whose PDF has not changed is not rasterized or scored again.
+Use `--no-score-cache` to score every PDF again. The runner builds the renderer and keeps its
+child processes' `TMPDIR` in an `accuracy-*` work directory under `out/benchmark-word/accuracy/`.
+One accuracy run at a time holds that directory's lock, and a new run deletes the work directory
+a killed run left behind. The JSON report includes overall and per-corpus accuracy,
 per-document scores and reference applications, page counts, and tool versions. Use the same
 corpus selection, tool versions and font environment when comparing runs.

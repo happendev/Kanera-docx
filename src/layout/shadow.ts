@@ -13,9 +13,6 @@ import type { DrawOp, PathSeg } from './types.js';
 
 /** Larger shadows are drawn coarser, so one picture stays a few megabytes. */
 const MAX_SHADOW_PIXELS = 4_000_000;
-/** 32-bit top-down DIB header with BI_ALPHABITFIELDS masks (B, G, R, A bytes in each pixel). */
-const DIB_HEADER = 56;
-
 /** An outer shadow: offset (dx, dy) and blur radius in pt, colour, and scale about the shape's centre. */
 export interface Shadow {
   dx: number;
@@ -137,78 +134,139 @@ function shadowImage(
   sigma: number,
   id: string,
 ): ImageRef {
-  const mask = new Float32Array(pw * ph);
   const m: [number, number, number, number, number, number] = [scale, 0, 0, scale, -x0 * scale, -y0 * scale];
-  const coverage = new Coverage();
-  if (fill) {
-    const poly = new Polylines();
-    flattenSegs(fill, m, poly);
-    if (coverage.begin(0, 0, pw, ph)) {
-      coverage.addPolylines(poly);
-      coverage.sweep(true, (y, from, to, row) => mask.set(row.subarray(from, to), y * pw + from));
-    }
-  }
+  const area = new Polylines();
+  if (fill) flattenSegs(fill, m, area);
+  const outline = new Polylines();
   if (line) {
     const poly = new Polylines();
-    const out = new Polylines();
     flattenSegs(line.segs, m, poly);
-    strokeOutline(poly, { width: line.width * scale, cap: 'butt', join: 'round', miterLimit: 10, dash: line.dash?.map((d) => d * scale) }, out);
-    if (coverage.begin(0, 0, pw, ph)) {
-      coverage.addPolylines(out);
-      coverage.sweep(false, (y, from, to, row) => {
-        for (let x = from, o = y * pw + from; x < to; x++, o++) if (row[x] > mask[o]) mask[o] = row[x];
-      });
+    strokeOutline(poly, { width: line.width * scale, cap: 'butt', join: 'round', miterLimit: 10, dash: line.dash?.map((d) => d * scale) }, outline);
+  }
+
+  // Between the left and right edges of a box, all columns have the same
+  // coverage. Keep a full kernel window there and restore its middle pixel
+  // across the omitted columns after both passes. Curves and diagonals
+  // touching the middle shrink or eliminate the band.
+  const middle = pw / 2;
+  let left = 0, right = pw;
+  for (const path of [area, outline]) {
+    for (let s = 0; s < path.starts.length && left < right; s++) {
+      const start = path.starts[s], end = path.end(s);
+      for (let i = start, prev = end - 1; i < end; prev = i++) {
+        if (path.ys[i] === path.ys[prev]) continue;
+        const lo = Math.min(path.xs[i], path.xs[prev]);
+        const hi = Math.max(path.xs[i], path.xs[prev]);
+        if (hi < middle) left = Math.max(left, Math.ceil(hi) + 2);
+        else if (lo > middle) right = Math.min(right, Math.floor(lo) - 1);
+        else { right = left; break; }
+      }
     }
   }
-  const blurred = sigma > 0 ? gaussianBlur(mask, pw, ph, sigma) : mask;
-  const header = new Uint8Array(DIB_HEADER);
-  const view = new DataView(header.buffer);
-  view.setInt32(0, 40, true);
-  view.setInt32(4, pw, true);
-  view.setInt32(8, -ph, true);
-  view.setUint16(12, 1, true);
-  view.setUint16(14, 32, true);
-  view.setInt32(16, 6, true);
-  view.setInt32(20, pw * ph * 4, true);
-  view.setUint32(40, 0x00ff0000, true);
-  view.setUint32(44, 0x0000ff00, true);
-  view.setUint32(48, 0x000000ff, true);
-  view.setUint32(52, 0xff000000, true);
-  const rgb = parseInt(color.slice(0, 6), 16) || 0;
-  const bits = new Uint8Array(pw * ph * 4);
-  for (let i = 0, o = 0; i < blurred.length; i++, o += 4) {
-    bits[o] = rgb & 0xff;
-    bits[o + 1] = (rgb >> 8) & 0xff;
-    bits[o + 2] = rgb >> 16;
-    bits[o + 3] = Math.round(255 * alpha * Math.min(1, blurred[i]));
+  const radius = Math.max(1, Math.ceil(3 * sigma));
+  const gap = Math.max(0, right - left - (2 * radius + 1));
+  const split = left + radius + 1;
+  const width = pw - gap;
+  const mask = new Float32Array(width * ph);
+  const coverage = new Coverage();
+  if (fill && coverage.begin(0, 0, pw, ph, split, gap)) {
+    coverage.addPolylines(area);
+    coverage.sweep(true, (y, from, to, row) => mask.set(row.subarray(from, to), y * width + from));
   }
-  return { id, data: header, dibBits: bits, contentType: 'image/bmp' };
+  if (line && coverage.begin(0, 0, pw, ph, split, gap)) {
+    coverage.addPolylines(outline);
+    coverage.sweep(false, (y, from, to, row) => {
+      for (let x = from, o = y * width + from; x < to; x++, o++) if (row[x] > mask[o]) mask[o] = row[x];
+    });
+  }
+  if (sigma > 0) gaussianBlurInPlace(mask, width, ph, sigma);
+  const opacity = new Uint8Array(pw * ph);
+  for (let y = 0; y < ph; y++) {
+    let dest = y * pw;
+    for (let x = 0; x < width; x++) {
+      if (gap && x === split) {
+        opacity.fill(opacity[dest - 1], dest, dest + gap);
+        dest += gap;
+      }
+      opacity[dest++] = Math.round(255 * alpha * Math.min(1, mask[y * width + x]));
+    }
+  }
+  return { id, data: opacity, solid: { width: pw, height: ph, rgb: parseInt(color.slice(0, 6), 16) || 0 } };
 }
 
-/** `src` (w × h) blurred by a Gaussian of `sigma` pixels, reaching three sigmas each way; zero past the edges. */
-export function gaussianBlur(src: Float32Array, w: number, h: number, sigma: number): Float32Array {
+/** Blur the coverage mask in place, reaching three sigmas each way with zero coverage past its edges. */
+export function gaussianBlurInPlace(mask: Float32Array, w: number, h: number, sigma: number): void {
   const r = Math.max(1, Math.ceil(3 * sigma));
   const kernel = new Float32Array(2 * r + 1);
   let total = 0;
   for (let i = -r; i <= r; i++) total += kernel[i + r] = Math.exp(-(i * i) / (2 * sigma * sigma));
   for (let i = 0; i < kernel.length; i++) kernel[i] /= total;
-  const across = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) {
-    const row = y * w;
-    for (let x = 0; x < w; x++) {
-      let v = 0;
-      for (let k = Math.max(-r, -x), end = Math.min(r, w - 1 - x); k <= end; k++) v += src[row + x + k] * kernel[k + r];
-      across[row + x] = v;
+  // Retain the two edges of an identical row run and one interior row. Every
+  // omitted row has exactly the same vertical kernel window as that interior row.
+  const copies = new Int32Array(h);
+  const across = new Float32Array(w);
+  let rows = 0;
+  for (let y = 0; y < h;) {
+    const start = y * w;
+    let end = y + 1;
+    while (end < h && equalRow(mask, start, end * w, w)) end++;
+    blurLine(mask.subarray(start, start + w), across, kernel, false);
+    const kept = Math.min(end - y, kernel.length);
+    for (let i = 0; i < kept; i++) mask.set(across, (rows + i) * w);
+    if (kept < end - y) copies[rows + r] = end - y - kept;
+    rows += kept;
+    y = end;
+  }
+  const input = new Float32Array(rows);
+  const output = new Float32Array(rows);
+  for (let x = 0; x < w; x++) {
+    let changed = x === 0;
+    for (let y = 0, pos = x; y < rows; y++, pos += w) {
+      const sample = mask[pos];
+      if (sample !== input[y]) {
+        input[y] = sample;
+        changed = true;
+      }
+    }
+    if (changed) blurLine(input, output, kernel, true);
+    for (let y = 0, pos = x; y < rows; y++, pos += w) mask[pos] = output[y];
+  }
+  if (rows < h) {
+    let dest = h;
+    for (let y = rows - 1; y >= 0; y--) {
+      const row = mask.subarray(y * w, (y + 1) * w);
+      for (let i = 0; i <= copies[y]; i++) mask.set(row, --dest * w);
     }
   }
-  const out = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let k = Math.max(-r, -y), end = Math.min(r, h - 1 - y); k <= end; k++) {
-      const weight = kernel[k + r];
-      const from = (y + k) * w;
-      const to = y * w;
-      for (let x = 0; x < w; x++) out[to + x] += across[from + x] * weight;
+}
+
+function equalRow(mask: Float32Array, a: number, b: number, width: number): boolean {
+  for (let i = 0; i < width; i++) if (mask[a + i] !== mask[b + i]) return false;
+  return true;
+}
+
+function blurLine(input: Float32Array, output: Float32Array, kernel: Float32Array, roundEachTap: boolean): void {
+  const radius = (kernel.length - 1) / 2;
+  for (let start = 0; start < input.length;) {
+    let end = start + 1;
+    while (end < input.length && input[end] === input[start]) end++;
+    for (let x = start; x < end;) {
+      const first = Math.max(0, x - radius);
+      const last = Math.min(input.length - 1, x + radius);
+      let sum = 0;
+      for (let i = first; i <= last; i++) {
+        sum += input[i] * kernel[i - x + radius];
+        // The vertical pass accumulates into Float32; the horizontal pass rounds once.
+        if (roundEachTap) sum = Math.fround(sum);
+      }
+      // Every full kernel window inside this constant run sees the same samples.
+      if (x === start + radius && x + radius + 1 < end) {
+        output.fill(sum, x, end - radius);
+        x = end - radius;
+      } else {
+        output[x++] = sum;
+      }
     }
+    start = end;
   }
-  return out;
 }

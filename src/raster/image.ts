@@ -5,7 +5,7 @@
 // inverse transform inside their outline.
 
 import type { ImageBudget } from '../image/budget.js';
-import { decodePixels, type Pixmap } from '../image/pixels.js';
+import { decodePixels, solidPixels, type Pixmap } from '../image/pixels.js';
 import type { ImageOp } from '../layout/types.js';
 import type { Compression } from '../util/compression.js';
 import type { Canvas } from './canvas.js';
@@ -75,7 +75,7 @@ export class ImagePainter {
     const key = ref.adjust ? `${dataId}:${ref.adjust.slope}:${ref.adjust.offset}` : `${dataId}`;
     let px = this.decoded.get(key);
     if (px === undefined) {
-      px = await decodePixels(ref.data, this.compression, this.budget, ref.dibBits, ref.adjust);
+      px = ref.solid ? solidPixels(ref.solid, ref.data, this.budget, ref.adjust) : await decodePixels(ref.data, this.compression, this.budget, ref.dibBits, ref.adjust);
       this.decoded.set(key, px, px ? px.data.length : 0);
     }
     return px;

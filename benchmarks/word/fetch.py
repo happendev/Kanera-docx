@@ -4,9 +4,14 @@ from hashlib import sha256
 from pathlib import Path
 from urllib.request import urlopen
 import json
+import os
+import re
+import shutil
 
 HERE = Path(__file__).resolve().parent
 OUTPUT = HERE.parents[1] / 'out' / 'benchmark-word'
+# The random part of a tempfile name: eight of [a-z0-9_].
+TEMPORARY_SUFFIX = re.compile(r'[a-z0-9_]{8}')
 MANIFEST = json.loads((HERE / 'fixtures.json').read_text())
 CORPUS = f"{MANIFEST['source']}/resolve/{MANIFEST['revision']}/word/"
 UPSTREAM_DIR = HERE / 'upstream'
@@ -21,7 +26,13 @@ BENCHMARK_FIXTURES = [
 
 
 @contextmanager
-def benchmark_lock(output):
+def benchmark_lock(output, stale=()):
+    """Hold the run lock of an output directory, then delete the work directories of stopped runs.
+
+    stale lists (directory, prefix) pairs: the TemporaryDirectory work directories with that prefix
+    that this runner creates in that directory. Every run that creates them holds this lock, so any
+    that exist now were left by a run that was killed.
+    """
     from fcntl import LOCK_EX, LOCK_NB, flock
 
     output.mkdir(parents=True, exist_ok=True)
@@ -29,8 +40,33 @@ def benchmark_lock(output):
         try:
             flock(lock, LOCK_EX | LOCK_NB)
         except BlockingIOError:
-            raise SystemExit(f'Conversion or scoring is already running in {output}') from None
+            raise SystemExit(f'Another benchmark run is already using {output}') from None
+        for directory, prefix in stale:
+            remove_stale_work(directory, prefix)
         yield
+
+
+def remove_stale_work(directory, prefix):
+    """Delete directory/<prefix><8 random characters>, the names TemporaryDirectory(prefix=...) uses."""
+    if not directory.is_dir():
+        return
+    for path in directory.iterdir():
+        suffix = path.name.removeprefix(prefix)
+        if (suffix != path.name and TEMPORARY_SUFFIX.fullmatch(suffix) and path.is_dir()
+                and not path.is_symlink()):
+            print(f'Removing {path}, left by a stopped run', flush=True)
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def child_environment(directory):
+    """Create directory and return an environment that puts child processes' temporary files in it.
+
+    Pass it as env= to each subprocess; the parent's own environment and tempfile stay unchanged.
+    The directory lives in a run's work directory, which is removed when the run ends.
+    """
+    directory.mkdir()
+    path = str(directory)
+    return {**os.environ, 'TMPDIR': path, 'TMP': path, 'TEMP': path}
 
 
 def verify(path, digest):

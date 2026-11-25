@@ -1,5 +1,6 @@
-// Converts DOCX to Markdown with Aspose.Words or Syncfusion DocIO, using each library's defaults.
-// MarkdownBenchmark <aspose|syncfusion> <input.docx> <output.md>
+// Converts DOCX to Markdown, or to plain text for a .txt output, with Aspose.Words or Syncfusion
+// DocIO, using each library's defaults.
+// MarkdownBenchmark <aspose|syncfusion> <input.docx> <output.md|output.txt>
 // MarkdownBenchmark <aspose|syncfusion> --batch <jobs.json>   (prints one time in ms per job, or null)
 // MarkdownBenchmark --version
 using System.Diagnostics;
@@ -18,7 +19,7 @@ if (args is ["--version"])
 }
 if (args.Length != 3 || args[0] is not ("aspose" or "syncfusion"))
 {
-    Console.Error.WriteLine("Usage: MarkdownBenchmark <aspose|syncfusion> <input.docx> <output.md> or --batch <jobs.json>");
+    Console.Error.WriteLine("Usage: MarkdownBenchmark <aspose|syncfusion> <input.docx> <output.md|output.txt> or --batch <jobs.json>");
     return 2;
 }
 
@@ -72,14 +73,15 @@ return 0;
 
 static void Convert(string engine, string input, string output)
 {
+    bool text = Path.GetExtension(output) == ".txt";
     if (engine == "aspose")
     {
         // Pictures go next to the Markdown file, as Aspose does by default.
-        new Aspose.Words.Document(input).Save(output, Aspose.Words.SaveFormat.Markdown);
+        new Aspose.Words.Document(input).Save(output, text ? Aspose.Words.SaveFormat.Text : Aspose.Words.SaveFormat.Markdown);
         return;
     }
     using var source = File.OpenRead(input);
     using var document = new Syncfusion.DocIO.DLS.WordDocument(source, Syncfusion.DocIO.FormatType.Docx);
     using var target = File.Create(output);
-    document.Save(target, Syncfusion.DocIO.FormatType.Markdown);
+    document.Save(target, text ? Syncfusion.DocIO.FormatType.Txt : Syncfusion.DocIO.FormatType.Markdown);
 }

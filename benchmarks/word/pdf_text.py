@@ -27,11 +27,11 @@ def words(doc):
     return pages
 
 
-def extract(pdf):
+def extract(pdf, env=None):
     """Pages of (token, x0, y0) and the lower-cased text, or None when extraction crashes or hangs."""
     try:
         result = subprocess.run([sys.executable, '-I', str(Path(__file__).resolve()), str(pdf)],
-                                capture_output=True, text=True, timeout=300)
+                                capture_output=True, text=True, timeout=300, env=env)
     except subprocess.TimeoutExpired:
         return None
     if result.returncode:

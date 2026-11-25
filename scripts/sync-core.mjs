@@ -40,6 +40,7 @@ const CORE = {
     'src/layout/shaper.ts',
     'src/layout/types.ts',
     'src/layout/vertical.ts',
+    'scripts/build.mjs',
     'scripts/sync-core.mjs',
   ],
   // Each package bundles one emoji font, which its src/profile.ts names.

@@ -13,7 +13,7 @@ import sys
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from fetch import BENCHMARK_FIXTURES, HERE, OUTPUT, benchmark_lock, verify
+from fetch import BENCHMARK_FIXTURES, HERE, OUTPUT, benchmark_lock, child_environment, verify
 from libreoffice_warm import batch_times
 
 GNU_TIME = '/usr/bin/time'
@@ -33,11 +33,13 @@ CACHE = OUTPUT / 'cache'
 UNCACHED = frozenset({'ours'})
 # Raise when the measurement changes, so that cached results are measured again.
 CACHE_FORMAT = 1
+# The output directories of the full comparison and the standalone modes. Each run works in a
+# convert-* directory inside one of them.
+RUN_DIRECTORIES = ('', 'kanera-only', 'minipdf-only')
 # Engines that fetch resources such as fonts on first use get one untimed pass over the documents
 # before any timed conversion. None of the current engines do: EigenPal, dxpdf, rdocx and
 # office2pdf read installed or packaged fonts, and the .NET runners and LibreOffice download nothing.
 PRIME = frozenset()
-SCORING_FILES = (HERE / 'score.py', HERE / 'ink.py', HERE / 'pdf_text.py')
 RUNTIMES = {'eigenpal': 'node', 'aspose': 'dotnet', 'syncfusion': 'dotnet', 'minipdf': 'dotnet'}
 
 
@@ -45,7 +47,7 @@ def version(command):
     return subprocess.check_output(command, text=True).strip()
 
 
-def measure(command, rss_file, timeout=None):
+def measure(command, rss_file, timeout=None, env=None):
     if timeout:
         # coreutils timeout waits for the converter, so GNU time still sees its peak RSS.
         command = ['timeout', '-k', '5', str(timeout), *command]
@@ -55,6 +57,7 @@ def measure(command, rss_file, timeout=None):
         capture_output=True,
         text=True,
         check=True,
+        env=env,
     )
     ms = (perf_counter() - start) * 1000
     rss_kib = int(rss_file.read_text())
@@ -98,7 +101,7 @@ def cold_command(engine, input_path, target, work, workers):
     return [*workers[engine], input_path, target], target
 
 
-def convert_document(engine, fixture, work, output, workers, *, timed=True):
+def convert_document(engine, fixture, work, output, workers, *, timed=True, env=None):
     """Convert one document in a fresh process. Untimed rows stay out of the speed and memory figures."""
     name = fixture['case']
     input_path = OUTPUT / 'cases' / name / 'input.docx'
@@ -111,7 +114,7 @@ def convert_document(engine, fixture, work, output, workers, *, timed=True):
     flags = {} if timed else {'untimed': True}
     start = perf_counter()
     try:
-        metrics, result = measure(command, work / 'rss.txt', TIMEOUT_S)
+        metrics, result = measure(command, work / 'rss.txt', TIMEOUT_S, env)
         if written != target and written.is_file():
             written.replace(target)
         if not target.is_file():
@@ -135,7 +138,7 @@ def convert_document(engine, fixture, work, output, workers, *, timed=True):
     return {'case': name, 'engine': engine, **metrics, **flags, **details}
 
 
-def prime(engine, fixtures, work, workers):
+def prime(engine, fixtures, work, workers, env=None):
     """One untimed conversion of each document, so that no timing includes a first-use download."""
     directory = work / f'prime-{engine}'
     directory.mkdir()
@@ -145,18 +148,18 @@ def prime(engine, fixtures, work, workers):
         command, _ = cold_command(engine, OUTPUT / 'cases' / name / 'input.docx', directory / f'{name}.pdf',
                                   directory / name, workers)
         # A failure here shows up again in the timed conversion.
-        subprocess.run(['timeout', '-k', '5', str(TIMEOUT_S), *command], capture_output=True)
+        subprocess.run(['timeout', '-k', '5', str(TIMEOUT_S), *command], capture_output=True, env=env)
     shutil.rmtree(directory, ignore_errors=True)
 
 
-def convert_engine(engine, fixtures, sample, work, output, workers):
+def convert_engine(engine, fixtures, sample, work, output, workers, env=None):
     """Cold conversions of one engine, one process at a time: the sample first, then the others."""
     if engine in PRIME:
-        prime(engine, fixtures, work, workers)
+        prime(engine, fixtures, work, workers, env)
     rows = {}
     first = [fixture for fixture in fixtures if fixture['case'] in sample]
     for fixture in first:
-        rows[fixture['case']] = convert_document(engine, fixture, work, output, workers)
+        rows[fixture['case']] = convert_document(engine, fixture, work, output, workers, env=env)
     rest = [fixture for fixture in fixtures if fixture['case'] not in sample]
     estimate = statistics.fmean(rows[fixture['case']]['cold_ms'] for fixture in first) * len(fixtures)
     timed = estimate <= FULL_TIMING_MS
@@ -171,18 +174,18 @@ def convert_engine(engine, fixtures, sample, work, output, workers):
         print(f'{engine}: about {estimate / 60_000:.1f} min for all {len(fixtures)} documents, so timed on '
               f'the {len(first)}-document sample; converting the other {len(rest)} untimed', flush=True)
     for fixture in rest:
-        rows[fixture['case']] = convert_document(engine, fixture, work, output, workers, timed=timed)
+        rows[fixture['case']] = convert_document(engine, fixture, work, output, workers, timed=timed, env=env)
     return [rows[fixture['case']] for fixture in fixtures]
 
 
-def read_batch(command, timeout=WARM_TIMEOUT_S):
-    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+def read_batch(command, timeout=WARM_TIMEOUT_S, env=None):
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, env=env)
     if result.returncode:
         raise RuntimeError(f'Warm benchmark worker failed: {result.stderr.strip()}')
     return json.loads(result.stdout)
 
 
-def resumable_warm(engine, cases, work, by_case, max_restarts=5):
+def resumable_warm(engine, cases, work, by_case, max_restarts=5, env=None):
     # A CLI batch can exit partway (LibreOffice occasionally does). Record what it timed, leave the
     # document it stopped on without a warm time, and continue with a fresh batch after it.
     command = (office2pdf_command, 'office2pdf') if engine == 'office2pdf' else ()
@@ -192,7 +195,7 @@ def resumable_warm(engine, cases, work, by_case, max_restarts=5):
         attempt_dir.mkdir()
         jobs = [(str(OUTPUT / 'cases' / name / 'input.docx'), str(attempt_dir / f'{i}.pdf'))
                 for i, name in enumerate([remaining[0], *remaining])]
-        times = batch_times(jobs, attempt_dir, *command)
+        times = batch_times(jobs, attempt_dir, *command, env=env)
         if any(not math.isfinite(t) or t <= 0 for t in times):
             raise ValueError(f'Invalid warm timings for {engine}')
         for _, target in jobs[:len(times)]:
@@ -213,7 +216,7 @@ def resumable_warm(engine, cases, work, by_case, max_restarts=5):
     raise RuntimeError(f'{engine} warm batch stopped more than {max_restarts} times')
 
 
-def measure_warm(engine, rows, workspace, workers):
+def measure_warm(engine, rows, workspace, workers, env=None):
     by_case = {row['case']: row for row in rows}
     work = workspace / f'warm-{engine}'
     work.mkdir()
@@ -226,12 +229,12 @@ def measure_warm(engine, rows, workspace, workers):
             for i, name in enumerate([cases[0], *cases])]
     print(f'{engine}: warm-up and {len(cases)} warm conversions', flush=True)
     if engine in ('libreoffice', 'office2pdf'):
-        resumable_warm(engine, cases, work, by_case)
+        resumable_warm(engine, cases, work, by_case, env=env)
         return
     jobs_file = work / 'jobs.json'
     jobs_file.write_text(json.dumps(jobs))
     worker = workers.get(engine) or ['node', HERE / 'convert.mjs', engine]
-    times = read_batch([*worker, '--batch', jobs_file])
+    times = read_batch([*worker, '--batch', jobs_file], env=env)
     if (len(times) != len(jobs) or times[0] is None or
             any(engine != 'minipdf' if t is None else not math.isfinite(t) or t <= 0 for t in times)):
         raise ValueError(f'Invalid warm timings for {engine}')
@@ -306,7 +309,6 @@ def cache_key(engine, versions, fixtures, cpu):
         'version': runtime,
         'adapter': file_digests(adapter_files(engine)),
         'inputs': [[fixture['case'], fixture['docx_sha256'], reference_digests(fixture)] for fixture in fixtures],
-        'scoring': file_digests(SCORING_FILES),
         'cpu': cpu,
         'settings': {'sample_size': SAMPLE_SIZE, 'full_timing_ms': FULL_TIMING_MS, 'timeout_s': TIMEOUT_S,
                      'warm_timeout_s': WARM_TIMEOUT_S, 'primed': engine in PRIME},
@@ -439,6 +441,8 @@ def run_conversions(args, versions, workers):
     sample = sample_cases(BENCHMARK_FIXTURES)
     with TemporaryDirectory(prefix='convert-', dir=output) as temporary:
         work = Path(temporary)
+        # Converters keep their temporary files in this run's work directory, not in /tmp.
+        env = child_environment(work / 'tmp')
         for engine in engines:
             entry = progress.get(engine)
             cache = key = None
@@ -454,12 +458,12 @@ def run_conversions(args, versions, workers):
                           '(--no-cache measures it again)', flush=True)
                     continue
             if entry is None:
-                rows = convert_engine(engine, BENCHMARK_FIXTURES, sample, work, output, workers)
+                rows = convert_engine(engine, BENCHMARK_FIXTURES, sample, work, output, workers, env)
                 entry = progress[engine] = {'rows': rows, 'warm': False}
                 write_log(checkpoint, work, dict(settings, engines=progress))
             if not entry['warm']:
                 try:
-                    measure_warm(engine, entry['rows'], work, workers)
+                    measure_warm(engine, entry['rows'], work, workers, env)
                 except Exception:
                     print(f'Cold results saved in {checkpoint}. Retry the same command without --fresh to resume.',
                           file=sys.stderr, flush=True)
@@ -533,7 +537,7 @@ def main():
         workers['rdocx'] = [*runner, 'rdocx']
         workers['office2pdf'] = [OFFICE2PDF]
 
-    with benchmark_lock(OUTPUT):
+    with benchmark_lock(OUTPUT, stale=[(OUTPUT / directory, 'convert-') for directory in RUN_DIRECTORIES]):
         run_conversions(args, versions, workers)
 
 

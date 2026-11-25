@@ -9,7 +9,7 @@ INK_THRESHOLD = 216
 INK_TOLERANCE_PX = 1
 
 
-def render(pdf, raster_dir=None, *, raster_format='png'):
+def render(pdf, raster_dir=None, *, raster_format='png', env=None):
     raster_dir = raster_dir if raster_dir is not None else pdf.parent / 'raster'
     raster_dir.mkdir(exist_ok=True)
     prefix = raster_dir / pdf.stem
@@ -17,14 +17,14 @@ def render(pdf, raster_dir=None, *, raster_format='png'):
     for old in prefix.parent.glob(pattern):
         old.unlink()
     flags = {'png': ['-png'], 'ppm': []}[raster_format]
-    subprocess.run(['pdftoppm', '-r', str(DPI), *flags, str(pdf), str(prefix)], check=True)
+    subprocess.run(['pdftoppm', '-r', str(DPI), *flags, str(pdf), str(prefix)], check=True, env=env)
     pages = prefix.parent.glob(pattern)
     return sorted(pages, key=lambda p: int(p.stem.rsplit('-', 1)[1]))
 
 
-def render_reference(directory, fixture, raster_dir, *, raster_format='png'):
+def render_reference(directory, fixture, raster_dir, *, raster_format='png', env=None):
     if 'pdf' in fixture:
-        return render(directory / fixture['pdf'], raster_dir, raster_format=raster_format)
+        return render(directory / fixture['pdf'], raster_dir, raster_format=raster_format, env=env)
 
     raster_dir.mkdir(exist_ok=True)
     scale = DPI / fixture['reference_dpi']

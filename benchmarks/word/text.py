@@ -19,7 +19,7 @@ import re
 import subprocess
 import unicodedata
 
-from fetch import HERE, OUTPUT
+from fetch import BENCHMARK_FIXTURES, HERE, OUTPUT, benchmark_reference, verify, verify_reference
 from pdf_text import extract as extract_pdf_text
 
 CASES = OUTPUT / 'cases'
@@ -27,12 +27,12 @@ TEXT = OUTPUT / 'text'
 ROOT = HERE.parents[1]
 
 EXTRACT = """
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { docxToText } from %s;
-const [cases, out] = process.argv.slice(1);
+const [cases, out, fixtures] = process.argv.slice(1);
 mkdirSync(out, { recursive: true });
 const times = [];
-for (const name of readdirSync(cases).sort()) {
+for (const name of JSON.parse(fixtures)) {
   const data = readFileSync(`${cases}/${name}/input.docx`);
   const start = performance.now();
   const text = await docxToText(data, { headersFooters: true });
@@ -55,19 +55,9 @@ def tokens(text):
     return TOKEN.findall(text)
 
 
-def reference_pdf(name):
-    pdf = CASES / name / 'word.pdf'
-    if pdf.exists():
-        return pdf
-    if name.startswith('upstream-'):
-        pdf = HERE / 'upstream' / 'reference_docx' / (name[len('upstream-'):] + '.pdf')
-        if pdf.exists():
-            return pdf
-    return None
-
-
-def score(name):
-    extracted = extract_pdf_text(reference_pdf(name))
+def score(case):
+    name, reference = case
+    extracted = extract_pdf_text(reference)
     if extracted is None:
         return None
     ref = Counter(tokens(extracted[1]))
@@ -86,13 +76,23 @@ def main():
     parser = ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--worst', type=int, default=15, help='list the N fixtures with the lowest scores')
     args = parser.parse_args()
+    names = []
+    references = {}
+    for fixture in BENCHMARK_FIXTURES:
+        name = fixture['case']
+        verify(CASES / name / 'input.docx', fixture['docx_sha256'])
+        names.append(name)
+        if 'pdf_sha256' in fixture and fixture['reference_application'].startswith('Microsoft Word'):
+            directory, reference = benchmark_reference(fixture)
+            verify_reference(directory, reference)
+            references[name] = directory / reference['pdf']
     module = json.dumps((ROOT / 'dist' / 'node.js').as_uri())
-    run = subprocess.run(['node', '--input-type=module', '-e', EXTRACT % module, str(CASES), str(TEXT)],
+    run = subprocess.run(['node', '--input-type=module', '-e', EXTRACT % module,
+                          str(CASES), str(TEXT), json.dumps(sorted(names))],
                          check=True, capture_output=True, text=True)
     timing = json.loads(run.stdout)
-    names = sorted(p.name for p in CASES.iterdir() if (p / 'input.docx').exists() and reference_pdf(p.name))
     with ProcessPoolExecutor() as pool:
-        rows = [r for r in pool.map(score, names) if r]
+        rows = [r for r in pool.map(score, sorted(references.items())) if r]
     ref = sum(r['reference'] for r in rows)
     ext = sum(r['extracted'] for r in rows)
     common = sum(r['common'] for r in rows)

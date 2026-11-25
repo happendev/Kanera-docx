@@ -33,7 +33,7 @@ import type {
 import { Numbering } from './numbering.js';
 import type { InflateBytes } from '../util/compression.js';
 import type { ArchiveLimits } from '../util/zip.js';
-import { OpcPackage } from '../ooxml/package.js';
+import { OpcPackage, XmlTemplate } from '../ooxml/package.js';
 import {
   DEFAULT_RUN,
   finalizePara,
@@ -96,6 +96,8 @@ interface FieldFrame {
 }
 
 const DEFAULT_SECTION_TWIPS = { w: 12240, h: 15840, margin: 1440, header: 720, footer: 720 };
+const stylesTemplate = new XmlTemplate('w:styles', 512 * 1024);
+const numberingTemplate = new XmlTemplate('w:numbering');
 const BUILT_IN_STYLES =
   '<w:styles><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Aptos" w:hAnsi="Aptos"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:rPrDefault>' +
   '<w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="279" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>';
@@ -138,7 +140,7 @@ class DocxParser {
     const settingsXml = settingsRel ? this.pkg.xml(settingsRel.target) : undefined;
     const fontLang = child(settingsXml, 'w:themeFontLang')?.attrs;
     const themeRel = this.pkg.relByType(this.main, '/theme');
-    this.theme = themeRel ? parseTheme(this.pkg.xml(themeRel.target), { eastAsia: fontLang?.['w:eastAsia'], bidi: fontLang?.['w:bidi'] }) : DEFAULT_THEME;
+    this.theme = themeRel ? parseTheme(this.pkg.xml(themeRel.target, XmlTemplate.theme), { eastAsia: fontLang?.['w:eastAsia'], bidi: fontLang?.['w:bidi'] }) : DEFAULT_THEME;
     const mapping = child(settingsXml, 'w:clrSchemeMapping');
     const colorMapping: Record<string, string> = {};
     if (mapping) {
@@ -154,9 +156,9 @@ class DocxParser {
     const stylesRel = this.pkg.relByType(this.main, '/styles');
     // Without a styles part Word falls back to its built-in defaults: Aptos 12 pt, 8 pt after and
     // 1.1625 lines (measured in Word's PDFs of such files).
-    this.styles = new StyleSheet(stylesRel ? this.pkg.xml(stylesRel.target) : parseXml(BUILT_IN_STYLES), this.ctx);
+    this.styles = new StyleSheet(stylesRel ? this.pkg.xml(stylesRel.target, stylesTemplate) : parseXml(BUILT_IN_STYLES), this.ctx);
     const numRel = this.pkg.relByType(this.main, '/numbering');
-    this.numbering = new Numbering(numRel ? this.pkg.xml(numRel.target) : undefined, this.ctx, (styleId) => this.styles.paraStyle(styleId).numId);
+    this.numbering = new Numbering(numRel ? this.pkg.xml(numRel.target, numberingTemplate) : undefined, this.ctx, (styleId) => this.styles.paraStyle(styleId).numId);
   }
 
   private parseSettings(s: XmlElement | undefined): DocSettings {

@@ -49,7 +49,16 @@ interface Rect {
   h: number;
 }
 
-function measure(text: string, s: ChartTextStyle, env: BoxEnv): Text {
+interface ChartTextMetrics {
+  fonts: BoxEnv['fonts'];
+  labels: Map<ChartTextStyle, Map<string, Text>>;
+  count: number;
+}
+
+function measure(text: string, s: ChartTextStyle, env: ChartTextMetrics): Text {
+  let labels = env.labels.get(s);
+  const cached = labels?.get(text);
+  if (cached) return cached;
   const props = { ...DEFAULT_RUN, fontAscii: s.font, fontHAnsi: s.font, fontEastAsia: s.font, fontCs: s.font, size: s.size, sizeCs: s.size, bold: s.bold, boldCs: s.bold, italic: s.italic, italicCs: s.italic };
   const runs = text ? shapeText(text, props, env.fonts) : [];
   let width = 0;
@@ -69,7 +78,14 @@ function measure(text: string, s: ChartTextStyle, env: BoxEnv): Text {
   }
   const font = runs[0]?.face.face.font;
   const mid = font ? ((font.typoAscender + font.typoDescender) / 2 / font.unitsPerEm) * runs[0].size : s.size * 0.25;
-  return { runs, width, ascent, descent, height: ascent + descent + lead, mid };
+  const measured = { runs, width, ascent, descent, height: ascent + descent + lead, mid };
+  // Layout probes and final placement shape the same tick labels and titles.
+  if (env.count < 512) {
+    if (!labels) env.labels.set(s, labels = new Map());
+    labels.set(text, measured);
+    env.count++;
+  }
+  return measured;
 }
 
 function glyphOps(t: Text, x: number, baseline: number, color: string): GlyphOp[] {
@@ -327,7 +343,7 @@ function crossing(a: AxisState, other: AxisState, plot: Rect): number {
   return other.horizontal ? plot.x + f * plot.w : plot.y + plot.h - f * plot.h;
 }
 
-function wrapWords(text: string, width: number, style: ChartTextStyle, env: BoxEnv): string[] | null {
+function wrapWords(text: string, width: number, style: ChartTextStyle, env: ChartTextMetrics): string[] | null {
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let cur = '';
@@ -344,7 +360,7 @@ function wrapWords(text: string, width: number, style: ChartTextStyle, env: BoxE
 }
 
 /** Decide how a horizontal category axis shows its labels in bands `band` wide: as they are, wrapped, or turned. */
-function fitCategoryLabels(a: AxisState, band: number, env: BoxEnv): void {
+function fitCategoryLabels(a: AxisState, band: number, env: ChartTextMetrics): void {
   const st = a.axis.style;
   a.lines = a.labels.map((l) => [l]);
   a.rotation = st.rotation ?? 0;
@@ -366,7 +382,7 @@ function fitCategoryLabels(a: AxisState, band: number, env: BoxEnv): void {
 }
 
 /** Width (vertical axes) or height (horizontal axes) the labels need beside the axis. */
-function labelExtent(a: AxisState, env: BoxEnv): number {
+function labelExtent(a: AxisState, env: ChartTextMetrics): number {
   if (a.axis.deleted || a.axis.labelPosition === 'none') return 0;
   const st = a.axis.style;
   const lineH = measure('0', st, env).height;
@@ -381,7 +397,7 @@ function labelExtent(a: AxisState, env: BoxEnv): number {
   return most;
 }
 
-function titleExtent(t: ChartTitle | undefined, env: BoxEnv): [number, number, number] {
+function titleExtent(t: ChartTitle | undefined, env: ChartTextMetrics): [number, number, number] {
   if (!t) return [0, 0, 0];
   let w = 0;
   let h = 0;
@@ -404,7 +420,7 @@ function titleExtent(t: ChartTitle | undefined, env: BoxEnv): [number, number, n
 }
 
 /** Draw a title's paragraphs centred about (cx, top), turned `rot` about its centre. */
-function drawTitle(t: ChartTitle, cx: number, cy: number, env: BoxEnv): DrawOp[] {
+function drawTitle(t: ChartTitle, cx: number, cy: number, env: ChartTextMetrics): DrawOp[] {
   const [w, h, rot] = titleExtent(t, env);
   const ops: DrawOp[] = [];
   let y = cy - h / 2;
@@ -720,7 +736,8 @@ function pointShape(s: ChartSeries, i: number): ChartShape {
 // Chart
 
 /** Draw a chart in the box (x, y, w, h). */
-export function renderChart(chart: Chart, X: number, Y: number, W: number, H: number, env: BoxEnv): DrawOp[] {
+export function renderChart(chart: Chart, X: number, Y: number, W: number, H: number, box: BoxEnv): DrawOp[] {
+  const env: ChartTextMetrics = { fonts: box.fonts, labels: new Map(), count: 0 };
   const ops: DrawOp[] = [];
   ops.push({ kind: 'clip', x: X - 1, y: Y - 1, w: W + 2, h: H + 2 });
   ops.push(...paint(chart.rounded ? roundRectPath(X, Y, W, H, chart.legacy ? LEGACY_ROUND_CORNER : ROUND_CORNER) : rectPath(X, Y, W, H), chart.space));

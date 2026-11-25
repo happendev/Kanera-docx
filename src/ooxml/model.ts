@@ -430,11 +430,19 @@ export interface Section {
   vertical?: boolean;
 }
 
+export interface SolidImage {
+  width: number;
+  height: number;
+  rgb: number;
+}
+
 export interface ImageRef {
   id: string;
   data: Uint8Array;
   /** Metafile raster with a separate pixel array. In this case data holds the DIB header and palette. */
   dibBits?: Uint8Array;
+  /** Generated single-colour image, with its 8-bit opacity samples in data. */
+  solid?: SolidImage;
   contentType?: string;
   svg?: ImageRef;
   /** Brightness and contrast (Word's picture corrections and Washout): each colour component c (0–1) is drawn as slope·c + offset, clipped. */

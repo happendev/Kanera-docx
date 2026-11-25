@@ -4,7 +4,7 @@ import type { FontFace } from '../fonts/registry.js';
 import { colorGlyph, hasColorGlyphs } from '../fonts/colr.js';
 import { buildSfnt, canSubsetTrueType, subsetTrueType } from '../fonts/subset.js';
 import { ImageBudget, type ImageLimits } from '../image/budget.js';
-import { adjustImage, dibToPdf, sniffImage, toPdfImage, type PdfImage } from '../image/image.js';
+import { adjustImage, dibToPdf, solidToPdf, sniffImage, toPdfImage, type PdfImage } from '../image/image.js';
 import type { DrawOp, GlyphOp, Page, PathSeg, ShadeGeometry } from '../layout/types.js';
 import { ColorGlyphForms } from './color-glyph.js';
 import { latin1, num, PdfObjects, pdfName, textString } from './objects.js';
@@ -31,13 +31,24 @@ interface FontUse {
   // PDF character codes identify text, while CIDs select outlines. Several characters
   // can share one outline (especially glyph zero when the document font is missing).
   characters: Map<number, string>;
-  codesByGlyph: Map<number, Map<string, number>>;
+  codesByGlyph: Map<number, number | Map<string, number>>;
   nextCode: number;
 }
 
 interface ImageUse {
   resName: string;
   objNum: number;
+}
+
+// A document typically uses the same short PDF glyph literals thousands of times.
+const glyphLiterals: string[] = [];
+
+function glyphLiteral(code: number): string {
+  const known = glyphLiterals[code];
+  if (known) return known;
+  const literal = `<${code.toString(16).padStart(4, '0')}>`;
+  if (code < 4096) glyphLiterals[code] = literal;
+  return literal;
 }
 
 const ITALIC_SKEW = 0.2126; // tan(12°), the slant Word uses for synthetic italics
@@ -55,7 +66,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
   if (quality !== undefined && quality !== false && (!Number.isInteger(quality) || quality < 1 || quality > 100)) {
     throw new RangeError('Image quality must be an integer from 1 to 100 or false');
   }
-  const pdf = new PdfObjects(compression.deflateZlib);
+  const pdf = new PdfObjects(compression);
   const catalog = pdf.alloc();
   const pagesNum = pdf.alloc();
   const fonts = new Map<FontFace, FontUse>();
@@ -122,8 +133,8 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
       if (imageFor(ref) !== undefined) return;
     }
     // Raw DIB bits are only an image together with their header, so they are not shared by content.
-    const data = ref.dibBits ? ref.data : sameImage(ref.data);
-    if (!ref.dibBits && (/\.svg$/i.test(ref.id) || sniffImage(data) === 'svg')) {
+    const data = ref.dibBits || ref.solid ? ref.data : sameImage(ref.data);
+    if (!ref.dibBits && !ref.solid && (/\.svg$/i.test(ref.id) || sniffImage(data) === 'svg')) {
       await loadSvg(ref);
       if (!images.get(ref.id)) warnings.push(`Image ${ref.id} uses unsupported SVG features and was skipped`);
       return;
@@ -131,7 +142,8 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
     let img = rasterImages.get(data);
     if (img === undefined) {
       try {
-        img = ref.dibBits ? dibToPdf(data, ref.dibBits, compression, imageBudget) : await toPdfImage(data, compression, imageBudget, quality);
+        if (ref.solid) img = await solidToPdf(ref.solid, data, compression, imageBudget);
+        else img = ref.dibBits ? dibToPdf(data, ref.dibBits, compression, imageBudget) : await toPdfImage(data, compression, imageBudget, quality);
       } catch (e) {
         // Past the pixel budget, drop this picture rather than the whole document where asked to.
         if (!opts.skipImagesOverLimits || !(e instanceof Error && e.message === 'Image pixel limit exceeded')) throw e;
@@ -182,6 +194,8 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
     const annots: string[] = [];
     const Y = (y: number) => H - y;
     const color = (hex: string, stroke: boolean) => {
+      if (hex === '000000') return stroke ? '0 0 0 RG' : '0 0 0 rg';
+      if (hex === 'FFFFFF') return stroke ? '1 1 1 RG' : '1 1 1 rg';
       const v = parseInt(hex.slice(0, 6), 16) || 0;
       return `${num(((v >> 16) & 255) / 255)} ${num(((v >> 8) & 255) / 255)} ${num((v & 255) / 255)} ${stroke ? 'RG' : 'rg'}`;
     };
@@ -229,7 +243,7 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
       for (let i = 0; i < op.gids.length; i++) {
         const gid = op.gids[i];
         const code = characterCode(use, gid, op.texts[i] ?? '');
-        s += `<${code.toString(16).padStart(4, '0')}>`;
+        s += glyphLiteral(code);
         if (size !== 0 && i + 1 < op.gids.length) {
           const w = font.advance(gid) * toPdfUnits;
           const d = op.xs[i + 1] - op.xs[i];
@@ -513,30 +527,35 @@ function subsetTag(i: number): string {
 
 function characterCode(use: FontUse, gid: number, text: string): number {
   let codes = use.codesByGlyph.get(gid);
-  if (!codes) use.codesByGlyph.set(gid, (codes = new Map()));
-  const known = codes.get(text);
-  if (known !== undefined) return known;
+  if (typeof codes === 'number') {
+    const previous = use.characters.get(codes)!;
+    if (previous === text) return codes;
+    // Allocate the alias map only for a glyph that represents several strings.
+    codes = new Map([[previous, codes]]);
+    use.codesByGlyph.set(gid, codes);
+  } else if (codes) {
+    const known = codes.get(text);
+    if (known !== undefined) return known;
+  }
   let code = gid;
   if (use.characters.has(code)) {
     while (use.characters.has(use.nextCode)) use.nextCode++;
     code = use.nextCode++;
     if (code > 0xffff) throw new Error('Too many distinct characters for a PDF font');
   }
-  codes.set(text, code);
+  if (codes) codes.set(text, code);
+  else use.codesByGlyph.set(gid, code);
   use.characters.set(code, text);
   return code;
 }
 
 function fontEncoding(pdf: PdfObjects, use: FontUse, compress: boolean): string {
+  if (use.nextCode === 0) return '/Identity-H';
   const pairs: Array<[number, number]> = [];
-  let identity = true;
   for (const [gid, codes] of use.codesByGlyph) {
-    for (const code of codes.values()) {
-      pairs.push([code, gid]);
-      if (code !== gid) identity = false;
-    }
+    if (typeof codes === 'number') pairs.push([codes, gid]);
+    else for (const code of codes.values()) pairs.push([code, gid]);
   }
-  if (identity) return '/Identity-H';
   const info = '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>';
   const name = '/' + use.resName + '-Encoding';
   const lines = ['/CIDInit /ProcSet findresource begin 12 dict begin begincmap',

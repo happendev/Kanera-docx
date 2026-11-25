@@ -1,4 +1,8 @@
-"""Refresh the benchmark summaries in the repository READMEs."""
+"""Refresh the benchmark tables in the repository READMEs.
+
+The main README gets compact summary tables only, plus a glance table derived from them. The full
+results go in the benchmark READMEs under benchmarks/.
+"""
 
 from collections import defaultdict
 from fcntl import LOCK_EX, flock
@@ -15,6 +19,7 @@ HEADLINE_METRICS = {
     'Page counts matched': 'Matching page count',
     'Fresh process': 'Median cold time',
     'Reused process': 'Median warm time',
+    'Warm docs/sec': 'Warm docs/sec',
     'Median peak memory': 'Median cold peak RSS',
 }
 SUITES = (
@@ -86,25 +91,91 @@ def mark_sampled(text, name):
     return replace_section(text, name, '\n\n'.join(parts))
 
 
-def edit_main_readme(root, transform):
-    # The benchmark and accuracy check can finish independently.
+def edit_readme(root, path, transform):
+    """Apply transform to a README under a lock, so benchmark runs that finish together keep each other's edits."""
     output = root / 'out'
     output.mkdir(exist_ok=True)
-    readme = root / 'README.md'
     with (output / '.readme.lock').open('a') as lock:
         flock(lock, LOCK_EX)
-        original = readme.read_text(encoding='utf-8')
+        original = path.read_text(encoding='utf-8')
         updated = transform(original)
         if updated != original:
-            with NamedTemporaryFile(mode='w', encoding='utf-8', dir=root, delete=False) as temporary:
+            with NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as temporary:
                 staged = Path(temporary.name)
                 try:
                     temporary.write(updated)
                     temporary.close()
-                    copymode(readme, staged)
-                    staged.replace(readme)
+                    copymode(path, staged)
+                    staged.replace(path)
                 finally:
                     staged.unlink(missing_ok=True)
+
+
+def edit_main_readme(root, transform):
+    """Edit the main README, then refresh its glance table from the summary tables."""
+    edit_readme(root, root / 'README.md', lambda text: refresh_glance(transform(text)))
+
+
+def edit_benchmark_readme(root, transform):
+    edit_readme(root, root / 'benchmarks/word/README.md', transform)
+
+
+# The glance table at the top of the main README: one row per summary table, Kanera against the
+# most accurate converter that isn't Kanera or DocFoundry (the same engine).
+GLANCE = (
+    ('Word to PDF', 'benchmark-summary'),
+    ('Word to page images', 'image-benchmark-summary'),
+    ('Word to Markdown', 'markdown-benchmark-summary'),
+    ('Word to text', 'text-benchmark-summary'),
+)
+SAME_ENGINE = ('Kanera', 'DocFoundry')
+
+
+def number(value):
+    value = value.replace('†', '').split()
+    return float(value[0].split('/')[0].rstrip('%')) if value and value[0] != '–' else None
+
+
+def compare_cells(ours, theirs, *, higher_is_better):
+    """Our value against theirs, the better one in bold."""
+    a, b = number(ours), number(theirs) if theirs else None
+    if a is None or b is None:
+        return ours, theirs or '–'
+    if a == b:
+        return ours, theirs
+    if (a > b) == higher_is_better:
+        return f'**{ours}**', theirs
+    return ours, f'**{theirs}**'
+
+
+def refresh_glance(text):
+    if '<!-- benchmark-glance:start -->' not in text:
+        return text
+    rows = []
+    for label, section in GLANCE:
+        if f'<!-- {section}:start -->' not in text:
+            continue
+        _, body, _ = section_parts(text, section)
+        lines = body.splitlines()
+        start = next((i for i, line in enumerate(lines) if line.startswith('|')), None)
+        if start is None:
+            continue
+        headers, table, _ = read_table(lines, start)
+        ours = next((row for row in table if row[0].startswith('Kanera')), None)
+        if ours is None:
+            continue
+        others = [row for row in table if not row[0].startswith(SAME_ENGINE) and number(row[1]) is not None]
+        best = max(others, key=lambda row: number(row[1]), default=None)
+        warm, memory = headers.index('Reused process'), headers.index('Median peak memory')
+        rate = next(i for i, header in enumerate(headers) if header.endswith('/sec'))
+        accuracy, _ = compare_cells(ours[1], best[1] if best else None, higher_is_better=True)
+        other = f'{best[1]} {best[0]}' if best else '–'
+        cells = [compare_cells(ours[i], best[i] if best else None, higher_is_better=i == rate)
+                 for i in (warm, rate, memory)]
+        rows.append((label, accuracy, other, *(f'{a} vs {b}' if best else a for a, b in cells)))
+    table = markdown_table(('Conversion', 'Accuracy', 'Best other converter', 'Time per file', 'Files per second',
+                            'Peak memory'), rows)
+    return replace_section(text, 'benchmark-glance', table)
 
 
 def read_table(lines, start):
@@ -146,24 +217,36 @@ def refresh_engine_table(text, section, values, name, count):
 
 
 def update_measured_readme(root, table, versions, count, engines):
-    def transform(text):
-        for engine, row in zip(engines, table[1:], strict=True):
-            values = dict(zip(table[0], row, strict=True))
-            name = values['Converter']
-            converter = name
-            if versions.get(engine):
-                version = versions[engine].split()
-                converter += ' ' + (version[1] if engine == 'libreoffice' and len(version) > 1 else version[0])
-            text = refresh_engine_table(text, 'benchmark-summary', values, 'Kanera' if engine == 'ours' else name, count)
-            text = refresh_engine_table(text, 'benchmark-results', values, converter, count)
-        return mark_sampled(mark_sampled(text, 'benchmark-summary'), 'benchmark-results')
+    measured = []
+    for engine, row in zip(engines, table[1:], strict=True):
+        values = dict(zip(table[0], row, strict=True))
+        name = values['Converter']
+        converter = name
+        if versions.get(engine):
+            version = versions[engine].split()
+            converter += ' ' + (version[1] if engine == 'libreoffice' and len(version) > 1 else version[0])
+        measured.append((values, 'Kanera' if engine == 'ours' else name, converter))
 
-    edit_main_readme(root, transform)
+    def summary(text):
+        for values, name, _ in measured:
+            text = refresh_engine_table(text, 'benchmark-summary', values, name, count)
+        return text
+
+    def results(text):
+        for values, _, converter in measured:
+            text = refresh_engine_table(text, 'benchmark-results', values, converter, count)
+        return mark_sampled(text, 'benchmark-results')
+
+    # The main README has the compact summary; the benchmark README has every column.
+    edit_main_readme(root, summary)
+    edit_benchmark_readme(root, results)
 
 
 def update_suite_scores(root, rows, engines):
-    benchmark = root / 'benchmarks/word/README.md'
-    original = benchmark.read_text(encoding='utf-8')
+    edit_benchmark_readme(root, lambda text: suite_scores(text, rows, engines))
+
+
+def suite_scores(original, rows, engines):
     before, body, after = section_parts(original, 'benchmark-breakdown')
     lines = body.splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith('|'))
@@ -180,9 +263,7 @@ def update_suite_scores(root, rows, engines):
                     row[column] = f'{mean(scores):.1f}%'
         row[2:] = highlight_best(row[2:], higher_is_better=True)
     lines[start:end] = markdown_table(headers, previous).splitlines()
-    updated = before + '\n' + '\n'.join(lines).strip('\n') + '\n' + after
-    if updated != original:
-        benchmark.write_text(updated, encoding='utf-8')
+    return before + '\n' + '\n'.join(lines).strip('\n') + '\n' + after
 
 
 def fixture_suite(row):
@@ -200,8 +281,10 @@ def comparison_counts(baseline, candidate):
 
 
 def update_mini_pdf_breakdown(root, rows, label, kanera_scores):
-    benchmark = root / 'benchmarks/word/README.md'
-    original = benchmark.read_text(encoding='utf-8')
+    edit_benchmark_readme(root, lambda text: mini_pdf_breakdown(text, rows, label, kanera_scores))
+
+
+def mini_pdf_breakdown(original, rows, label, kanera_scores):
     before, body, after = section_parts(original, 'benchmark-breakdown')
     note = 'MiniPdf results come from a standalone run.'
     lines = [line for line in body.strip('\n').splitlines() if line != note]
@@ -229,23 +312,16 @@ def update_mini_pdf_breakdown(root, rows, label, kanera_scores):
         recorded.append((label, *comparison_counts(kanera_scores, candidate)))
     lines[comparison_start:comparison_end] = markdown_table(comparison_headers, recorded).splitlines()
     lines[start:end] = markdown_table(headers, previous).splitlines()
-    updated = before + '\n' + '\n'.join(lines).rstrip() + '\n\n' + note + '\n' + after
-    if updated != original:
-        benchmark.write_text(updated, encoding='utf-8')
+    return before + '\n' + '\n'.join(lines).rstrip() + '\n\n' + note + '\n' + after
 
 
 def update_accuracy_readme(root, report):
     count = report['documents']
-    corpus = report['by_corpus']
     failures = report['conversion_failures']
     body = (
-        '**Full-corpus ink test.**\n'
-        f'Kanera scored **{report["accuracy_pct"]:.2f}%** across {count:,} documents\n'
-        f'({corpus["huggingface"]["documents"]:,} Hugging Face and {corpus["upstream"]["documents"]:,} vendored, '
-        f'{report["reference_pages"]:,} reference pages).\n'
-        f'Page counts matched on {report["matching_page_counts"]:,} documents. '
-        f'{failures:,} {"conversion" if failures == 1 else "conversions"} failed.\n'
-        '[Full corpus accuracy](benchmarks/word/README.md#full-corpus-accuracy).'
+        f'Kanera scores **{report["accuracy_pct"]:.2f}%** on the full corpus of {count:,} documents '
+        f'({report["reference_pages"]:,} reference pages), with matching page counts on '
+        f'{report["matching_page_counts"]:,} and {failures:,} failed {"conversion" if failures == 1 else "conversions"}.'
     )
     edit_main_readme(root, lambda text: replace_section(text, 'full-corpus-accuracy', body))
 
@@ -267,13 +343,7 @@ def update_readmes(root, rows, table, engines, versions):
     headline_columns = ('Converter', *HEADLINE_METRICS)
     headline_names = ['Kanera' if engine == 'ours' else results[engine]['Converter'] for engine in ordered_engines]
     headline_metrics = [metric_cells(results, ordered_engines, column) for column in HEADLINE_METRICS.values()]
-    headline = '\n\n'.join([
-        '### Benchmark at a glance',
-        f'{count} DOCX documents [Full comparison](#benchmark)',
-        markdown_table(headline_columns, zip(headline_names, *headline_metrics, strict=True)),
-        'Visual match measures how closely text and graphics line up with the reference pages. '
-        'Conversion times are medians and include file I/O.',
-    ])
+    headline = markdown_table(headline_columns, zip(headline_names, *headline_metrics, strict=True))
 
     converters = []
     for engine in ordered_engines:
@@ -318,14 +388,10 @@ def update_readmes(root, rows, table, engines, versions):
         markdown_table(('Compared with', 'Kanera higher', 'Kanera lower', 'Ties'), counts),
     ])
 
-    def transform(text):
-        text = replace_section(text, 'benchmark-summary', headline)
+    def benchmark_transform(text):
         text = replace_section(text, 'benchmark-results', overview)
-        return mark_sampled(mark_sampled(text, 'benchmark-summary'), 'benchmark-results')
+        text = replace_section(text, 'benchmark-breakdown', details)
+        return mark_sampled(text, 'benchmark-results')
 
-    edit_main_readme(root, transform)
-    benchmark = root / 'benchmarks/word/README.md'
-    bench_text = benchmark.read_text(encoding='utf-8')
-    bench_updated = replace_section(bench_text, 'benchmark-breakdown', details)
-    if bench_text != bench_updated:
-        benchmark.write_text(bench_updated, encoding='utf-8')
+    edit_main_readme(root, lambda text: replace_section(text, 'benchmark-summary', headline))
+    edit_benchmark_readme(root, benchmark_transform)

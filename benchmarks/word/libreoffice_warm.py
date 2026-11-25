@@ -19,7 +19,7 @@ def libreoffice_command(workspace, output, sources):
     ]
 
 
-def batch_times(jobs, workspace, command=libreoffice_command, label='LibreOffice', extension='pdf'):
+def batch_times(jobs, workspace, command=libreoffice_command, label='LibreOffice', extension='pdf', env=None):
     """Time each job; a batch that stops early returns times for the jobs it completed."""
     output = workspace / 'pdfs'
     output.mkdir()
@@ -41,7 +41,7 @@ def batch_times(jobs, workspace, command=libreoffice_command, label='LibreOffice
             raise OSError(ctypes.get_errno(), 'inotify_add_watch')
         with (workspace / 'batch.log').open('w+') as log:
             start = perf_counter()
-            with subprocess.Popen(command(workspace, output, sources), stdout=log, stderr=log) as process:
+            with subprocess.Popen(command(workspace, output, sources), stdout=log, stderr=log, env=env) as process:
                 try:
                     while len(completed) < len(targets):
                         remaining = 300 - (perf_counter() - start)

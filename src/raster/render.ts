@@ -435,7 +435,7 @@ class PagePainter {
     if (known === 'raster') return this.pixmap(ref);
     if (known !== undefined) return known;
     let out: Drawable | null = null;
-    const isSvg = !ref.dibBits && (/\.svg$/i.test(ref.id) || sniffImage(ref.data) === 'svg');
+    const isSvg = !ref.dibBits && !ref.solid && (/\.svg$/i.test(ref.id) || sniffImage(ref.data) === 'svg');
     if (ref.svg || isSvg) this.svg ??= await import('../pdf/svg.js');
     const svgForm = ref.svg ? this.form(ref.svg) : null;
     if (svgForm !== null) out = { form: svgForm };
