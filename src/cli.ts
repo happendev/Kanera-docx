@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readInputFile, readInputPath } from './util/node-input.js';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
@@ -125,7 +126,7 @@ async function main(argv: string[]): Promise<number> {
       console.error('--text and --markdown take only --headers, --no-notes and --quiet');
       return 2;
     }
-    const result = extractTextWithCompression(await readFile(input), { format: textFormat, includeHeadersFooters, includeNotes: notes }, nodeCompression);
+    const result = extractTextWithCompression(await readInputPath(input), { format: textFormat, includeHeadersFooters, includeNotes: notes }, nodeCompression);
     if (!quiet) for (const w of result.warnings) console.error(`warning: ${w}`);
     if (files[1] === '-') {
       process.stdout.write(result.text);
@@ -156,7 +157,6 @@ async function main(argv: string[]): Promise<number> {
       console.error('--image-quality only applies to PDF output; use --quality with --jpeg');
       return 2;
     }
-    const data = await readFile(input);
     let pages: number[] | undefined;
     if (pageList !== undefined) {
       const chosen = new Set<number>();
@@ -177,7 +177,7 @@ async function main(argv: string[]): Promise<number> {
       await mkdir(imageDir, { recursive: true });
       await writeFile(join(imageDir, `${prefix}-${String(image.page).padStart(String(pageCount).length, '0')}.${ext}`), image.data);
     };
-    const result = await convertDocxToImages(data, { fonts, systemFonts, wordPlatform: options.wordPlatform, format: imageFormat, dpi, quality, pages, onPage });
+    const result = await convertDocxToImages(input, { fonts, systemFonts, wordPlatform: options.wordPlatform, format: imageFormat, dpi, quality, pages, onPage });
     await mkdir(imageDir, { recursive: true });
     if (!quiet) for (const w of result.warnings) console.error(`warning: ${w}`);
     const n = result.images.length;
@@ -189,7 +189,7 @@ async function main(argv: string[]): Promise<number> {
   let result;
   try {
     const sourceStat = await source.stat({ bigint: true });
-    result = await convertDocx(await source.readFile(), options);
+    result = await convertDocx(await readInputFile(source), options);
     // Compare the open files before truncating, including symlinks and hard links.
     const target = await open(output, constants.O_WRONLY | constants.O_CREAT);
     try {

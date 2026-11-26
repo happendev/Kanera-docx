@@ -56,10 +56,10 @@ laying out pages. Every output works in Node.js and the browser.
 <!-- benchmark-glance:start -->
 | Conversion | Accuracy | Best other converter | Time per file | Files per second | Peak memory |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Word to PDF | **92.6%** | 80.3% LibreOffice | **4.9 ms** vs 59.6 ms | **58.7** vs 10.3 | **80.1 MiB** vs 252.7 MiB |
-| Word to page images | **92.8%** | 80.9% LibreOffice + pdftoppm | **11.4 ms** vs 171.4 ms † | **31.8** vs 2.5 † | 102.5 MiB vs – |
-| Word to Markdown | **98.5%** | 95.9% Pandoc | **1.9 ms** vs 85.6 ms | **244.5** vs 13.8 | **70.4 MiB** vs 167.8 MiB |
-| Word to text | **98.9%** | 98.4% Aspose.Words (.NET) | **1.6 ms** vs 26.6 ms | **279.2** vs 31.7 | **70.5 MiB** vs 91.0 MiB |
+| Word to PDF | **92.6%** | 80.3% LibreOffice | **4.3 ms** vs 59.6 ms | **72.7** vs 10.3 | **80.3 MiB** vs 252.7 MiB |
+| Word to page images | **92.8%** | 80.9% LibreOffice + pdftoppm | **11.5 ms** vs 171.4 ms † | **30.3** vs 2.5 † | 101.7 MiB vs – |
+| Word to Markdown | **98.5%** | 95.9% Pandoc | **1.9 ms** vs 85.6 ms | **241.3** vs 13.8 | **70.3 MiB** vs 167.8 MiB |
+| Word to text | **98.9%** | 98.4% Aspose.Words (.NET) | **1.6 ms** vs 26.6 ms | **288.7** vs 31.7 | **70.3 MiB** vs 91.0 MiB |
 <!-- benchmark-glance:end -->
 
 Kanera against the most accurate other converter on 278 documents. Times are warm medians; memory
@@ -213,7 +213,7 @@ Timed conversions run one at a time. † marks a converter timed on a fixed samp
 <!-- benchmark-summary:start -->
 | Converter | Visual match | Page counts matched | Fresh process | Reused process | Warm docs/sec | Median peak memory |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Kanera | **92.6%** | **273/278** | **105.2 ms** | **4.9 ms** | **58.7** | 80.1 MiB |
+| Kanera | **92.6%** | **273/278** | **87.8 ms** | **4.3 ms** | **72.7** | 80.3 MiB |
 | LibreOffice | 80.3% | 256/278 | 791.6 ms | 59.6 ms | 10.3 | 252.7 MiB |
 | EigenPal | 70.9% | 257/278 | 766.1 ms | 255.3 ms | 3.7 | 276.6 MiB |
 | Syncfusion DocIO (.NET) | 56.8% | 246/278 | 589.2 ms | 60.7 ms | 1.1 | 121.4 MiB |
@@ -236,7 +236,7 @@ The same 278 documents drawn as PNG pages at 150 DPI and compared with Word's pa
 <!-- image-benchmark-summary:start -->
 | Converter | Visual match | Page counts matched | Fresh process | Reused process | Warm docs/sec | Median peak memory |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Kanera | **92.8%** | **273/278** | **117.8 ms** | **11.4 ms** | **31.8** | **102.5 MiB** |
+| Kanera | **92.8%** | **273/278** | **131.9 ms** | **11.5 ms** | **30.3** | **101.7 MiB** |
 | LibreOffice + pdftoppm | 80.9% | 256/278 | 927.8 ms † | 171.4 ms † | 2.5 † | – |
 | Syncfusion DocIO (.NET) | 58.9% | 246/278 | 578.2 ms | 72.1 ms | 1.8 | 113.2 MiB |
 | Aspose.Words (.NET) | 53.2% | 250/278 | 1038.5 ms † | 82.7 ms † | 3.6 † | 117.9 MiB † |
@@ -252,7 +252,7 @@ document. [Method and full results](https://github.com/happendev/kanera-docx/blo
 <!-- markdown-benchmark-summary:start -->
 | Converter | Markdown accuracy | Fresh process | Reused process | Warm docs/sec | Median peak memory |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Kanera | **98.5%** | **66.0 ms** | **1.9 ms** | **244.5** | **70.4 MiB** |
+| Kanera | **98.5%** | **63.6 ms** | **1.9 ms** | **241.3** | **70.3 MiB** |
 | Pandoc | 95.9% | 92.6 ms | 85.6 ms | 13.8 | 167.8 MiB |
 | MarkItDown | 94.8% | 685.8 ms | 155.2 ms | 6.5 | 157.0 MiB |
 | mammoth + turndown | 94.8% | 159.1 ms | 26.0 ms | 40.5 | 98.7 MiB |
@@ -271,7 +271,7 @@ paragraphs against the document.
 <!-- text-benchmark-summary:start -->
 | Converter | Text accuracy | Fresh process | Reused process | Warm docs/sec | Median peak memory |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Kanera | **98.9%** | **61.1 ms** | **1.6 ms** | **279.2** | **70.5 MiB** |
+| Kanera | **98.9%** | **60.9 ms** | **1.6 ms** | **288.7** | **70.3 MiB** |
 | Aspose.Words (.NET) | 98.4% | 714.8 ms | 26.6 ms | 31.7 | 91.0 MiB |
 | Syncfusion DocIO (.NET) | 97.9% | 215.6 ms | 29.1 ms | 35.2 | 73.8 MiB |
 | mammoth | 97.9% | 139.0 ms | 25.1 ms | 45.6 | 96.3 MiB |

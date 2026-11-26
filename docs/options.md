@@ -20,6 +20,7 @@ result.warnings; // e.g. 'Font "Proxima Nova" not available; using Liberation Sa
 | Option          | Where   | Default  | Meaning                                                              |
 | --------------- | ------- | -------- | -------------------------------------------------------------------- |
 | `fonts`         | all     | `[]`     | Fonts to use (`{ data }` or `{ family, bold, italic, load }`). Win over bundled and system fonts. |
+| `maxInputBytes` | all | 256 MiB | Maximum source file size before decompression. |
 | `archiveLimits` | all | 64 MiB per part, 256 MiB total | Maximum uncompressed bytes per ZIP part (`maxPartBytes`) and across distinct parts read (`maxTotalBytes`). Exceeding either limit stops conversion. |
 | `imageLimits` | all | 16,777,216 pixels per image, 67,108,864 total | Set `maxImagePixels` and `maxTotalPixels` to budget source raster pixels. Repeated placements of one image count once. JPEGs are only decoded for optional recompression, so one that exceeds the budget is embedded unchanged. |
 | `imageQuality` | all | | Encoder quality for eligible colour JPEGs. Set an integer from 1 to 100 or use `false` to disable lossy re-encoding. CLI: `--image-quality <1-100\|off>`. |
@@ -114,6 +115,7 @@ Markdown follows GitHub's dialect:
 | `includeHeadersFooters` | `false`  | Include each distinct header before its section and each footer after it. |
 | `includeNotes`          | `true`   | Include footnotes and endnotes after the body.                            |
 | `includeImages`         | `true`   | Markdown: include picture references.                                     |
+| `maxInputBytes`        | 256 MiB  | Maximum source file size before decompression.                             |
 | `archiveLimits`         |          | As for conversion.                                                        |
 | `signal`                |          | An `AbortSignal`; extraction does not start once it is aborted.          |
 
@@ -122,12 +124,16 @@ Markdown follows GitHub's dialect:
 Conversion stops when an image exceeds the pixel budget or either dimension exceeds 32,768 pixels.
 TIFF edge-tile padding counts toward the budget. Each conversion also allows up to 256 font faces,
 1,048,576 character mappings, 128 MiB of embedded font references, 256 columns per table and 64
-columns per section. XML parts support 128 levels of elements and layout allows 10,000 pages.
+columns per section. XML parts support 128 levels of elements and 256 attributes per element, including
+namespace declarations. Word fields can nest 128 levels deep. Imported text and HTML share a limit of
+65,536 paragraphs per document. Each import counts toward a separate `maxTotalBytes` budget,
+including repeated uses of the same part. Layout allows 10,000 pages.
 OpenType single-substitution and positioning features share a budget of 1,048,576 work units per conversion.
 Set `embeddedFonts: false` to skip reading embedded font binaries while keeping the font names and substitution hints.
 
 Charts allow 32,768 slots per data cache and 262,144 across a conversion. Empty positions in
-sparse chart data count toward both limits.
+sparse chart data count toward both limits. Chart tables in text and Markdown share a separate limit
+of 262,144 output cells, including headers, empty cells and Markdown separators.
 
 For a hosted converter, run each job in a separate process with an OS-enforced memory limit.
 Have the parent enforce a wall-clock deadline and terminate the child when it expires. Conversion

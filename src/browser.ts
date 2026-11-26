@@ -1,6 +1,7 @@
+import { readInputBlob } from './util/input.js';
 import { convertDocx as convertCore, convertDocxToImages as imagesCore, extractText as extractCore } from './index.js';
 import type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontProvider, ImageOptions, ImagesResult, PageImage } from './core.js';
-import { BundledFontData } from './fonts/registry.js';
+import { BundledFontData, BundledFontPack } from './fonts/registry.js';
 import { isFontCollection } from './fonts/sfnt.js';
 import { COMMON_FONTS, FULL_FONTS } from './fonts/bundled.js';
 
@@ -28,7 +29,12 @@ export interface BrowserConvertOptions extends ConvertOptions, BrowserFontOption
 
 export interface BrowserImageOptions extends ImageOptions, BrowserFontOptions {}
 
-const fontCaches = new WeakMap<typeof fetch, Map<string, Promise<BundledFontData | Uint8Array>>>();
+interface BrowserFontCache {
+  fonts: Map<string, Promise<BundledFontData | Uint8Array>>;
+  pack: BundledFontPack;
+}
+
+const fontCaches = new WeakMap<typeof fetch, BrowserFontCache>();
 
 function defaultBase(): URL {
   // Kept out of a literal `new URL('…', import.meta.url)` so bundlers don't try to inline a folder.
@@ -42,39 +48,31 @@ function fontProviders(options: BrowserFontOptions): FontProvider[] {
     const base = options.fontBaseUrl ? new URL(String(options.fontBaseUrl), globalThis.location?.href ?? import.meta.url) : defaultBase();
     if (!base.pathname.endsWith('/')) base.pathname += '/';
     const doFetch = options.fetch ?? fetch;
-    let fontCache = fontCaches.get(doFetch);
-    if (!fontCache) {
-      fontCache = new Map();
-      fontCaches.set(doFetch, fontCache);
+    let cache = fontCaches.get(doFetch);
+    if (!cache) {
+      cache = { fonts: new Map(), pack: new BundledFontPack() };
+      fontCaches.set(doFetch, cache);
     }
+    const { fonts, pack } = cache;
     const faces = options.fontPack === 'common' ? COMMON_FONTS : FULL_FONTS;
     providers.push({
       register(registry) {
-        for (const b of faces) {
-          const url = new URL(b.file, base).href;
-          registry.add(
-            {
-              family: b.family,
-              bold: b.bold,
-              italic: b.italic,
-              weight: b.weight, covers: b.covers,
-              load: () => {
-                let p = fontCache.get(url);
-                if (!p) {
-                  p = doFetch(url).then(async (r) => {
-                    if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
-                    const bytes = new Uint8Array(await r.arrayBuffer());
-                    return isFontCollection(bytes) ? bytes : new BundledFontData(bytes);
-                  });
-                  p.catch(() => fontCache.delete(url));
-                  fontCache.set(url, p);
-                }
-                return p;
-              },
-            },
-            'bundled',
-          );
-        }
+        registry.addBundled(pack.sources(base.href, faces, file => {
+          const url = new URL(file, base).href;
+          return () => {
+            let pending = fonts.get(url);
+            if (!pending) {
+              pending = doFetch(url).then(async response => {
+                if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+                const bytes = new Uint8Array(await response.arrayBuffer());
+                return isFontCollection(bytes) ? bytes : new BundledFontData(bytes);
+              });
+              pending.catch(() => fonts.delete(url));
+              fonts.set(url, pending);
+            }
+            return pending;
+          };
+        }));
       },
     });
   }
@@ -83,13 +81,13 @@ function fontProviders(options: BrowserFontOptions): FontProvider[] {
 
 /** Convert a .docx to PDF in the browser. Bundled fonts are fetched on demand. */
 export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, options: BrowserConvertOptions = {}): Promise<ConvertResult> {
-  const data = input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : input;
+  const data = input instanceof Blob ? await readInputBlob(input, options) : input;
   return convertCore(data, options, fontProviders(options));
 }
 
 /** Render a .docx's pages as PNG (default) or JPEG images in the browser. Bundled fonts are fetched on demand. */
 export async function convertDocxToImages(input: Uint8Array | ArrayBuffer | Blob, options: BrowserImageOptions = {}): Promise<ImagesResult> {
-  const data = input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : input;
+  const data = input instanceof Blob ? await readInputBlob(input, options) : input;
   return imagesCore(data, options, fontProviders(options));
 }
 
@@ -105,7 +103,7 @@ export async function docxToPdf(input: Uint8Array | ArrayBuffer | Blob, options:
 
 /** Extract a .docx's text as plain text or Markdown (`format: 'markdown'`), with warnings. */
 export async function extractText(input: Uint8Array | ArrayBuffer | Blob, options: ExtractTextOptions = {}): Promise<ExtractTextResult> {
-  return extractCore(input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : input, options);
+  return extractCore(input instanceof Blob ? await readInputBlob(input, options) : input, options);
 }
 
 /** A .docx's text as plain text. */

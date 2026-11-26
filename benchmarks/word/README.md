@@ -18,7 +18,7 @@ ran this repository's warm benchmark. [DocFoundry Word benchmark](https://github
 <!-- benchmark-results:start -->
 | Converter | Mean ink overlap | Matching page count | Failed conversions | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS | Total PDF size |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **92.6%** | **273/278** | **0/278** | **105.2 ms** | **4.9 ms** | **80.6 ms** | **58.7** | 80.1 MiB | **161.2 MiB** | **17.72 MiB** |
+| @kanera/docx2pdf 1.0.0 | **92.6%** | **273/278** | **0/278** | **87.8 ms** | **4.3 ms** | **67.4 ms** | **72.7** | 80.3 MiB | **156.7 MiB** | **17.72 MiB** |
 | LibreOffice 26.8.3.1 | 80.3% | 256/278 | **0/278** | 791.6 ms | 59.6 ms | 248.2 ms | 10.3 | 252.7 MiB | 417.9 MiB | 44.46 MiB |
 | EigenPal 2.39.0 | 70.9% | 257/278 | 1/278 | 766.1 ms | 255.3 ms | 645.4 ms | 3.7 | 276.6 MiB | 576.1 MiB | 21.98 MiB |
 | Syncfusion DocIO (.NET) 28.2.4.0 | 56.8% | 246/278 | 1/278 | 589.2 ms | 60.7 ms | 2416.2 ms | 1.1 | 121.4 MiB | 1024.8 MiB | 18.91 MiB |
@@ -182,7 +182,7 @@ compares the words with those PyMuPDF reads from the Word PDF, as a bag, so read
 count. Recall is the share of the reference's words that the extracted text has, and precision is
 the share of the extracted words found in the reference. The run prints the median extraction
 time, lists the fixtures with the lowest scores (`--worst N`), and writes per-fixture counts to
-`out/benchmark-word/text-accuracy.json`. On 25 November 2026, extraction took a median
+`out/benchmark-word/text-accuracy.json`. On 26 November 2026, extraction took a median
 1.2 ms across 278 documents. The 120 Microsoft Word PDF references yielded 98.41% word recall and
 99.38% precision. Reference text can include repeated headers, page numbers, comments and
 deletions. Superscripts and PDF glyph mappings can also split words.

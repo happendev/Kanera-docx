@@ -114,6 +114,7 @@ export class Numbering {
   }
 
   level(numId: string, ilvl: number): Level | undefined {
+    if (!Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) return undefined;
     const inst = this.nums.get(numId);
     if (!inst) return undefined;
     const over = inst.overrides.get(ilvl)?.level;

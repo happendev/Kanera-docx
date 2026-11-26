@@ -149,7 +149,7 @@ export class ChartPointBudget {
   private remaining = 262144;
 
   reserve(count: number): void {
-    if (count > 32768 || count > this.remaining) throw new Error('Chart point limit exceeded');
+    if (count > 32768 || count > this.remaining) throw new RangeError('Chart point limit exceeded');
     this.remaining -= count;
   }
 }

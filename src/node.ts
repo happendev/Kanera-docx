@@ -1,3 +1,4 @@
+import { readInputPath } from './util/node-input.js';
 import { open, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -7,7 +8,7 @@ import { convertToImagesWithCompression, convertWithCompression, type ConvertOpt
 import { extractTextWithCompression, type ExtractTextOptions, type ExtractTextResult } from './text/index.js';
 import { CJK_FILES, fontVersion, loadCjkFont } from './fonts/node-cjk.js';
 import { FULL_FONTS } from './fonts/bundled.js';
-import { BundledFontData, type FontSource } from './fonts/registry.js';
+import { BundledFontData, BundledFontPack, type FontSource } from './fonts/registry.js';
 import { collectionSize, isFontCollection, MAX_FONT_FACES, SfntFont } from './fonts/sfnt.js';
 import { buildSfnt } from './fonts/subset.js';
 
@@ -59,16 +60,18 @@ async function loadPackagedFont(path: string, checkVersion: boolean, sparse: boo
   }
 }
 
+const bundledPack = new BundledFontPack();
+
 function bundledProvider(dir?: string): FontProvider {
   return {
     register(registry) {
-      const base = dir ?? packageFontDir();
-      for (const b of FULL_FONTS) {
-        const path = resolve(base, b.file);
-        const sparse = dir === undefined && !registry.needsGlyphBounds && CJK_FILES.has(b.file);
-        const load = () => loadPackagedFont(path, dir !== undefined, sparse);
-        registry.add({ family: b.family, bold: b.bold, italic: b.italic, weight: b.weight, covers: b.covers, load }, 'bundled');
-      }
+      const base = dir === undefined ? packageFontDir() : resolve(dir);
+      const sparse = dir === undefined && !registry.needsGlyphBounds;
+      const key = base + (dir !== undefined ? '\0versioned' : sparse ? '\0sparse' : '\0full');
+      registry.addBundled(bundledPack.sources(key, FULL_FONTS, file => {
+        const path = join(base, file);
+        return () => loadPackagedFont(path, dir !== undefined, sparse && CJK_FILES.has(file));
+      }));
     },
   };
 }
@@ -200,13 +203,13 @@ async function fontProviders(options: NodeFontOptions): Promise<FontProvider[]> 
 
 /** Convert a .docx (bytes or a file path) to PDF, with the bundled fonts available. */
 export async function convertDocx(input: Uint8Array | ArrayBuffer | string, options: NodeConvertOptions = {}): Promise<ConvertResult> {
-  const data = typeof input === 'string' ? await readFile(input, { signal: options.signal }) : input;
+  const data = typeof input === 'string' ? await readInputPath(input, options) : input;
   return convertWithCompression(data, options, await fontProviders(options), nodeCompression);
 }
 
 /** Render a .docx's (bytes or a file path) pages as PNG (default) or JPEG images, with the bundled fonts available. */
 export async function convertDocxToImages(input: Uint8Array | ArrayBuffer | string, options: NodeImageOptions = {}): Promise<ImagesResult> {
-  const data = typeof input === 'string' ? await readFile(input, { signal: options.signal }) : input;
+  const data = typeof input === 'string' ? await readInputPath(input, options) : input;
   return convertToImagesWithCompression(data, options, await fontProviders(options), nodeCompression);
 }
 
@@ -222,7 +225,7 @@ export async function docxToPdf(input: Uint8Array | ArrayBuffer | string, option
 
 /** Extract a .docx's (bytes or a file path) text as plain text or Markdown (`format: 'markdown'`), with warnings. */
 export async function extractText(input: Uint8Array | ArrayBuffer | string, options: ExtractTextOptions = {}): Promise<ExtractTextResult> {
-  const data = typeof input === 'string' ? await readFile(input, { signal: options.signal }) : input;
+  const data = typeof input === 'string' ? await readInputPath(input, options) : input;
   return extractTextWithCompression(data, options, nodeCompression);
 }
 

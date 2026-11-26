@@ -18,7 +18,7 @@ export interface Compression {
 export function boundedSink(limit: number, sink: ChunkSink): ChunkSink {
   let remaining = limit;
   return (chunk) => {
-    if (chunk.length > remaining) throw new Error('inflate: decoded size exceeds limit');
+    if (chunk.length > remaining) throw new RangeError('inflate: decoded size exceeds limit');
     remaining -= chunk.length;
     sink(chunk);
   };

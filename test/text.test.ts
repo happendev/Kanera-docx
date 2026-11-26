@@ -243,6 +243,15 @@ describe('Markdown', () => {
     expect(await docxToMarkdown(makeDocx({ body, styles: STYLES }))).toBe('> Wise words\n\n- Intro 1\n  - Detail 2\n\n```\nconst a = 1;\n  return a * 2;\n```\n\nCall `run()` now.\n');
   });
 
+  it('checks source size before extracting plain text or Markdown', async () => {
+    const docx = makeDocx({ body: p('One') });
+    const options = { maxInputBytes: docx.length - 1 };
+    await expect(docxToText(docx, options)).rejects.toThrow('Input byte limit');
+    await expect(markdownCore(docx, options)).rejects.toThrow('Input byte limit');
+    await expect(markdownInBrowser(new Blob([Uint8Array.from(docx)]), options)).rejects.toThrow('Input byte limit');
+    expect(await docxToText(docx, { maxInputBytes: docx.length })).toBe('One\n');
+  });
+
   it('converts the sample document through every entry point alike', async () => {
     const expected =
       '# Quarterly report\n\nPlain, **bold,** *italic,* underlined red\n\nGrüße — “quoted” € 42 ½ Ωmega\n\n- First bullet\n- Second bullet\n\n' +

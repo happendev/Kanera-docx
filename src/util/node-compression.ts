@@ -18,11 +18,11 @@ function inflate(data: Uint8Array, limit: number, raw: boolean): Uint8Array {
     result = decode(data, { maxOutputLength, chunkSize });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ERR_BUFFER_TOO_LARGE') throw new Error('inflate: decoded size exceeds limit', { cause: err });
+    if (code === 'ERR_BUFFER_TOO_LARGE') throw new RangeError('inflate: decoded size exceeds limit', { cause: err });
     if (code === 'Z_BUF_ERROR') throw new Error('inflate: truncated stream', { cause: err });
     throw err;
   }
-  if (result.length > limit) throw new Error('inflate: decoded size exceeds limit');
+  if (result.length > limit) throw new RangeError('inflate: decoded size exceeds limit');
   return resultBytes(result);
 }
 

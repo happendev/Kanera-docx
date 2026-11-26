@@ -30,6 +30,21 @@ const right = '<w:jc w:val="right"/>';
 const section = (width: number) => '<w:sectPr><w:pgSz w:w="' + width * 20 + '" w:h="12000"/><w:pgMar w:left="1000" w:right="1000"/></w:sectPr>';
 
 describe('conversion caches', () => {
+  it('keeps adjacent runs distinct while reusing their inherited formatting', () => {
+    const styles = '<w:style w:type="paragraph" w:styleId="Base"><w:rPr><w:b/></w:rPr></w:style>' +
+      '<w:style w:type="character" w:styleId="Flip"><w:rPr><w:b/><w:i/></w:rPr></w:style>';
+    const run = (text: string, format = '') => '<w:r>' + (format ? '<w:rPr>' + format + '</w:rPr>' : '') + '<w:t>' + text + '</w:t></w:r>';
+    const body = '<w:p><w:pPr><w:pStyle w:val="Base"/></w:pPr>' +
+      run('A') + run('B') + run('C', '<w:b w:val="0"/>') + run('D', '<w:rStyle w:val="Flip"/>') + run('E') + '</w:p>';
+    const paragraph = parseDocx(makeDocx({ body, styles }), nodeCompression.inflateRaw).body[0];
+    if (paragraph.type !== 'paragraph') throw new Error('Expected a paragraph');
+    const items = paragraph.content.filter((c) => c.type === 'text');
+    expect(items.map((c) => [c.text, c.props.bold, c.props.italic])).toEqual([
+      ['A', true, false], ['B', true, false], ['C', false, false], ['D', false, true], ['E', true, false],
+    ]);
+    expect(items[0].props).not.toBe(items[1].props);
+  });
+
   it('resolves reused Word styles against each document’s theme', async () => {
     const resolve = async (accent: string, slot = 'accent1') => {
       const styles = `<w:style w:type="paragraph" w:styleId="Heading"><w:rPr><w:color w:themeColor="${slot}"/></w:rPr></w:style>`;

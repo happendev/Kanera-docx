@@ -35,7 +35,7 @@ it converts to Markdown in under a second.
 <!-- text-speed:start -->
 | Converter | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **61.1 ms** | **1.6 ms** | **13.7 ms** | **279.2** | **70.5 MiB** | **97.6 MiB** |
+| @kanera/docx2pdf 1.0.0 | **60.9 ms** | **1.6 ms** | **13.1 ms** | **288.7** | **70.3 MiB** | **93.2 MiB** |
 | Aspose.Words (.NET) 26.11.0.0 | 714.8 ms | 26.6 ms | 62.0 ms | 31.7 | 91.0 MiB | 107.9 MiB |
 | Syncfusion DocIO (.NET) 28.2.4.0 | 215.6 ms | 29.1 ms | 50.0 ms | 35.2 | 73.8 MiB | 108.8 MiB |
 | mammoth 1.13.0 | 139.0 ms | 25.1 ms | 42.2 ms | 45.6 | 96.3 MiB | 148.8 MiB |
@@ -43,7 +43,8 @@ it converts to Markdown in under a second.
 | Pandoc 3.9 | 86.6 ms | 84.7 ms | 158.8 ms | 14.0 | 167.6 MiB | 171.7 MiB |
 <!-- text-speed:end -->
 
-Bold marks the best value in each column, ties included.
+Bold marks the best value in each column, ties included. The 26 November 2026 Kanera warm figures are medians
+of four full-corpus runs. Each run started a fresh Node process and converted one document before timing.
 
 ## What is measured
 

@@ -286,7 +286,7 @@ export function parseParaDelta(pPr: XmlElement | undefined, ctx: PropContext): P
         break;
       case 'w:outlineLvl': {
         const v = num(el.attrs['w:val']);
-        if (v !== undefined) d.outlineLevel = v < 9 ? v : null;
+        if (v !== undefined) d.outlineLevel = Number.isInteger(v) && v >= 0 && v < 9 ? v : null;
         break;
       }
       case 'w:numPr': {

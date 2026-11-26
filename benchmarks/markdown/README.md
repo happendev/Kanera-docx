@@ -41,7 +41,7 @@ scorer. [DocFoundry Markdown benchmark](https://github.com/happendev/DocFoundry/
 <!-- markdown-speed:start -->
 | Converter | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **66.0 ms** | **1.9 ms** | **17.8 ms** | **244.5** | **70.4 MiB** | **105.4 MiB** |
+| @kanera/docx2pdf 1.0.0 | **63.6 ms** | **1.9 ms** | **17.2 ms** | **241.3** | **70.3 MiB** | **94.8 MiB** |
 | Pandoc 3.9 | 92.6 ms | 85.6 ms | 157.5 ms | 13.8 | 167.8 MiB | 173.1 MiB |
 | MarkItDown 0.1.9 | 685.8 ms | 155.2 ms | 309.9 ms | 6.5 | 157.0 MiB | 184.5 MiB |
 | mammoth 1.13.0 + turndown 7.2.5 | 159.1 ms | 26.0 ms | 52.3 ms | 40.5 | 98.7 MiB | 180.2 MiB |

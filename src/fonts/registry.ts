@@ -1,3 +1,4 @@
+import type { BundledFont } from './bundled.js';
 import type { FontRequest } from '../ooxml/model.js';
 import { SfntFont, collectionSize, FontBudget, FontLimitError } from './sfnt.js';
 import {
@@ -194,8 +195,39 @@ interface PendingFont {
   load: () => Promise<LoadedFont>;
   collectionIndex?: number;
   covers?: (cp: number) => boolean;
-  promise?: Promise<void>;
-  loaded?: boolean;
+}
+
+/** Preserve registration order for both family lookup and character fallback. */
+class FontSources {
+  readonly withCoverage: PendingFont[] = [];
+  readonly byFamily = new Map<string, PendingFont[]>();
+
+  add(source: PendingFont): void {
+    if (source.covers) this.withCoverage.push(source);
+    for (const family of source.families) {
+      const matches = this.byFamily.get(family);
+      if (!matches) this.byFamily.set(family, [source]);
+      else if (matches[matches.length - 1] !== source) matches.push(source);
+    }
+  }
+}
+
+/** Reuse the most recent pack's descriptors. Load progress and font budgets belong to each registry. */
+export class BundledFontPack {
+  private cached?: { key: string; faces: readonly BundledFont[]; sources: FontSources };
+
+  sources(key: string, faces: readonly BundledFont[], makeLoader: (file: string) => PendingFont['load']): FontSources {
+    if (this.cached?.key === key && this.cached.faces === faces) return this.cached.sources;
+    const sources = new FontSources();
+    for (const face of faces) {
+      sources.add({
+        families: [normalizeFamily(face.family)], bold: face.bold, italic: face.italic, weight: face.weight,
+        origin: 'bundled', covers: face.covers, load: makeLoader(face.file),
+      });
+    }
+    this.cached = { key, faces, sources };
+    return sources;
+  }
 }
 
 /**
@@ -256,7 +288,10 @@ function fontErrorMessage(error: unknown): string {
 export class FontRegistry {
   private readonly budget = new FontBudget();
   private faces: FontFace[] = [];
-  private pending: PendingFont[] = [];
+  private sourceGroups: FontSources[] = [];
+  private localSources?: FontSources;
+  private loaded = new Set<PendingFont>();
+  private loadPromises = new Map<PendingFont, Promise<void>>();
   private byFamily = new Map<string, FontFace[]>();
   private resolveCache = new Map<string, ResolvedFace>();
   private glyphCache = new Map<string, ResolvedFace>();
@@ -273,6 +308,15 @@ export class FontRegistry {
   /** Equations measure outline bounds during layout, before the PDF glyph set is known. */
   constructor(readonly needsGlyphBounds = false) {}
 
+  addBundled(sources: FontSources): void {
+    this.sourceGroups.push(sources);
+    this.localSources = undefined;
+  }
+
+  private *coverageSources(): Generator<PendingFont> {
+    for (const group of this.sourceGroups) yield* group.withCoverage;
+  }
+
   add(source: FontSourceOptions<LoadedFont>, origin: FontOrigin): void {
     const extra = source.family ? (Array.isArray(source.family) ? source.family : [source.family]) : [];
     if (source.data) {
@@ -280,7 +324,11 @@ export class FontRegistry {
       return;
     }
     if (source.load && extra.length) {
-      this.pending.push({
+      if (!this.localSources) {
+        this.localSources = new FontSources();
+        this.sourceGroups.push(this.localSources);
+      }
+      this.localSources.add({
         families: extra.map(normalizeFamily),
         bold: !!source.bold,
         italic: !!source.italic,
@@ -415,9 +463,17 @@ export class FontRegistry {
    * same style: two sources of one family can cover different characters.
    */
   private *familySources(family: string, bold: boolean, italic: boolean, missing?: number[]): Generator<PendingFont> {
-    let candidates = this.pending.filter((p) => !p.loaded && p.families.includes(family) && (!missing || !p.covers || missing.some(p.covers)));
+    let candidates: PendingFont[] | undefined;
+    for (const group of this.sourceGroups) {
+      const matches = group.byFamily.get(family);
+      if (!matches) continue;
+      for (const p of matches) {
+        if (!this.loaded.has(p) && (!missing || !p.covers || missing.some(p.covers))) (candidates ??= []).push(p);
+      }
+    }
+    if (!candidates) return;
     // As in resolve(), a font passed in `fonts` under this name shuts out the other sources.
-    const callerOnly = !missing && this.callerWins([...(this.byFamily.get(family) ?? []), ...candidates], bold, italic);
+    const callerOnly = !missing && (this.callerWins(candidates, bold, italic) || this.callerWins(this.byFamily.get(family), bold, italic));
     if (callerOnly) candidates = candidates.filter((p) => p.origin === 'user');
     // The legacy family name wins next: "Aptos" loads Aptos, not Aptos Display, which shares the
     // typographic family and the same weight.
@@ -425,8 +481,13 @@ export class FontRegistry {
     if (legacy.length) candidates = legacy;
     candidates.sort((a, b) => this.styleScore(a, bold, italic) - this.styleScore(b, bold, italic));
     for (const p of candidates) {
-      const loaded = (this.byFamily.get(family) ?? []).filter((face) => !callerOnly || face.origin === 'user');
-      const styled = loaded.filter((face) => !legacy.length || normalizeFamily(face.font.names.family) === family);
+      const faces = this.byFamily.get(family);
+      if (!faces) {
+        yield p;
+        continue;
+      }
+      const loaded = callerOnly ? faces.filter((face) => face.origin === 'user') : faces;
+      const styled = legacy.length ? loaded.filter((face) => normalizeFamily(face.font.names.family) === family) : loaded;
       if (missing) {
         const found = missing.every((cp) => loaded.some((face) => face.font.hasGlyph(cp)));
         const best = Math.min(...styled.map((face) => this.styleDistance(face, bold, italic)));
@@ -447,8 +508,8 @@ export class FontRegistry {
    * name table says), as it does unless it can't render the style: only an italic face for upright
    * text, say.
    */
-  private callerWins(faces: Array<FontFace | PendingFont>, bold: boolean, italic: boolean): boolean {
-    return faces.some((f) => f.origin === 'user' && (!f.italic || italic) && (!f.bold || bold));
+  private callerWins(faces: Array<FontFace | PendingFont> | undefined, bold: boolean, italic: boolean): boolean {
+    return faces?.some((f) => f.origin === 'user' && (!f.italic || italic) && (!f.bold || bold)) ?? false;
   }
 
   private *primarySources({ family, bold, italic, lang }: FontRequest): Generator<PendingFont> {
@@ -505,9 +566,9 @@ export class FontRegistry {
     // Proportional kana take their widths from a face with them (palt), which the stand-in for the
     // requested font may lack (Noto Serif CJK has none).
     if (requests.some((r) => proportionalKana(r.family) && [...r.codePoints].some((cp) => cp >= 0x3000 && cp <= 0x30ff))) {
-      for (const p of this.pending) {
+      for (const p of this.coverageSources()) {
         if (this.faces.some((face) => this.paltOf(face).size)) break;
-        if (!p.loaded && p.covers?.(0x3042)) await this.loadPending(p);
+        if (!this.loaded.has(p) && p.covers?.(0x3042)) await this.loadPending(p);
       }
     }
   }
@@ -526,9 +587,9 @@ export class FontRegistry {
         missing = missing.filter((cp) => !this.byFamily.get(fallback)!.some((face) => face.font.hasGlyph(cp)));
       }
     }
-    for (const p of this.pending) {
+    for (const p of this.coverageSources()) {
       if (!missing.length) break;
-      if (!p.loaded && p.covers && missing.some(p.covers)) {
+      if (!this.loaded.has(p) && p.covers && missing.some(p.covers)) {
         await this.loadPending(p);
         missing = missing.filter((cp) => !this.faces.some((face) => face.font.hasGlyph(cp)));
       }
@@ -537,8 +598,9 @@ export class FontRegistry {
   }
 
   private loadPending(p: PendingFont, read?: Promise<LoadedFont>): Promise<void> {
-    if (!p.promise) {
-      p.promise = (async () => {
+    let promise = this.loadPromises.get(p);
+    if (!promise) {
+      promise = (async () => {
         try {
           const data = await (read ?? p.load());
           if (data instanceof BundledFontData) {
@@ -552,10 +614,11 @@ export class FontRegistry {
           if (e instanceof FontLimitError) throw e;
           this.warnings.add(`Could not load font ${p.families[0]}: ${fontErrorMessage(e)}`);
         }
-        p.loaded = true;
+        this.loaded.add(p);
       })();
+      this.loadPromises.set(p, promise);
     }
-    return p.promise;
+    return promise;
   }
 
   private styleDistance(face: FontFace | PendingFont, bold: boolean, italic: boolean): number {
@@ -640,7 +703,9 @@ export class FontRegistry {
     if (cand !== norm || (this.byFamily.get(cand) ?? []).some(fits)) return false;
     const sub = substituteFamilies(norm);
     if (!sub?.compatible.length) return false;
-    return sub.compatible.some((f) => (this.byFamily.get(f) ?? []).some(fits) || (!loaded && this.pending.some((p) => !p.loaded && p.families.includes(f) && fits(p))));
+    return sub.compatible.some((family) => this.byFamily.get(family)?.some(fits) ||
+      (!loaded && this.sourceGroups.some((group) =>
+        group.byFamily.get(family)?.some((p) => !this.loaded.has(p) && fits(p)))));
   }
 
   private isMetricSubstitute(norm: string, cand: string): boolean {

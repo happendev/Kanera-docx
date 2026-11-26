@@ -50,7 +50,16 @@ export interface TableStyle {
   cond: Map<string, CondFormat>;
 }
 
+interface RunStyle {
+  paraStyle?: string;
+  charStyle?: string;
+  tableRun?: RunDelta;
+  tableOverridesSize?: boolean;
+}
+
 export class StyleSheet {
+  // Adjacent runs often inherit the same formatting. Direct formatting belongs to each run.
+  private lastRunStyle?: RunStyle & { base: RunDelta };
   private readonly styles = new Map<string, { id: string; type: string; name: string; element: XmlElement; parsed?: StyleDef }>();
   defaultsRun: RunDelta = {};
   defaultsPara: ParaDelta = {};
@@ -219,23 +228,26 @@ export class StyleSheet {
    * Full run properties for text in a paragraph: defaults, table style, paragraph style and
    * character style (toggle properties XOR across style levels), then direct formatting.
    */
-  runDelta(opts: { paraStyle?: string; charStyle?: string; tableRun?: RunDelta; direct?: RunDelta; tableOverridesSize?: boolean }): RunDelta {
-    const styleLevels: RunDelta[] = [];
-    if (opts.tableRun) styleLevels.push(opts.tableRun);
-    styleLevels.push(this.paraStyleRun(opts.paraStyle));
-    if (opts.charStyle) styleLevels.push(this.charStyle(opts.charStyle));
-    let styles = combineStyleRuns(styleLevels);
-    // Word 2013+: a table style's font size beats the default paragraph style's.
-    if (opts.tableOverridesSize && opts.tableRun?.size !== undefined) {
-      styles = { ...styles, size: opts.tableRun.size };
-      if (opts.tableRun.sizeCs !== undefined) styles.sizeCs = opts.tableRun.sizeCs;
+  runDelta(opts: RunStyle & { direct?: RunDelta }): RunDelta {
+    const { paraStyle, charStyle, tableRun, tableOverridesSize, direct } = opts;
+    let last = this.lastRunStyle;
+    if (!last || last.paraStyle !== paraStyle || last.charStyle !== charStyle ||
+        last.tableRun !== tableRun || last.tableOverridesSize !== tableOverridesSize) {
+      const levels: RunDelta[] = [];
+      if (tableRun) levels.push(tableRun);
+      levels.push(this.paraStyleRun(paraStyle));
+      if (charStyle) levels.push(this.charStyle(charStyle));
+      const styles = combineStyleRuns(levels);
+      // Word 2013+: a table style's font size beats the default paragraph style's.
+      if (tableOverridesSize && tableRun?.size !== undefined) {
+        styles.size = tableRun.size;
+        if (tableRun.sizeCs !== undefined) styles.sizeCs = tableRun.sizeCs;
+      }
+      last = this.lastRunStyle = { paraStyle, charStyle, tableRun, tableOverridesSize, base: mergeRun(this.defaultsRun, styles) };
     }
-    let out = mergeRun(this.defaultsRun, styles);
-    if (opts.direct) {
-      const direct = { ...opts.direct };
-      delete direct.styleId;
-      out = mergeRun(out, direct);
-    }
-    return out;
+    if (!direct) return last.base;
+    if (direct.styleId === undefined) return mergeRun(last.base, direct);
+    const { styleId: _styleId, ...format } = direct;
+    return mergeRun(last.base, format);
   }
 }

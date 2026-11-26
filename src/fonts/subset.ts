@@ -22,7 +22,8 @@ export function subsetTrueType(font: SfntFont, usedGlyphs: Iterable<number>, out
     const bytes = outlines ? outlines.get(gid)! : font.data.subarray(...font.glyphRange(gid)!);
     pieces.push(bytes);
     length += Math.ceil(bytes.length / 4) * 4;
-    const children = bytes.length >= 10 && (bytes[0] & 0x80) ? glyphComponents(bytes) : [];
+    if (bytes.length < 10 || !(bytes[0] & 0x80)) continue;
+    const children = glyphComponents(bytes);
     if (children.length) components.set(gid, children);
     for (const child of children) {
       if (child.gid >= font.numGlyphs) throw new Error('Invalid component ID for TrueType subset');

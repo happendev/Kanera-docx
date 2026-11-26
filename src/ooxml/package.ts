@@ -1,6 +1,6 @@
 import type { InflateBytes } from '../util/compression.js';
 import { ZipArchive, type ArchiveLimits } from '../util/zip.js';
-import { children, parseXml, XmlDepthError, type XmlElement } from '../util/xml.js';
+import { children, parseXml, XmlLimitError, type XmlElement } from '../util/xml.js';
 
 export interface Relationship {
   id: string;
@@ -60,7 +60,7 @@ export class OpcPackage {
       try {
         el = template ? template.parse(text) : parseXml(text);
       } catch (err) {
-        if (err instanceof XmlDepthError) throw err;
+        if (err instanceof XmlLimitError) throw err;
         el = null;
       }
     }

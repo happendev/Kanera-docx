@@ -32,7 +32,8 @@ import type {
 } from '../ooxml/model.js';
 import { Numbering } from './numbering.js';
 import type { InflateBytes } from '../util/compression.js';
-import type { ArchiveLimits } from '../util/zip.js';
+import { decodeXmlText, type ArchiveLimits } from '../util/zip.js';
+import { htmlText } from './html-text.js';
 import { OpcPackage, XmlTemplate } from '../ooxml/package.js';
 import {
   DEFAULT_RUN,
@@ -108,11 +109,14 @@ const BUILT_IN_STYLES =
  * carry no data. Text extraction uses it.
  */
 export function parseDocx(data: Uint8Array, inflateRaw: InflateBytes, limits?: ArchiveLimits, embeddedFonts = true, textOnly = false): DocxDocument {
-  return new DocxParser(new OpcPackage(data, inflateRaw, limits), embeddedFonts && !textOnly, textOnly).parse();
+  return new DocxParser(new OpcPackage(data, inflateRaw, limits), embeddedFonts && !textOnly, textOnly, limits?.maxTotalBytes ?? 256 * 1024 * 1024).parse();
 }
 
 class DocxParser {
+  private remainingImportParagraphs = 65_536;
   private main: string;
+  private readonly document: XmlElement;
+  private readonly body: XmlElement;
   private theme: Theme;
   private ctx: PropContext;
   private styles: StyleSheet;
@@ -134,8 +138,14 @@ class DocxParser {
   private prevFooters: HeaderFooterRefs = {};
   private hyperlinkStack: Link[] = [];
 
-  constructor(private readonly pkg: OpcPackage, private readonly readEmbeddedFonts: boolean, private readonly textOnly = false) {
+  constructor(private readonly pkg: OpcPackage, private readonly readEmbeddedFonts: boolean, private readonly textOnly: boolean, private remainingImportBytes: number) {
     this.main = this.pkg.mainDocumentPart();
+    const document = this.pkg.xml(this.main);
+    if (document?.name !== 'w:document') throw new Error('Not a Word document: invalid main document part');
+    const body = child(document, 'w:body');
+    if (!body) throw new Error('Document has no body');
+    this.document = document;
+    this.body = body;
     const settingsRel = this.pkg.relByType(this.main, '/settings');
     const settingsXml = settingsRel ? this.pkg.xml(settingsRel.target) : undefined;
     const fontLang = child(settingsXml, 'w:themeFontLang')?.attrs;
@@ -196,9 +206,7 @@ class DocxParser {
   }
 
   parse(): DocxDocument {
-    const doc = this.pkg.xml(this.main);
-    const body = child(doc, 'w:body');
-    if (!body) throw new Error('Document has no body');
+    const { document: doc, body } = this;
     const pctx: PartContext = { part: this.main };
     const blocks = this.parseBlocks(body, pctx);
     const finalSectPr = child(body, 'w:sectPr');
@@ -332,39 +340,43 @@ class DocxParser {
     );
   }
 
-  private importChunk(el: XmlElement, pctx: PartContext): Block[] {
+  private importChunk(el: XmlElement, pctx: PartContext, blocks: Block[]): void {
     const id = el.attrs['r:id'] ?? '';
     const rel = this.pkg.rels(pctx.part).get(id);
     const type = rel && !rel.external ? this.pkg.contentType(rel.target) : undefined;
     if (!rel || (type !== 'text/html' && type !== 'application/xhtml+xml' && type !== 'text/plain')) {
       this.warnings.push('Skipped unsupported or missing altChunk import: ' + (rel?.target ?? id));
-      return [];
+      return;
     }
-    let text = this.pkg.zip.readText(rel.target);
-    if (text === null) {
+    const bytes = this.pkg.bytes(rel.target);
+    if (bytes === null) {
       this.warnings.push('Missing altChunk part: ' + rel.target);
-      return [];
+      return;
     }
+    if (bytes.length > this.remainingImportBytes) throw new RangeError('Word import byte limit exceeded');
+    this.remainingImportBytes -= bytes.length;
+    let text = decodeXmlText(bytes);
     if (type !== 'text/plain') {
       // Import readable text only. HTML is never attached to a browser DOM or executed.
       this.warnings.push('Imported HTML altChunk as plain text: ' + rel.target);
-      text = text.replace(/<!--[\s\S]*?-->/g, '')
-        .replace(/<(head|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
-        .replace(/\s+/g, ' ')
-        .replace(/<\/?(?:p|div|li|h[1-6]|br|tr|table|section|article)\b[^>]*>/gi, '\n')
-        .replace(/<\/t[dh]\s*>/gi, ' ')
-        .replace(/<\/?[a-z!](?:[^>"']|"[^"]*"|'[^']*')*>/gi, '');
-      text = decodeEntities(text.replace(/&nbsp;/gi, '\u00a0'));
+      text = decodeEntities(htmlText(text).replace(/&nbsp;/gi, '\u00a0'));
     }
-    const lines = text.split(/\r\n?|\n/);
-    const blocks: Block[] = [];
-    for (const line of lines) {
-      if (type !== 'text/plain' && !line.trim()) continue;
-      const para = this.parseParagraph({ name: 'w:p', attrs: {}, children: [] }, pctx);
-      this.pushText(para, type === 'text/plain' ? line : line.trim(), para.markProps);
-      blocks.push(para);
+    const breaks = /\r\n?|\n/g;
+    let start = 0;
+    for (;;) {
+      const end = breaks.exec(text);
+      const line = text.slice(start, end?.index ?? text.length);
+      const value = type === 'text/plain' ? line : line.trim();
+      if (value || type === 'text/plain') {
+        if (this.remainingImportParagraphs === 0) throw new RangeError('Word import paragraph limit exceeded');
+        this.remainingImportParagraphs--;
+        const para = this.parseParagraph({ name: 'w:p', attrs: {}, children: [] }, pctx);
+        this.pushText(para, value, para.markProps);
+        blocks.push(para);
+      }
+      if (!end) break;
+      start = breaks.lastIndex;
     }
-    return blocks;
   }
 
   private collectBlocks(container: XmlElement, pctx: PartContext, out: Block[]): void {
@@ -374,7 +386,7 @@ class DocxParser {
           out.push(this.parseParagraph(el, pctx));
           break;
         case 'w:altChunk':
-          out.push(...this.importChunk(el, pctx));
+          this.importChunk(el, pctx, out);
           break;
         case 'w:tbl':
           out.push(this.parseTable(el, pctx));
@@ -438,8 +450,9 @@ class DocxParser {
     // With overrideTableStyleFontSizeAndJustification on (Word 2013+), the default paragraph style's
     // size beats the table style's, as the style hierarchy says; only older documents let the table win.
     const tableOverridesSize = isDefaultStyle && !!pctx.table && pctx.table.legacySize && (normalSize === 11 || normalSize === 12);
-    const markDirect = parseRunDelta(child(pPr, 'w:rPr'), this.ctx);
-    const markDelta = this.styles.runDelta({ paraStyle: styleId, charStyle: markDirect.styleId, tableRun: pctx.table?.tableRun, direct: markDirect, tableOverridesSize });
+    const markPr = child(pPr, 'w:rPr');
+    const markDirect = markPr ? parseRunDelta(markPr, this.ctx) : undefined;
+    const markDelta = this.styles.runDelta({ paraStyle: styleId, charStyle: markDirect?.styleId, tableRun: pctx.table?.tableRun, direct: markDirect, tableOverridesSize });
     const markProps = finalizeRun(markDelta);
     this.noteFonts(markProps, '');
     const props = finalizePara(merged, markProps.size);
@@ -569,14 +582,14 @@ class DocxParser {
   }
 
   private runProps(rPr: XmlElement | undefined, styleId: string | undefined, pctx: PartContext, tableOverridesSize: boolean): RunProps {
-    const direct = parseRunDelta(rPr, this.ctx);
-    let charStyle = direct.styleId;
+    const direct = rPr ? parseRunDelta(rPr, this.ctx) : undefined;
+    let charStyle = direct?.styleId;
     // Word shows table-of-contents entries in their TOC paragraph styles: the Hyperlink character
     // style that the TOC field's \h switch puts on every entry is not drawn (the link still works).
     if (charStyle && this.styles.get(charStyle)?.name.toLowerCase() === 'hyperlink' && this.fieldStack.some((f) => f.toc)) charStyle = undefined;
     const delta = this.styles.runDelta({ paraStyle: styleId, charStyle, tableRun: pctx.table?.tableRun, direct, tableOverridesSize });
     const props = finalizeRun(delta);
-    props.styleId = direct.styleId;
+    props.styleId = direct?.styleId;
     return props;
   }
 
@@ -822,6 +835,7 @@ class DocxParser {
         case 'w:fldChar': {
           const type = el.attrs['w:fldCharType'];
           if (type === 'begin') {
+            if (this.fieldStack.length >= 128) throw new RangeError('Word field nesting limit exceeded');
             // Legacy form checkboxes (FORMCHECKBOX) keep their state in the field's form data.
             const box = child(child(el, 'w:ffData'), 'w:checkBox');
             const state = child(box, 'w:checked') ?? child(box, 'w:default');

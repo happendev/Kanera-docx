@@ -1,3 +1,4 @@
+import { inputBytes, type InputOptions } from './util/input.js';
 import type { DocumentInfo } from './ooxml/model.js';
 import { parseDocx } from './docx/parser.js';
 import { FontRegistry, type FontSource } from './fonts/registry.js';
@@ -15,7 +16,7 @@ export type { FontSource } from './fonts/registry.js';
 export type { LayoutStats } from './layout/engine.js';
 export type { ImageFormat, PageImage } from './raster/render.js';
 
-export interface ConvertOptions {
+export interface ConvertOptions extends InputOptions {
   /** Maximum uncompressed bytes per ZIP part and across all parts read. */
   archiveLimits?: import('./util/zip.js').ArchiveLimits;
   /** Maximum pixels per raster image and across distinct images rendered. */
@@ -92,14 +93,10 @@ export interface FontProvider {
   register(registry: FontRegistry): void | Promise<void>;
 }
 
-function toBytes(input: Uint8Array | ArrayBuffer): Uint8Array {
-  return input instanceof Uint8Array ? input : new Uint8Array(input);
-}
-
 async function layOut(input: Uint8Array | ArrayBuffer, options: ConvertOptions, providers: FontProvider[], compression: Compression) {
   const { signal } = options;
   signal?.throwIfAborted();
-  const doc = parseDocx(toBytes(input), compression.inflateRaw, options.archiveLimits, options.useEmbeddedFonts);
+  const doc = parseDocx(inputBytes(input, options.maxInputBytes), compression.inflateRaw, options.archiveLimits, options.useEmbeddedFonts);
   const fonts = new FontRegistry(doc.hasMath);
   for (const f of options.fonts ?? []) fonts.add(f, 'user');
   for (const e of doc.embeddedFonts) fonts.add({ data: e.data, family: e.family, bold: e.bold, italic: e.italic }, 'embedded');

@@ -170,7 +170,15 @@ interface ListFrame {
   indent: number;
 }
 
+/** Include the category column, header row and Markdown separator in the output budget. */
+export function reserveChartTableCells(remaining: number, series: number, points: number, markdown: boolean): number {
+  const cells = (series + 1) * (points + (markdown ? 2 : 1));
+  if (cells > remaining) throw new RangeError('Chart text table cell limit exceeded');
+  return remaining - cells;
+}
+
 class TextExtractor {
+  private remainingChartCells = 262_144;
   private readonly md: boolean;
   private readonly styleNames: Map<string, string>;
   /** Note numbers in reference order, as Word numbers them. */
@@ -183,7 +191,8 @@ class TextExtractor {
   private section: Section;
   private readonly codeFonts: boolean;
   private readonly escapeDollars: boolean;
-  private symbolCache = new WeakMap<RunProps, boolean>();
+  // Runs usually repeat a handful of font families across the whole document.
+  private readonly symbolFonts = new Map<string, SymbolFontKind | null>();
 
   constructor(private readonly doc: DocxDocument, private readonly options: TextOptions) {
     this.md = options.format === 'markdown';
@@ -553,22 +562,23 @@ class TextExtractor {
     return text;
   }
 
-  private symbolRun(props: RunProps): boolean {
-    let v = this.symbolCache.get(props);
-    if (v === undefined) {
-      v = !!(symbolFontKind(props.fontAscii) || symbolFontKind(props.fontHAnsi) || symbolFontKind(props.fontEastAsia) || symbolFontKind(props.fontCs));
-      this.symbolCache.set(props, v);
+  private symbolFont(family: string): SymbolFontKind | null {
+    let kind = this.symbolFonts.get(family);
+    if (kind === undefined) {
+      kind = symbolFontKind(family);
+      if (this.symbolFonts.size === 128) this.symbolFonts.clear();
+      this.symbolFonts.set(family, kind);
     }
-    return v;
+    return kind;
   }
 
   private mapSymbols(text: string, props: RunProps): string {
-    const symbolRun = this.symbolRun(props);
+    const symbolRun = this.symbolFont(props.fontAscii) || this.symbolFont(props.fontHAnsi) || this.symbolFont(props.fontEastAsia) || this.symbolFont(props.fontCs);
     if (!symbolRun && !PUA_SYMBOL.test(text)) return text;
     let out = '';
     for (const ch of text) {
       const cp = ch.codePointAt(0)!;
-      const kind: SymbolFontKind | null = symbolRun ? symbolFontKind(fontFor(cp, props).family) : null;
+      const kind: SymbolFontKind | null = symbolRun ? this.symbolFont(fontFor(cp, props).family) : null;
       const pua = cp >= 0xf020 && cp <= 0xf0ff;
       if (!kind && !pua) {
         out += ch;
@@ -832,8 +842,10 @@ class TextExtractor {
     if (title) out.push({ text: this.md ? `**${escapeMd(title, false, this.escapeDollars)}**` : title, kind: 'block' });
     const series = chart.plots.flatMap((p) => p.series);
     if (!series.length) return;
-    const count = Math.max(...series.map((s) => Math.max(s.values.length, s.categories.length, s.xValues?.length ?? 0)));
+    let count = 0;
+    for (const s of series) count = Math.max(count, s.values.length, s.categories.length, s.xValues?.length ?? 0);
     if (!count || count > 1000) return;
+    this.remainingChartCells = reserveChartTableCells(this.remainingChartCells, series.length, count, this.md);
     const first = series.find((s) => s.categories.length) ?? series[0];
     const scatter = series.some((s) => s.xValues?.length);
     // Numeric and date categories show in the category axis's format, unless it takes the data's.

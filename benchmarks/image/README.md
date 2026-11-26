@@ -12,7 +12,7 @@ The [main README](../../README.md#word-to-page-images) shows a summary of these 
 <!-- image-benchmark-results:start -->
 | Converter | Mean ink overlap | Matching page count | Failed conversions | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS | Total PNG size |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **92.8%** | **273/278** | **0/278** | **117.8 ms** | **11.4 ms** | **135.2 ms** | **31.8** | **102.5 MiB** | **296.8 MiB** | 156.90 MiB |
+| @kanera/docx2pdf 1.0.0 | **92.8%** | **273/278** | **0/278** | **131.9 ms** | **11.5 ms** | **149.9 ms** | **30.3** | **101.7 MiB** | **254.5 MiB** | 156.90 MiB |
 | LibreOffice 26.8.3.1 + pdftoppm 26.01.0 | 80.9% | 256/278 | **0/278** | 927.8 ms † | 171.4 ms † | 1318.4 ms † | 2.5 † | – | – | 128.88 MiB |
 | Syncfusion DocIO (.NET) 28.2.4.0 | 58.9% | 246/278 | 1/278 | 578.2 ms | 72.1 ms | 1997.8 ms | 1.8 | 113.2 MiB | 660.6 MiB | 73.01 MiB ‡ |
 | Aspose.Words (.NET) 26.11.0.0 | 53.2% | 250/278 | **0/278** | 1038.5 ms † | 82.7 ms † | 1038.7 ms † | 3.6 † | 117.9 MiB † | 397.1 MiB † | **118.10 MiB** |
@@ -87,6 +87,8 @@ left out rather than measured through a PDF rasterizer.
   same process. LibreOffice converts the documents in one CLI batch, timed between successive PDF
   completions as in the Word benchmark, and `pdftoppm` then rasterizes each PDF in its own process.
   A document's warm time is the sum of the two. A warm batch may run for 30 minutes.
+  The 26 November 2026 Kanera warm figures are medians of four full-corpus runs, each in a fresh
+  Node process.
 - **Sampling, timeouts and failures** follow the Word benchmark. Each engine first renders the
   same 50-document sample. If that projects past five minutes for the corpus, the engine is timed
   on the sample only (†) and renders the other documents untimed for scoring. A conversion that

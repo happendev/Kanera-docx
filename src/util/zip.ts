@@ -71,6 +71,7 @@ export class ZipArchive {
       cdSize = u64(data, z64 + 40);
       directoryLimit = z64;
     }
+    if (count > 65535) throw new RangeError('ZIP entry limit exceeded (65,535)');
     const cdEnd = cdOffset + cdSize;
     if (cdEnd > directoryLimit || count * 46 > cdSize) throw new Error('Invalid ZIP directory bounds');
     let p = cdOffset;
@@ -141,7 +142,7 @@ export class ZipArchive {
     const lh = entry.localHeaderOffset;
     if (lh + 30 > d.length || u32(d, lh) !== 0x04034b50) throw new Error(`ZIP: bad local header for ${entry.name}`);
     const start = lh + 30 + u16(d, lh + 26) + u16(d, lh + 28);
-    if (entry.size > this.maxPartBytes || entry.size > this.remainingBytes) throw new Error('ZIP: decoded byte limit exceeded for ' + entry.name);
+    if (entry.size > this.maxPartBytes || entry.size > this.remainingBytes) throw new RangeError('ZIP: decoded byte limit exceeded for ' + entry.name);
     if (start + entry.compressedSize > d.length) throw new Error('ZIP: truncated part ' + entry.name);
     const raw = d.subarray(start, start + entry.compressedSize);
     let out: Uint8Array;

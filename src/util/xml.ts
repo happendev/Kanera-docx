@@ -74,7 +74,7 @@ const NS: Record<string, string> = {
   'http://schemas.microsoft.com/office/drawing/2010/diagram': 'dsp14',
 };
 
-export class XmlDepthError extends Error {}
+export class XmlLimitError extends RangeError {}
 
 /** Namespaces whose mc:Choice branches we can render (others fall back to mc:Fallback). */
 export const SUPPORTED_CHOICE_PREFIXES = new Set(['wps', 'wpg', 'wp14', 'w14', 'w15', 'a14', 'asvg', 'wpc', 'w', 'a', 'wp', 'pic', 'r', 'm', 'v', 'o', 'x', 'xdr', 'x14', 'x14ac', 'c14']);
@@ -99,15 +99,22 @@ function keepsWhitespace(name: string): boolean {
   return local === 't' || local === 'instrText' || local === 'delText' || local === 'delInstrText';
 }
 
-// Scratch space for a start tag's attributes (parsing is synchronous, so one pair serves all calls).
-const attrNames: string[] = [];
-const attrValues: string[] = [];
-
 // Attribute maps inherit nothing, as with Object.create(null), but V8 keeps them as compact
 // fast-mode objects; an object from Object.create(null) is a hash table from the start.
 function NoPrototype(): void {}
 NoPrototype.prototype = Object.create(null);
 const AttrMap = NoPrototype as unknown as new () => Record<string, string>;
+
+const emptyAttrs: Record<string, string> = Object.freeze(new AttrMap());
+const emptyChildren: XmlNode[] = [];
+Object.freeze(emptyChildren);
+
+// Most OOXML elements are leaves or have a single child. A literal starts with
+// room for exactly that child, while pushing onto an empty V8 array reserves extra slots.
+function appendChild(el: XmlElement, node: XmlNode): void {
+  if (el.children === emptyChildren) el.children = [node];
+  else el.children.push(node);
+}
 
 export function parseXml(src: string): XmlElement {
   return new XmlReader(src).parse();
@@ -158,8 +165,11 @@ interface ScopeNames {
  * function: as one large function, the parser added more than 10 MiB to a conversion's peak memory.
  */
 class XmlReader {
+  private readonly attrNames: string[] = [];
+  private readonly attrValues: string[] = [];
   private readonly root: XmlElement = { name: '#document', attrs: {}, children: [] };
   private readonly stack: XmlElement[] = [this.root];
+  private readonly openNames: string[] = [];
   private readonly nsStack: Array<Record<string, string>> = [Object.assign(Object.create(null), { xml: 'http://www.w3.org/XML/1998/namespace' })];
   private readonly scopeNames = new Map<Record<string, string>, ScopeNames>();
   private namesScope: Record<string, string> | undefined;
@@ -181,7 +191,16 @@ class XmlReader {
       const c1 = src.charCodeAt(lt + 1);
       i = c1 === 47 /* / */ ? this.endTag(lt) : c1 === 33 /* ! */ || c1 === 63 /* ? */ ? this.markup(lt) : this.startTag(lt);
     }
-    const docEl = this.root.children.find((c): c is XmlElement => typeof c !== 'string');
+    if (this.openNames.length) throw new Error('XML: unclosed element');
+    let docEl: XmlElement | undefined;
+    for (const c of this.root.children) {
+      if (typeof c === 'string') {
+        if (!isBlank(c)) throw new Error('XML: text outside the document element');
+      } else {
+        if (docEl) throw new Error('XML: multiple document elements');
+        docEl = c;
+      }
+    }
     if (!docEl) throw new Error('XML: no document element');
     return docEl;
   }
@@ -192,16 +211,19 @@ class XmlReader {
     const n = src.length;
     if (src.charCodeAt(i + 1) === 63 /* ? */) {
       const end = src.indexOf('?>', i + 2);
-      return end < 0 ? n : end + 2;
+      if (end < 0) throw new Error('XML: unterminated processing instruction');
+      return end + 2;
     }
     if (src.startsWith('<!--', i)) {
       const end = src.indexOf('-->', i + 4);
-      return end < 0 ? n : end + 3;
+      if (end < 0) throw new Error('XML: unterminated comment');
+      return end + 3;
     }
     if (src.startsWith('<![CDATA[', i)) {
       const end = src.indexOf(']]>', i + 9);
-      this.stack[this.stack.length - 1].children.push(src.slice(i + 9, end < 0 ? n : end));
-      return end < 0 ? n : end + 3;
+      if (end < 0) throw new Error('XML: unterminated CDATA section');
+      appendChild(this.stack[this.stack.length - 1], src.slice(i + 9, end));
+      return end + 3;
     }
     // DOCTYPE or other declaration; skip including a possible internal subset.
     let depth = 0;
@@ -212,21 +234,21 @@ class XmlReader {
       else if (ch === ']') depth--;
       else if (ch === '>' && depth <= 0) break;
     }
+    if (j === n) throw new Error('XML: unterminated declaration');
     return j + 1;
   }
 
   private endTag(i: number): number {
     const end = this.src.indexOf('>', i + 2);
-    if (this.stack.length > 1) {
-      this.nsStack.pop();
-      finishElement(this.stack.pop()!);
-    }
-    return end < 0 ? this.src.length : end + 1;
+    if (end < 0 || this.src.slice(i + 2, end).trimEnd() !== this.openNames.pop()) throw new Error('XML: mismatched closing tag');
+    this.nsStack.pop();
+    finishElement(this.stack.pop()!);
+    return end + 1;
   }
 
   /** Read a start tag's name and attributes, then add its element. Returns the index after the tag. */
   private startTag(i: number): number {
-    if (this.stack.length > 128) throw new XmlDepthError('XML nesting limit exceeded');
+    if (this.stack.length > 128) throw new XmlLimitError('XML nesting limit exceeded');
     const src = this.src;
     const n = src.length;
     // Character tests are written out in the loops: they run for every character of every name.
@@ -236,7 +258,9 @@ class XmlReader {
       if (c === 32 || c === 9 || c === 10 || c === 13 || c === 62 /* > */ || c === 47 /* / */) break;
     }
     const rawName = src.slice(i + 1, j);
+    if (!rawName) throw new Error('XML: missing element name');
     // Attribute names and values, gathered before namespace declarations among them are applied.
+    const { attrNames, attrValues } = this;
     let count = 0;
     let declares = false;
     let selfClose = false;
@@ -249,40 +273,30 @@ class XmlReader {
       }
       if (ch === 47 /* / */) {
         selfClose = true;
-        j = src.indexOf('>', j) + 1;
-        if (j === 0) j = n;
+        if (src[j + 1] !== '>') throw new Error('XML: invalid empty element tag');
+        j += 2;
         break;
       }
-      if (j >= n) break;
+      if (j >= n) throw new Error('XML: unterminated start tag');
+      if (count >= 256) throw new XmlLimitError('XML attribute limit exceeded');
       const ns = j;
       for (; j < n; j++) {
         const c = src.charCodeAt(j);
         if (c === 32 || c === 9 || c === 10 || c === 13 || c === 62 || c === 47 || c === 61 /* = */) break;
       }
       const an = src.slice(ns, j);
+      if (!an) throw new Error('XML: missing attribute name');
       for (let c = src.charCodeAt(j); c === 32 || c === 9 || c === 10 || c === 13; c = src.charCodeAt(++j));
       if (an.charCodeAt(0) === 120 /* x */ && (an === 'xmlns' || an.startsWith('xmlns:'))) declares = true;
-      if (src.charCodeAt(j) !== 61 /* = */) {
-        attrNames[count] = an;
-        attrValues[count++] = '';
-        continue;
-      }
+      if (src.charCodeAt(j) !== 61 /* = */) throw new Error('XML: missing attribute value');
       j++;
       for (let c = src.charCodeAt(j); c === 32 || c === 9 || c === 10 || c === 13; c = src.charCodeAt(++j));
       const q = src[j];
-      let value: string;
-      if (q === '"' || q === "'") {
-        const end = src.indexOf(q, j + 1);
-        value = src.slice(j + 1, end < 0 ? n : end);
-        j = end < 0 ? n : end + 1;
-      } else {
-        const vs = j;
-        for (; j < n; j++) {
-          const c = src.charCodeAt(j);
-          if (c === 32 || c === 9 || c === 10 || c === 13 || c === 62) break;
-        }
-        value = src.slice(vs, j);
-      }
+      if (q !== '"' && q !== "'") throw new Error('XML: expected a quoted attribute');
+      const end = src.indexOf(q, j + 1);
+      if (end < 0) throw new Error('XML: unterminated attribute');
+      const value = src.slice(j + 1, end);
+      j = end + 1;
       attrNames[count] = an;
       attrValues[count++] = value.indexOf('&') < 0 ? value : decodeEntities(value);
     }
@@ -292,6 +306,7 @@ class XmlReader {
 
   /** Add the element whose name and attributes `startTag` read. */
   private open(rawName: string, count: number, declares: boolean, selfClose: boolean): void {
+    const { attrNames, attrValues } = this;
     const parentScope = this.nsStack[this.nsStack.length - 1];
     let scope = parentScope;
     if (declares) {
@@ -310,7 +325,7 @@ class XmlReader {
       this.namesScope = scope;
     }
     const names = this.names;
-    const attrs = new AttrMap();
+    const attrs = count ? new AttrMap() : emptyAttrs;
     for (let k = 0; k < count; k++) {
       const an = attrNames[k];
       if (declares && (an === 'xmlns' || an.startsWith('xmlns:'))) continue;
@@ -326,11 +341,10 @@ class XmlReader {
     }
     const { name, namespaceURI } = resolved;
     if (name === 'mc:Choice' && attrs.Requires) attrs.Requires = canonicalRequires(attrs.Requires, scope);
-    const el: XmlElement = { name, namespaceURI, attrs, children: [] };
-    this.stack[this.stack.length - 1].children.push(el);
-    if (selfClose) {
-      finishElement(el);
-    } else {
+    const el: XmlElement = { name, namespaceURI, attrs, children: emptyChildren };
+    appendChild(this.stack[this.stack.length - 1], el);
+    if (!selfClose) {
+      this.openNames.push(rawName);
       this.stack.push(el);
       this.nsStack.push(scope);
     }
@@ -339,7 +353,7 @@ class XmlReader {
 
 function appendText(el: XmlElement, raw: string): void {
   if (!raw) return;
-  el.children.push(decodeEntities(raw));
+  appendChild(el, decodeEntities(raw));
 }
 
 /** Drop insignificant whitespace-only text nodes and merge adjacent text. */
@@ -351,7 +365,7 @@ function finishElement(el: XmlElement): void {
   for (const k of kids) if (typeof k !== 'string') hasElement = true;
   if (!hasElement) {
     if (kids.length > 1) el.children = [kids.join('')];
-    if (!keep && typeof el.children[0] === 'string' && isBlank(el.children[0] as string)) el.children = [];
+    if (!keep && typeof el.children[0] === 'string' && isBlank(el.children[0] as string)) el.children = emptyChildren;
     return;
   }
   if (keep) return;

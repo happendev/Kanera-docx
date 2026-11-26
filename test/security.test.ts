@@ -1,9 +1,10 @@
 import { nodeCompression } from '../src/util/node-compression.js';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { convertDocx } from '../src/node.js';
+import { convertDocx, docxToMarkdown, docxToText } from '../src/node.js';
 import { ChartPointBudget, parseChart } from '../src/ooxml/chart.js';
 import { DEFAULT_THEME } from '../src/ooxml/theme.js';
+import { reserveChartTableCells } from '../src/text/extract.js';
 import { formatNumber } from '../src/docx/numbering.js';
 import { parseWidth } from '../src/ooxml/props.js';
 import { applyWordTintShade, measure } from '../src/ooxml/values.js';
@@ -187,6 +188,58 @@ describe('conversion limits', () => {
     const tree = (n: number) => '<e>'.repeat(n) + '</e>'.repeat(n);
     expect(parseXml(tree(128)).name).toBe('e');
     expect(() => parseXml(tree(129))).toThrow(/nesting limit/);
+  });
+
+  it('counts rendered chart cells across text tables', () => {
+    for (const [markdown, cells] of [[false, 9], [true, 12]] as const) {
+      const remaining = reserveChartTableCells(2 * cells, 2, 2, markdown);
+      expect(remaining).toBe(cells);
+      expect(reserveChartTableCells(remaining, 2, 2, markdown)).toBe(0);
+      expect(() => reserveChartTableCells(remaining - 1, 2, 2, markdown)).toThrow(/table cell limit/);
+    }
+  });
+
+  it('charges every Word text import before decoding it', async () => {
+    const doc = (copies: number) => makeDocx({
+      body: '<w:altChunk r:id="c"/>'.repeat(copies),
+      imports: { c: { name: 'note.txt', contentType: 'text/plain', text: 'A'.repeat(1024) } },
+    });
+    const options = { archiveLimits: { maxTotalBytes: 8192 } };
+    await expect(docxToText(doc(8), options)).resolves.toHaveLength(8 * 1025);
+    await expect(docxToText(doc(9), options)).rejects.toThrow(/Word import byte limit/);
+  });
+
+  it('reads quoted HTML tags and handles unfinished altChunk markup', async () => {
+    const text = '<head>open <style>hidden</style>text<p>a<b title="1 > 0">b</b></td>c</p>one < two <a';
+    const doc = makeDocx({ body: '<w:altChunk r:id="c"/>', imports: { c: { name: 'frag.html', contentType: 'text/html', text } } });
+    await expect(docxToText(doc)).resolves.toBe('open text\nab c\none < two <a\n');
+  });
+
+  it('validates XML structure and counts namespace declarations in the per-element attribute limit', async () => {
+    const attrs = Array.from({ length: 255 }, (_, i) => ' a' + i + '="v"').join('');
+    const doc = (xml: string) => zipStore([['word/document.xml', new TextEncoder().encode(xml)]]);
+    const start = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"' + attrs;
+    await expect(docxToText(doc(start + '><w:body/></w:document>'))).resolves.toBe('');
+    await expect(docxToText(doc(start + ' b="v"><w:body/></w:document>'))).rejects.toThrow(/XML attribute limit/);
+    for (const xml of ['<other><w:body/></other>', '<w:document><w:body/>', '<w:document><w:body/></other>', '<w:document><w:body/></w:document><extra/>']) {
+      await expect(docxToText(doc(xml))).rejects.toThrow(/invalid main document part/);
+    }
+  });
+
+  it('bounds Word field nesting across runs and accepts the boundary', async () => {
+    const fld = (type: string) => '<w:r><w:fldChar w:fldCharType="' + type + '"/></w:r>';
+    const doc = (n: number) => makeDocx({ body: '<w:p>' + fld('begin').repeat(n) + fld('end').repeat(n) + '</w:p>' + p('Done') });
+    await expect(docxToText(doc(128))).resolves.toBe('Done\n');
+    await expect(docxToText(doc(129))).rejects.toThrow(/field nesting limit/);
+  });
+
+  it('treats out-of-range outline and list levels as body text', async () => {
+    for (const level of [-2, 1.5, 9]) {
+      const numbering = '<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="' + level + '"><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>' +
+        '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>';
+      const props = '<w:outlineLvl w:val="' + level + '"/><w:numPr><w:ilvl w:val="' + level + '"/><w:numId w:val="1"/></w:numPr>';
+      await expect(docxToMarkdown(makeDocx({ body: p('Item', props), numbering }))).resolves.toBe('Item\n');
+    }
   });
 
   it('keeps measurement, colour and numbering fallbacks finite and bounded', () => {
