@@ -557,4 +557,42 @@ describe('font names', () => {
     expect(substituteFamilies('AvenirNext LT Pro Light')).toBeNull();
     expect(substituteFamilies('OpenSans')).toBeNull();
   });
+
+  it('draws Franklin Gothic in narrowed Roboto, Demi in its bold, on Franklin Gothic’s line metrics', async () => {
+    const registry = new FontRegistry();
+    for (const [file, bold] of [['Roboto-Regular.ttf', false], ['Roboto-Bold.ttf', true]] as const) registry.add({ family: 'Roboto', bold, load: async () => font(file) }, 'bundled');
+    const families = ['Franklin Gothic Book', 'Franklin Gothic Demi'];
+    await registry.prepare(families.map((family) => ({ family, bold: false, italic: false, codePoints: new Set([0x61]) })));
+    const [book, demi] = families.map((family) => registry.resolve(family, false, false));
+    expect([book.face.font.isBold, book.glyphScale]).toEqual([false, 0.952]);
+    expect([demi.face.font.isBold, demi.syntheticBold, demi.glyphScale]).toEqual([true, false, 0.97]);
+    expect(book.ascent + book.descent).toBeCloseTo(2322 / 2048, 4);
+  });
+
+  it('gives Open Sans’s light, semibold and extrabold weights its line metrics', () => {
+    for (const name of ['Open Sans Light', 'Open Sans SemiBold', 'Open Sans ExtraBold']) {
+      expect(substituteFamilies(name)?.vmetrics).toEqual(substituteFamilies('Open Sans')?.vmetrics);
+    }
+    expect(substituteFamilies('Open Sans Light')?.families[0]).toBe('open sans light');
+  });
+
+  it('draws macOS fonts in their font-table alternates or Word’s Windows match on Windows only', async () => {
+    const families = ['Avenir Next', 'Palatino', 'Avenir Next Medium'];
+    const resolve = async (macFonts: boolean) => {
+      const registry = new FontRegistry();
+      registry.macFonts = macFonts;
+      for (const [family, file] of [['Carlito', 'Carlito-Regular.ttf'], ['Onward', 'Onward-Regular.ttf'], ['Liberation Serif', 'LiberationSerif-Regular.ttf'], ['Selawik', 'Selawik-Regular.ttf']]) registry.add({ family, load: async () => font(file) }, 'bundled');
+      registry.setHints('Palatino', { altName: 'Segoe UI Historic' });
+      await registry.prepare(families.map((family) => ({ family, bold: false, italic: false, codePoints: new Set([0x61]) })));
+      return families.map((family) => registry.resolve(family, false, false));
+    };
+    // Word on Windows: Avenir Next (no alternate named) in Calibri, Palatino in its alternate.
+    const win = await resolve(false);
+    expect(win.map((r) => r.face.familyName)).toEqual(['Carlito', 'Selawik', 'Carlito']);
+    expect(win[1].ascent + win[1].descent).toBeCloseTo(2724 / 2048, 4);
+    // Word for Mac has them: Avenir Next's stand-in keeps Avenir Next's 1.366em lines.
+    const mac = await resolve(true);
+    expect(mac.map((r) => r.face.familyName)).toEqual(['Onward', 'Liberation Serif', 'Onward']);
+    expect(mac[0].ascent + mac[0].descent).toBeCloseTo(1.366, 4);
+  });
 });

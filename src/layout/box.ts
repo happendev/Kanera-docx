@@ -989,7 +989,19 @@ function sideBorders(cell: TableCell): number {
   return (cell.borders.left?.width ?? 0) + (cell.borders.right?.width ?? 0);
 }
 
-function drawEdge(out: DrawOp[], br: Border | null, x1: number, y1: number, x2: number, y2: number): void {
+/** How far a horizontal border reaches above its edge, and how far below. */
+function hangAbove(br: Border | null): number {
+  return br && br.width > 0 ? Math.min(br.width, 0.75) / 2 : 0;
+}
+function hangBelow(br: Border | null): number {
+  return br && br.width > 0 ? br.width - hangAbove(br) : 0;
+}
+
+/**
+ * Draw a border along an edge. `ends` gives how far a solid border runs past the edge's start and
+ * end (negative stops it short); without it, it runs half its width past each.
+ */
+function drawEdge(out: DrawOp[], br: Border | null, x1: number, y1: number, x2: number, y2: number, ends?: [number, number]): void {
   if (!br || br.width <= 0) return;
   const color = br.color ?? '000000';
   const horiz = y1 === y2;
@@ -1000,6 +1012,13 @@ function drawEdge(out: DrawOp[], br: Border | null, x1: number, y1: number, x2: 
     const shift = (br.width - Math.min(br.width, 0.75)) / 2;
     y1 += shift;
     y2 += shift;
+  }
+  if (ends && br.style !== 'double' && !dashFor(br)) {
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    if (len + ends[0] + ends[1] <= 0) return;
+    const [ux, uy] = len > 0 ? [(x2 - x1) / len, (y2 - y1) / len] : [horiz ? 1 : 0, horiz ? 0 : 1];
+    out.push({ kind: 'line', x1: x1 - ux * ends[0], y1: y1 - uy * ends[0], x2: x2 + ux * ends[1], y2: y2 + uy * ends[1], width: br.width, color, cap: 'butt' });
+    return;
   }
   if (br.style === 'double') {
     const w = Math.max(0.25, br.width / 3);
@@ -1046,7 +1065,6 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
       // Spaced cells sit inside their rows, clear of the spacing above the first and below the last.
       const top = p.y + tl.rows[spanFrom].spaceTop;
       height -= tl.rows[spanFrom].spaceTop + tl.rows[Math.min(spanEnd, tl.rows.length) - 1].spaceBottom;
-      if (cell.cell.shading) back.push({ kind: 'rect', x, y: top, w: cell.width, h: height, fill: cell.cell.shading });
       const m = cell.cell.margins;
       // A right-to-left table's cells start on the right: their left margin and border are on that side.
       const side = (o: CellLayout, which: 'left' | 'right'): Border | null => o.cell.borders[!!tl.rtl === (which === 'left') ? 'right' : 'left'];
@@ -1133,11 +1151,41 @@ export function renderSegment(tl: TableLayout, pieces: RowPiece[], ox: number, m
         drawEdge(borders, bl, x + half(bl), top, x + half(bl), top + height);
         drawEdge(borders, br, x + cell.width - half(br), top, x + cell.width - half(br), top + height);
       } else {
-        drawEdge(borders, heavier(b.top, above?.cell.borders.bottom), x, top, x + cell.width, top);
-        drawEdge(borders, bottomB, x, yb, x + cell.width, yb);
-        drawEdge(borders, heavier(side(cell, 'left'), left && side(left, 'right')), x, top, x, top + height);
-        drawEdge(borders, heavier(side(cell, 'right'), right && side(right, 'left')), x + cell.width, top, x + cell.width, top + height);
+        const topB = heavier(b.top, above?.cell.borders.bottom);
+        const vl = heavier(side(cell, 'left'), left && side(left, 'right'));
+        const vr = heavier(side(cell, 'right'), right && side(right, 'left'));
+        // Borders meet at a corner as Word draws them: a horizontal one runs to the outer edge of the
+        // widest vertical one there, and a vertical one to the outer edge of the horizontal ones,
+        // so neither shows past the other. Where the neighbouring cell carries a border on at least
+        // as heavy, the two overlap, so no seam shows between them.
+        const half = (br: Border | null | undefined) => (br && br.width > 0 ? br.width / 2 : 0);
+        const carries = (own: Border | null, next: Border | null | undefined) => !!own && !!next && next.width >= own.width;
+        // The vertical border the row above or below draws at this cell's left or right corner.
+        const across = (o: CellLayout | undefined, which: 'left' | 'right') =>
+          o && Math.abs(which === 'left' ? o.x - cell.x : o.x + o.width - cell.x - cell.width) < 0.01 ? side(o, which) : null;
+        const reach = (own: Border | null, v: Border | null, o: CellLayout | undefined, which: 'left' | 'right', next: Border | null | undefined) => {
+          const corner = Math.max(half(v), half(across(o, which)));
+          return carries(own, next) ? Math.max(corner, half(own)) : corner;
+        };
+        const ends = (own: Border | null, o: CellLayout | undefined, edge: 'top' | 'bottom'): [number, number] => [
+          reach(own, vl, o, 'left', left?.cell.borders[edge]),
+          reach(own, vr, o, 'right', right?.cell.borders[edge]),
+        ];
+        drawEdge(borders, topB, x, top, x + cell.width, top, ends(topB, above, 'top'));
+        drawEdge(borders, bottomB, x, yb, x + cell.width, yb, ends(bottomB, below, 'bottom'));
+        const vertical = (v: Border | null, which: 'left' | 'right', at: number) => {
+          const next = which === 'left' ? left : right;
+          const up = carries(v, across(above, which)) ? half(v) : Math.max(hangAbove(topB), hangAbove(next?.cell.borders.top ?? null));
+          const ruled = [bottomB, next?.cell.borders.bottom ?? null].filter((o) => o && o.width > 0);
+          const down = carries(v, across(below, which)) ? half(v) : ruled.length ? Math.max(...ruled.map((o) => yb + hangBelow(o))) - (top + height) : 0;
+          drawEdge(borders, v, at, top, at, top + height, [up, down]);
+        };
+        vertical(vl, 'left', x);
+        vertical(vr, 'right', x + cell.width);
       }
+      // Shading stops at the foot of the cell's bottom border.
+      const shadeH = !spaced && bottomB && bottomB.width > 0 ? Math.min(height, yb + hangBelow(bottomB) - top) : height;
+      if (cell.cell.shading) back.push({ kind: 'rect', x, y: top, w: cell.width, h: shadeH, fill: cell.cell.shading });
       drawEdge(borders, b.tl2br, x, top, x + cell.width, top + height);
       drawEdge(borders, b.tr2bl, x + cell.width, top, x, top + height);
     }

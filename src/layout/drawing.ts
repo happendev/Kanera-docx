@@ -1,5 +1,6 @@
 import type { Drawing, LineStyle, RunProps } from '../ooxml/model.js';
 import { DEFAULT_RUN } from '../ooxml/props.js';
+import { SHAPE_TEXT } from '../profile.js';
 import { arc } from '../util/arc.js';
 import { layoutBlocks, type BoxEnv } from './box.js';
 import { renderChart } from './chart.js';
@@ -447,7 +448,18 @@ export function fittedHeight(d: Drawing, env: BoxEnv): number | undefined {
   const tb = d.textBox;
   if (!tb?.autoFit || tb.rect || tb.vertical === 'vert' || tb.vertical === 'vert270' || tb.vertical === 'eaVert') return undefined;
   if (!textRectInsets(d, d.width, d.height).every((v) => v === 0)) return undefined;
-  return layoutBlocks(tb.blocks, Math.max(1, d.width - tb.insetL - tb.insetR), env).height + tb.insetT + tb.insetB;
+  const edge = outlineInset(d);
+  return layoutBlocks(tb.blocks, Math.max(1, d.width - tb.insetL - tb.insetR - 2 * edge), env).height + tb.insetT + tb.insetB + 2 * edge;
+}
+
+/**
+ * How far a shape's text keeps in from each edge for the shape's outline: half the outline's width
+ * where the profile counts insets from inside it, as Word does. Legacy (VML) text boxes, the ones
+ * kept upright, keep their insets from the edge: no Word PDF in the corpora measures them.
+ */
+function outlineInset(d: Drawing): number {
+  const l = d.line;
+  return SHAPE_TEXT.outlineInset && !d.textBox?.upright && l?.color && l.width > 0 ? l.width / 2 : 0;
 }
 
 /**
@@ -472,13 +484,16 @@ function renderTextBox(d: Drawing, x: number, y: number, w: number, h: number, e
   const vertical = d.textBox!.vertical === 'vert' || d.textBox!.vertical === 'vert270' || d.textBox!.vertical === 'eaVert';
   const rect = d.textBox!.rect;
   const [rl, rt, rr, rb] = vertical ? [0, 0, 0, 0] : rect ?? textRectInsets(d, w, h);
-  const tb = { ...d.textBox!, insetL: d.textBox!.insetL + rl, insetT: d.textBox!.insetT + rt, insetR: d.textBox!.insetR + rr, insetB: d.textBox!.insetB + rb };
+  const edge = outlineInset(d);
+  const tb = { ...d.textBox!, insetL: d.textBox!.insetL + rl + edge, insetT: d.textBox!.insetT + rt + edge, insetR: d.textBox!.insetR + rr + edge, insetB: d.textBox!.insetB + rb + edge };
   // Vertical text boxes lay text out along the box's height, then rotate it into place.
   const innerW = Math.max(1, (vertical ? h : w) - tb.insetL - tb.insetR);
   const innerH = (vertical ? w : h) - tb.insetT - tb.insetB;
   const box = layoutBlocks(tb.blocks, innerW, env);
   let dy = 0;
-  if (tb.vAlign === 'center') dy = (innerH - box.height) / 2;
+  // Where the profile says so (Word), text too tall for its box starts at the top whatever its anchor.
+  if (SHAPE_TEXT.overflowFromTop && box.height > innerH) dy = 0;
+  else if (tb.vAlign === 'center') dy = (innerH - box.height) / 2;
   else if (tb.vAlign === 'bottom') dy = innerH - box.height;
   const content: DrawOp[] = [];
   for (const it of box.items) appendOps(content, it.ops);

@@ -56,7 +56,7 @@ laying out pages. Every output works in Node.js and the browser.
 <!-- benchmark-glance:start -->
 | Conversion | Accuracy | Best other converter | Time per file | Files per second | Peak memory |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Word to PDF | **92.6%** | 80.3% LibreOffice | **4.3 ms** vs 59.6 ms | **72.7** vs 10.3 | **80.3 MiB** vs 252.7 MiB |
+| Word to PDF | **92.7%** | 80.3% LibreOffice | **3.9 ms** vs 59.6 ms | **77.8** vs 10.3 | **80.9 MiB** vs 252.7 MiB |
 | Word to page images | **92.8%** | 80.9% LibreOffice + pdftoppm | **11.5 ms** vs 171.4 ms † | **30.3** vs 2.5 † | 101.7 MiB vs – |
 | Word to Markdown | **98.5%** | 95.9% Pandoc | **1.9 ms** vs 85.6 ms | **241.3** vs 13.8 | **70.3 MiB** vs 167.8 MiB |
 | Word to text | **98.9%** | 98.4% Aspose.Words (.NET) | **1.6 ms** vs 26.6 ms | **288.7** vs 31.7 | **70.3 MiB** vs 91.0 MiB |
@@ -213,7 +213,7 @@ Timed conversions run one at a time. † marks a converter timed on a fixed samp
 <!-- benchmark-summary:start -->
 | Converter | Visual match | Page counts matched | Fresh process | Reused process | Warm docs/sec | Median peak memory |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Kanera | **92.6%** | **273/278** | **87.8 ms** | **4.3 ms** | **72.7** | 80.3 MiB |
+| Kanera | **92.7%** | **273/278** | **85.6 ms** | **3.9 ms** | **77.8** | 80.9 MiB |
 | LibreOffice | 80.3% | 256/278 | 791.6 ms | 59.6 ms | 10.3 | 252.7 MiB |
 | EigenPal | 70.9% | 257/278 | 766.1 ms | 255.3 ms | 3.7 | 276.6 MiB |
 | Syncfusion DocIO (.NET) | 56.8% | 246/278 | 589.2 ms | 60.7 ms | 1.1 | 121.4 MiB |
@@ -225,7 +225,7 @@ Timed conversions run one at a time. † marks a converter timed on a fixed samp
 <!-- benchmark-summary:end -->
 
 <!-- full-corpus-accuracy:start -->
-Kanera scores **90.53%** on the full corpus of 2,650 documents (10,376 reference pages), with matching page counts on 2,555 and 1 failed conversion.
+Kanera scores **90.74%** on the full corpus of 2,650 documents (10,376 reference pages), with matching page counts on 2,561 and 1 failed conversion.
 <!-- full-corpus-accuracy:end -->
 
 ### Word to page images

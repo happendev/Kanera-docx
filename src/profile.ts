@@ -43,3 +43,19 @@ export const SYNTHETIC_BOLD_STROKE: number = 0.03;
  * `outline`. Word's PDFs (Word for Mac) draw it at 300 dpi, under the whole shape and its outline.
  */
 export const SOFT_SHADOW: { dpi: number; clip: boolean; outline: boolean } = { dpi: 300, clip: false, outline: true };
+
+/**
+ * How text sits in a DrawingML shape. With `outlineInset` the text's insets count from inside the
+ * shape's outline, so text keeps clear of half the outline's width on every side and a box that
+ * fits its text grows by the outline's width. With `overflowFromTop` text too tall for a centred or
+ * bottom-anchored box starts at the box's top and runs out of its bottom. Word's PDFs show both.
+ */
+export const SHAPE_TEXT: { outlineInset: boolean; overflowFromTop: boolean } = { outlineInset: true, overflowFromTop: true };
+
+/**
+ * Whether solid level and upright lines (borders, rules, underlines) are written to the PDF as filled
+ * rectangles rather than strokes, as Word's PDFs draw them. Viewers widen a stroke thinner than a
+ * pixel to a whole pixel but shade a thin fill by its coverage, so stroked 0.5pt borders look darker
+ * and heavier on screen than Word's.
+ */
+export const LINE_FILLS: boolean = true;

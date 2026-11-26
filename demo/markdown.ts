@@ -17,7 +17,8 @@ export function renderMarkdown(markdown: string): DocumentFragment {
       'img', 'li', 'ol', 'p', 'pre', 'rp', 'rt', 'ruby', 'section', 'strong', 'sub', 'sup',
       'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
     ],
-    ALLOWED_ATTR: ['align', 'alt', 'colspan', 'href', 'id', 'rowspan', 'start', 'title'],
+    // `class` lets GitHub's stylesheet find marked's footnotes section and code languages.
+    ALLOWED_ATTR: ['align', 'alt', 'class', 'colspan', 'href', 'id', 'rowspan', 'start', 'title'],
   });
   // The Markdown contains archive-relative image references, so the preview shows their alt text.
   for (const image of preview.querySelectorAll('img')) image.replaceWith(image.alt);

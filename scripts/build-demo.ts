@@ -15,20 +15,39 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(root, 'out', 'demo');
 const serve = process.argv.includes('--serve');
 
-/** Samples shown first, in this order. */
+/** Samples shown first, in this order: designed English documents, then other scripts. */
 const FEATURED = [
-  'docx_classic120_comprehensive_business_proposal',
   'Fabrikam',
-  '13_IEEE_Style_Paper',
-  'docx_classic90_comprehensive_annual_report',
-  'Invoice',
-  'docx_classic75_newsletter_layout',
   'Class News',
-  'docx_classic40_resume',
-  'docx_classic49_cjk_document',
-  'docx_classic57_right_to_left_text',
+  '13_IEEE_Style_Paper',
+  'MODERN LIVING',
+  'Invoice',
+  'OSCAR WARD',
+  'Support_Letter',
+  'Template for MSc Thesis',
+  'TestIssue90',
   'CCU_article',
+  'issue202605',
 ];
+
+/** Display names where the fixture id doesn't describe the document. */
+const TITLES: Record<string, string> = {
+  Fabrikam: 'Fabrikam business cards',
+  'Class News': 'Class newsletter',
+  '13_IEEE_Style_Paper': 'IEEE style paper',
+  'MODERN LIVING': 'Modern Living newsletter',
+  'OSCAR WARD': 'Cover letter',
+  Support_Letter: 'Support letter',
+  TestIssue90: 'Vietnamese account application',
+  CCU_article: 'Chinese master’s thesis',
+  issue202605: 'Traditional Chinese application form',
+};
+
+/** Designed documents whose only reference is a LibreOffice export; the demo labels it as such. */
+const LIBREOFFICE_REFERENCE = new Set(['Class News', 'MODERN LIVING', 'Invoice', 'OSCAR WARD']);
+
+/** Benchmark cases left out of the published demo: filler text, a lone image, a near-duplicate. */
+const HIDDEN = new Set(['20260318_issue', 'Issue83_Output', 'Issue79_TemplateContract']);
 
 interface Fixture {
   id: string;
@@ -40,6 +59,7 @@ interface Fixture {
 }
 
 function title(id: string): string {
+  if (TITLES[id]) return TITLES[id];
   const m = /^docx_classic(\d+)_(.*)$/.exec(id);
   const words = (m ? m[2] : id).replace(/[_-]+/g, ' ').trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
@@ -50,7 +70,10 @@ async function copySamples(): Promise<void> {
   const { fixtures } = JSON.parse(await readFile(join(upstream, 'fixtures.json'), 'utf8')) as { fixtures: Fixture[] };
   const samples: Sample[] = [];
   // The classic reference images have no redistribution license. Keep them in the local preview.
-  for (const f of fixtures.filter((x) => /\bWord\b/.test(x.reference_application) && (serve || x.suite === 'issue'))) {
+  const shown = (x: Fixture) =>
+    (/\bWord\b/.test(x.reference_application) || LIBREOFFICE_REFERENCE.has(x.id)) &&
+    (serve || (x.suite === 'issue' && !HIDDEN.has(x.id)));
+  for (const f of fixtures.filter(shown)) {
     const dir = `samples/${f.suite}`;
     const docx = `${dir}/${basename(f.docx)}`;
     await cp(join(upstream, f.docx), join(out, docx));
@@ -79,12 +102,14 @@ async function copySamples(): Promise<void> {
 async function copyStatic(): Promise<void> {
   await cp(join(root, 'demo', 'index.html'), join(out, 'index.html'));
   await cp(join(root, 'demo', 'style.css'), join(out, 'style.css'));
+  await cp(join(root, 'node_modules', 'github-markdown-css', 'github-markdown-dark.css'), join(out, 'github-markdown-dark.css'));
   await cp(join(root, 'LICENSE'), join(out, 'LICENSE.txt'));
   await cp(join(root, 'NOTICE'), join(out, 'NOTICE.txt'));
   await cp(join(root, 'demo', 'licenses'), join(out, 'licenses'), { recursive: true });
   for (const name of ['dompurify', 'marked']) {
     await cp(join(root, 'node_modules', name, 'LICENSE'), join(out, 'licenses', `${name}.txt`));
   }
+  await cp(join(root, 'node_modules', 'github-markdown-css', 'license'), join(out, 'licenses', 'github-markdown-css.txt'));
   for (const f of ['kanera-logo.svg', 'kanera-icon.svg']) await cp(join(root, 'demo', f), join(out, f));
   // Kanera's typefaces (OFL), self-hosted so the page loads nothing from third parties.
   const faces = [

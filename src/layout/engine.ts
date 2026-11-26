@@ -200,6 +200,8 @@ class Paginator {
   private sectionIndex = 0;
   /** The section after the one being laid out. */
   private nextSection: Section | null = null;
+  /** Where columns being balanced end, above the page's own bottom. */
+  private balanceBottom: number | null = null;
   private sectionStartPage = 0;
   private restartNumber: number | null = null;
   private stats: LayoutStats = { renderedBreaks: 0, matchedBreaks: 0, breakLog: [] };
@@ -372,7 +374,9 @@ class Paginator {
       const { section, blocks } = groups[i];
       this.nextSection = groups[i + 1]?.section ?? null;
       this.startSection(section, i);
-      this.placeBlocks(blocks);
+      const next = groups[i + 1]?.section;
+      if (next?.type === 'continuous' && this.page.cols.length > 1 && section.columns.equalWidth && next.pageWidth === section.pageWidth && next.pageHeight === section.pageHeight && hasText(blocks)) this.placeBalanced(blocks);
+      else this.placeBlocks(blocks);
       this.sectionBlockBase += blocks.length;
     }
     this.placeEndnotes();
@@ -627,7 +631,8 @@ class Paginator {
   }
 
   private get colBottom(): number {
-    return this.page.bottom - this.page.noteHeight;
+    const bottom = this.page.bottom - this.page.noteHeight;
+    return this.balanceBottom === null ? bottom : Math.min(bottom, this.balanceBottom);
   }
 
   /** Move to the next column, or a new page after the last one. */
@@ -708,6 +713,36 @@ class Paginator {
 
   // -------------------------------------------------------------------------------------------
   // Blocks
+
+  /**
+   * Lay out a section of columns that a continuous section break ends: Word evens its columns out,
+   * filling each but the last as little as keeps the section on the page, so the next section
+   * starts below the longest. A section that runs onto another page keeps its columns as laid out.
+   */
+  private placeBalanced(blocks: Block[]): void {
+    const start = this.checkpoint();
+    this.placeBlocks(blocks);
+    if (this.pages.length !== start.pages || this.page.cols !== start.cols) return;
+    const fitsAbove = (bottom: number): boolean => {
+      this.restore(start);
+      this.balanceBottom = bottom;
+      try {
+        this.placeBlocks(blocks);
+        return this.pages.length === start.pages && this.page.cols === start.cols;
+      } finally {
+        this.balanceBottom = null;
+      }
+    };
+    let low = this.page.colTop;
+    let high = Math.max(this.y, ...this.page.colBottoms);
+    if (high - low < 1) return;
+    while (high - low > 0.25) {
+      const mid = (low + high) / 2;
+      if (fitsAbove(mid)) high = mid;
+      else low = mid;
+    }
+    fitsAbove(high);
+  }
 
   private placeBlocks(blocks: Block[]): void {
     const cps: Checkpoint[] = [];
@@ -844,7 +879,12 @@ class Paginator {
         const marginEdge = this.page!.height - this.page!.section.marginBottom;
         const intoMargin = this.page!.bottom >= marginEdge - EPS;
         const text = textHeight(line);
-        const fits = y + text + noteH <= this.colBottom + EPS && (intoMargin || y + line.height + noteH <= marginEdge + EPS);
+        // A page break that opens a paragraph of text hangs below the page's last line rather than
+        // starting a page of its own: Word adds no blank page for it. A paragraph of nothing but a
+        // page break does take a line on the page, as in Word.
+        const fits = (y + text + noteH <= this.colBottom + EPS && (intoMargin || y + line.height + noteH <= marginEdge + EPS)) ||
+          (line.brk === 'page' && !line.notes.length && layout.onlyBreak(line) &&
+            layout.atoms.slice(line.end).some((a) => a.k !== 'bm' && a.k !== 'rpb' && a.k !== 'float' && a.k !== 'note'));
         if (!fits && !this.atTop) {
           besideBottom = 0;
           layout.restore(snap);
@@ -1666,4 +1706,9 @@ class Paginator {
 
 function keepsWithNext(b: Block): boolean {
   return b.type === 'paragraph' && b.props.keepNext;
+}
+
+/** Whether blocks hold any text: Word leaves the columns of a section of empty paragraphs as they are. */
+function hasText(blocks: Block[]): boolean {
+  return blocks.some((b) => b.type === 'table' || b.content.some((c) => c.type !== 'bookmark' && c.type !== 'renderedPageBreak'));
 }

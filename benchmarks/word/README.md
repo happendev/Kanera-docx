@@ -18,7 +18,7 @@ ran this repository's warm benchmark. [DocFoundry Word benchmark](https://github
 <!-- benchmark-results:start -->
 | Converter | Mean ink overlap | Matching page count | Failed conversions | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS | Total PDF size |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **92.6%** | **273/278** | **0/278** | **87.8 ms** | **4.3 ms** | **67.4 ms** | **72.7** | 80.3 MiB | **156.7 MiB** | **17.72 MiB** |
+| @kanera/docx2pdf 1.0.0 | **92.7%** | **273/278** | **0/278** | **85.6 ms** | **3.9 ms** | **62.1 ms** | **77.8** | 80.9 MiB | **164.1 MiB** | **17.68 MiB** |
 | LibreOffice 26.8.3.1 | 80.3% | 256/278 | **0/278** | 791.6 ms | 59.6 ms | 248.2 ms | 10.3 | 252.7 MiB | 417.9 MiB | 44.46 MiB |
 | EigenPal 2.39.0 | 70.9% | 257/278 | 1/278 | 766.1 ms | 255.3 ms | 645.4 ms | 3.7 | 276.6 MiB | 576.1 MiB | 21.98 MiB |
 | Syncfusion DocIO (.NET) 28.2.4.0 | 56.8% | 246/278 | 1/278 | 589.2 ms | 60.7 ms | 2416.2 ms | 1.1 | 121.4 MiB | 1024.8 MiB | 18.91 MiB |
@@ -45,7 +45,7 @@ Ink overlap by suite and head-to-head counts against each converter.
 | 150 classic | Microsoft 365 Word page images | **99.1%** | 74.0% | 91.2% | 51.0% | 59.3% | 55.9% | 36.9% | 44.8% | 57.1% |
 | 100 Hugging Face | Word for Mac PDFs | **86.1%** | 66.9% | 70.3% | 54.1% | 54.5% | 28.8% | 37.7% | 39.4% | 40.9% |
 | 20 issues | Microsoft 365 Word PDFs | **90.5%** | 71.1% | 53.7% | 49.4% | 52.3% | 31.4% | 31.2% | 18.7% | 32.3% |
-| 8 issues | LibreOffice PDFs | 58.6% | 62.9% | **68.1%** | 49.4% | 49.0% | 36.7% | 24.7% | 26.8% | 42.4% |
+| 8 issues | LibreOffice PDFs | 60.2% | 62.9% | **68.1%** | 49.4% | 49.0% | 36.7% | 24.7% | 26.8% | 42.4% |
 
 The head-to-head counts use the full comparison. Per-document ink overlap differences under half a percentage point count as ties.
 

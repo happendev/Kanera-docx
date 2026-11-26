@@ -40,7 +40,9 @@ export interface ConvertOptions extends InputOptions {
   signal?: AbortSignal;
   /**
    * Which Word's PDF output to match (default 'windows'). Word for Mac draws text at sizes, baselines
-   * and line starts snapped to a 0.24pt grid; layout is the same on both.
+   * and line starts snapped to a 0.24pt grid, and has macOS's fonts: on Windows a document's macOS
+   * fonts give way to the alternates its font table names for them, or to the Windows fonts Word
+   * matches them with (Avenir Next to Calibri).
    */
   wordPlatform?: 'windows' | 'mac';
 }
@@ -98,6 +100,7 @@ async function layOut(input: Uint8Array | ArrayBuffer, options: ConvertOptions, 
   signal?.throwIfAborted();
   const doc = parseDocx(inputBytes(input, options.maxInputBytes), compression.inflateRaw, options.archiveLimits, options.useEmbeddedFonts);
   const fonts = new FontRegistry(doc.hasMath);
+  fonts.macFonts = options.wordPlatform === 'mac';
   for (const f of options.fonts ?? []) fonts.add(f, 'user');
   for (const e of doc.embeddedFonts) fonts.add({ data: e.data, family: e.family, bold: e.bold, italic: e.italic }, 'embedded');
   for (const p of providers) await p.register(fonts);

@@ -134,11 +134,23 @@ function styleFill(style: XmlElement | undefined, ctx: DrawingContext): Fill | n
   return grad ?? { color: ref.color.color, alpha: ref.color.alpha };
 }
 
-function parseLine(spPr: XmlElement | undefined, ctx: DrawingContext): LineStyle | null | undefined {
+/**
+ * The outline width a shape style's line reference (a:lnRef) gives: the width of the theme's line
+ * style of that index. Office's current themes step 0.5, 1 and 1.5pt; Office 2007's 0.75, 2 and 3pt.
+ */
+function styleLineWidth(style: XmlElement | undefined, ctx: DrawingContext): number | undefined {
+  const idx = Number(child(style, 'a:lnRef')?.attrs.idx ?? 0) || 0;
+  if (idx <= 0) return undefined;
+  const w = ctx.theme.lineStyles[idx - 1]?.attrs.w;
+  return w ? emu(Number(w)) : [0, 0.5, 1, 1.5][Math.min(idx, 3)];
+}
+
+/** A shape's outline (a:ln); one that gives no width takes `width`, its style's. */
+function parseLine(spPr: XmlElement | undefined, ctx: DrawingContext, width = 0.75): LineStyle | null | undefined {
   const ln = child(spPr, 'a:ln');
   if (!ln) return undefined;
   if (child(ln, 'a:noFill')) return null;
-  const width = ln.attrs.w ? emu(Number(ln.attrs.w)) : 0.75;
+  if (ln.attrs.w) width = emu(Number(ln.attrs.w));
   const solid = child(ln, 'a:solidFill');
   const c = solid ? parseColor(firstColorChild(solid), ctx) : undefined;
   const dash = child(ln, 'a:prstDash')?.attrs.val ?? 'solid';
@@ -349,11 +361,12 @@ export function parseShape(wsp: XmlElement, ctx: DrawingContext, d: Drawing): vo
   const style = child(wsp, 'wps:style');
   let fill = parseFill(spPr, ctx);
   if (fill === undefined) fill = styleFill(style, ctx);
-  let line = parseLine(spPr, ctx);
+  const styleWidth = styleLineWidth(style, ctx);
+  let line = parseLine(spPr, ctx, styleWidth);
   const lnRef = styleRefColor(style, 'a:lnRef', ctx);
   if (line === undefined || (line && line.color === null)) {
     if (lnRef && lnRef.idx > 0 && lnRef.color) {
-      const width = line?.width ?? [0, 0.5, 1, 1.5][Math.min(lnRef.idx, 3)];
+      const width = line?.width ?? styleWidth ?? 0.75;
       line = { color: lnRef.color.color, width, dash: line?.dash ?? 'solid', alpha: lnRef.color.alpha };
     } else line = null;
   }

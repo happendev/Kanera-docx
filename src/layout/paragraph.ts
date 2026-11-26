@@ -1,7 +1,7 @@
 import { EMOJI_KEEPS_LINE } from '../fonts/emoji.js';
 import type { FontRegistry } from '../fonts/registry.js';
 import { arabicForms, bidiClass, bidiLevels, joinsArabic, mirrored, visualOrder } from './bidi.js';
-import type { DocSettings, Drawing, FieldInline, Link, Paragraph, RunProps, TabStop } from '../ooxml/model.js';
+import type { Border, DocSettings, Drawing, FieldInline, Link, Paragraph, RunProps, TabStop } from '../ooxml/model.js';
 import { shapeSimple, shapeText, type ShapedRun } from './shaper.js';
 import { appendOps, translateOps, type DrawOp, type GlyphOp } from './types.js';
 import { layoutMath, mathLineProps, type MathBox } from './math.js';
@@ -194,8 +194,9 @@ export class ParagraphLayout {
         case 'drawing': {
           const d = env.fitDrawing?.(inl.drawing) ?? inl.drawing;
           if (d.inline) {
-            const w = d.width + d.effectL + d.effectR;
-            const h = d.height + d.effectT + d.effectB;
+            const turned = sideways(d);
+            const w = (turned ? d.height : d.width) + d.effectL + d.effectR;
+            const h = (turned ? d.width : d.height) + d.effectT + d.effectB;
             const atom = { k: 'obj' as const, drawing: d, w, h, props: inl.props, link: inl.link, run: shapeSimple(' ', inl.props, fonts)[0] ?? this.markRun };
             this.atoms.push(atom);
             if (d.hr && d.hr.pct > 0) this.relativeRules.push({ index: this.atoms.length - 1, atom });
@@ -248,6 +249,7 @@ export class ParagraphLayout {
     if (this.hasLabel) this.moveLabelPastBreaks();
     this.shapeArabic();
     this.autoSpace();
+    this.padBorders();
     this.computeBreaks();
     const base = para.props.bidi ? 1 : 0;
     const classes = this.atoms.map((a) => (a.k === 'g' ? bidiClass(a.cp) : 'N'));
@@ -332,6 +334,41 @@ export class ParagraphLayout {
       a.w += gap;
       a.aspace = gap;
     }
+  }
+
+  /**
+   * Room for character borders (w:bdr): Word keeps each stretch of text inside one border the
+   * border's width and spacing clear of what comes before and after it (measured against Word's
+   * PDFs), so the first glyph of the stretch moves right by that much and its last glyph widens.
+   * Neighbouring runs in the same border share one box.
+   */
+  private padBorders(): void {
+    let open: Extract<Atom, { k: 'g' }> | null = null;
+    for (let i = 0; i < this.atoms.length; i++) {
+      const a = this.atoms[i];
+      if (a.k === 'bm' || a.k === 'rpb' || a.k === 'note') continue;
+      const g = a.k === 'g' && a.run.glyphs[a.gi].gid !== -1 && (i < this.labelStart || i >= this.labelEnd) ? a : null;
+      const pad = g ? borderPad(g.run.props) : 0;
+      if (open && !(pad && sameBorder(open.run.props.border, g!.run.props.border))) {
+        widen(open, borderPad(open.run.props), false);
+        open = null;
+      }
+      if (g && pad) {
+        if (!open) widen(g, pad, true);
+        open = g;
+      }
+    }
+    if (open) widen(open, borderPad(open.run.props), false);
+  }
+
+  /** Whether the next drawn atom from `k` in direction `dir` on the line is text in the same border. */
+  private borderJoins(k: number, dir: 1 | -1, line: Line, border: Border): boolean {
+    for (let j = k + dir; j >= line.start && j < line.end; j += dir) {
+      const a = this.atoms[j];
+      if (a.k === 'bm' || a.k === 'rpb' || a.k === 'note') continue;
+      return a.k === 'g' && a.run.glyphs[a.gi].gid !== -1 && sameBorder(a.run.props.border, border);
+    }
+    return false;
   }
 
   /**
@@ -704,6 +741,12 @@ export class ParagraphLayout {
           // but spaces and tabs by the paragraph mark.
           if (isSpaceCp(a.cp)) break;
           add(a.run.ascent + a.run.baselineShift, a.run.descent - a.run.baselineShift, a.run.extLeading);
+          // A character border stands its width and spacing off the text above and below, and
+          // the line grows to hold it, beyond what "multiple" spacing scales.
+          if (borderPad(a.run.props)) {
+            const pad = borderPad(a.run.props);
+            add(a.run.ascent + a.run.baselineShift + pad, a.run.descent - a.run.baselineShift + pad, 0, false);
+          }
           break;
         case 'tab':
         case 'ptab':
@@ -1075,7 +1118,9 @@ export class ParagraphLayout {
           const w = a.w;
           const h = a.h;
           const y = baseline - h - a.props.position;
-          appendOps(ops, this.env.drawInline(a.drawing, x + a.drawing.effectL, y + a.drawing.effectT, a.drawing.width, a.drawing.height));
+          // A picture turned on its side turns about the middle of the box it is laid out in.
+          const shift = sideways(a.drawing) ? (a.drawing.height - a.drawing.width) / 2 : 0;
+          appendOps(ops, this.env.drawInline(a.drawing, x + a.drawing.effectL + shift, y + a.drawing.effectT - shift, a.drawing.width, a.drawing.height));
           if (a.link) ops.push({ kind: 'link', x, y, w, h, link: a.link });
         } else if (a.k === 'sep') {
           const w = a.w < 0 ? line.right - line.left : a.w;
@@ -1256,17 +1301,18 @@ export class ParagraphLayout {
         deco.push({ kind: 'line', x1, y1: sy + thick, x2, y2: sy + thick, width: thick, color });
       } else deco.push({ kind: 'line', x1, y1: sy, x2, y2: sy, width: thick, color });
     }
-    if (props.border) {
+    if (props.border && props.border.width > 0) {
+      // Word draws the box outside the text, its lines filling the room padBorders and the line's
+      // height keep for them, and leaves out the side a neighbouring run in the same border shares.
       const b = props.border;
-      const bx1 = x1 - b.space;
-      const bx2 = x2 + b.space;
-      const by1 = yBase - asc;
-      const by2 = yBase + desc;
+      const half = b.width / 2;
+      const top = yBase - asc - b.space - half;
+      const bottom = yBase + desc + b.space + half;
       const c = b.color ?? '000000';
-      deco.push({ kind: 'line', x1: bx1, y1: by1, x2: bx2, y2: by1, width: b.width, color: c });
-      deco.push({ kind: 'line', x1: bx1, y1: by2, x2: bx2, y2: by2, width: b.width, color: c });
-      deco.push({ kind: 'line', x1: bx1, y1: by1, x2: bx1, y2: by2, width: b.width, color: c });
-      deco.push({ kind: 'line', x1: bx2, y1: by1, x2: bx2, y2: by2, width: b.width, color: c });
+      deco.push({ kind: 'line', x1, y1: top, x2, y2: top, width: b.width, color: c });
+      deco.push({ kind: 'line', x1, y1: bottom, x2, y2: bottom, width: b.width, color: c });
+      if (!this.borderJoins(ks[0], -1, line, b)) deco.push({ kind: 'line', x1: x1 + half, y1: top - half, x2: x1 + half, y2: bottom + half, width: b.width, color: c });
+      if (!this.borderJoins(ks[ks.length - 1], 1, line, b)) deco.push({ kind: 'line', x1: x2 - half, y1: top - half, x2: x2 - half, y2: bottom + half, width: b.width, color: c });
     }
     if (run.link && !isTab) ops.push({ kind: 'link', x: x1, y: yBase - asc, w: x2 - x1, h: asc + desc, link: run.link });
   }
@@ -1278,6 +1324,24 @@ export class ParagraphLayout {
     }
     return line.start;
   }
+}
+
+/** How far a run's character border stands off its text: the border's width and spacing. */
+function borderPad(props: RunProps): number {
+  const b = props.border;
+  return b && b.width > 0 ? b.width + b.space : 0;
+}
+
+function sameBorder(a: Border | null, b: Border | null): boolean {
+  return !!a && !!b && a.style === b.style && a.width === b.width && a.space === b.space && a.color === b.color;
+}
+
+/** Make room for a border before (`before`) or after a glyph: it moves right, or its advance grows. */
+function widen(a: Extract<Atom, { k: 'g' }>, pad: number, before: boolean): void {
+  const g = a.run.glyphs[a.gi];
+  g.advance += pad;
+  a.w += pad;
+  if (before) g.dx = (g.dx ?? 0) + pad;
 }
 
 function run_hyphen(run: ShapedRun): number {
@@ -1359,4 +1423,14 @@ export function lineHeight(
   // bottom of the line box.
   if (p.lineRule !== 'exact' && p.lineRule !== 'atLeast') return { height, baseline: natural - descent };
   return { height, baseline: height - descent };
+}
+
+/**
+ * Whether an inline drawing is turned on its side (by 45 to 135 degrees either way): Word lays it
+ * out in its turned box, as wide as it is tall unturned. Effect extents that already make room for
+ * the turn (written by other applications) are left to do so.
+ */
+function sideways(d: Drawing): boolean {
+  const turn = ((d.rotation % 180) + 180) % 180;
+  return turn >= 45 && turn < 135 && d.effectL + d.effectT + d.effectR + d.effectB < 2;
 }

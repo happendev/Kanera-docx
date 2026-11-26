@@ -91,6 +91,26 @@ describe('line height and spacing', () => {
     expect(ys[1] - ys[0]).toBeCloseTo(ARIAL_11 + 50, 0);
   });
 
+  it('evens out the columns of a section that a continuous section break ends', async () => {
+    const sect = (cols: number) => `<w:sectPr><w:type w:val="continuous"/><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/><w:cols w:num="${cols}" w:space="708"/></w:sectPr>`;
+    const items = Array.from({ length: 6 }, (_, i) => p(`Item ${i + 1}`)).join('');
+    const body = p('Before', sect(1)) + items + p('', sect(2)) + p('After');
+    const r = await layout(makeDocx({ styles: ARIAL_STYLES, body, sectPr: sect(1) }));
+    const ls = lines(r.pages[0].body);
+    // Three items in each column, side by side, and the next section below them.
+    expect(ls.map((l) => l.text)).toEqual(['Before', 'Item 1Item 4', 'Item 2Item 5', 'Item 3Item 6', 'After']);
+    expect(ls[4].y - ls[3].y).toBeLessThan(2 * ARIAL_11);
+  });
+
+  it('lays a picture turned on its side out in its turned box', async () => {
+    const turned = inlineImage('img1', 50, 100).replace('<a:xfrm>', '<a:xfrm rot="5400000">');
+    const body = p('Above') + `<w:p>${turned}</w:p>` + p('Below');
+    const r = await layout(makeDocx({ styles: ARIAL_STYLES, body, media: { img1: { name: 'red.png', data: redPng() } } }));
+    const ys = lines(r.pages[0].body).map((l) => l.y);
+    // 100pt wide and 50pt tall once turned, as in Word.
+    expect(ys[1] - ys[0]).toBeCloseTo(ARIAL_11 + 50, 0);
+  });
+
   describe('a line holding only pictures', () => {
     const media = { img1: { name: 'red.png', data: redPng() } };
     const em = (units: number) => units / 2048;
@@ -255,6 +275,18 @@ describe('pagination', () => {
     const r = await layout(makeDocx({ styles: ARIAL_STYLES, body }));
     expect(lines(r.pages[0].body)).toHaveLength(linesPerPage);
     expect(pageText(r.pages[1])).toBe(`Line ${linesPerPage + 1}`);
+  });
+
+  it('adds no blank page for a page break whose line does not fit below a full page', async () => {
+    const full = Array.from({ length: linesPerPage }, (_, i) => p(`Line ${i + 1}`)).join('');
+    const body = full + '<w:p><w:r><w:br w:type="page"/></w:r><w:r><w:t>Next</w:t></w:r></w:p>';
+    const r = await layout(makeDocx({ styles: ARIAL_STYLES, body }));
+    expect(r.pages).toHaveLength(2);
+    expect(pageText(r.pages[1])).toBe('Next');
+    // A paragraph of nothing but the break takes its line on the next page, which stays blank.
+    const alone = await layout(makeDocx({ styles: ARIAL_STYLES, body: full + '<w:p><w:r><w:br w:type="page"/></w:r></w:p>' + p('Next') }));
+    expect(alone.pages).toHaveLength(3);
+    expect(pageText(alone.pages[2])).toBe('Next');
   });
 
   it('lets the extra space of 1.5 line spacing hang past the bottom margin', async () => {
@@ -530,6 +562,25 @@ describe('tables', () => {
     const thick = strokes.find((o) => o.width === 2.25)!;
     expect(ys.get('After')! - ys.get('B')!).toBeCloseTo(ARIAL_11 + 2.25, 2);
     expect(thick.y1 - doubles[2]).toBeCloseTo(2.25 + ARIAL_11 + 0.75, 2);
+  });
+
+  it('ends a thick bottom border at the side borders’ outer edges, and the side borders and shading at its foot', async () => {
+    const edge = (side: string, sz: number) => `<w:${side} w:val="single" w:sz="${sz}" w:space="0" w:color="000000"/>`;
+    const tcPr = `<w:tcBorders>${edge('left', 4)}${edge('bottom', 18)}${edge('right', 4)}</w:tcBorders><w:shd w:val="clear" w:color="auto" w:fill="DDEEDD"/>`;
+    const tbl = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid><w:tr>${cell('A', 3000, tcPr)}${cell('B', 3000, tcPr)}</w:tr></w:tbl>`;
+    const body = (await layout(makeDocx({ styles: ARIAL_STYLES, settings: compat(15), body: tbl + p('After') }))).pages[0].body;
+    const strokes = body.flatMap((o) => (o.kind === 'line' ? [o] : []));
+    const thick = strokes.filter((o) => o.width === 2.25);
+    const sides = strokes.filter((o) => o.width === 0.5);
+    const xs = sides.map((o) => o.x1);
+    // The thick border spans the side borders' outer edges and no further.
+    expect(Math.min(...thick.map((o) => Math.min(o.x1, o.x2)))).toBeCloseTo(Math.min(...xs) - 0.25, 3);
+    expect(Math.max(...thick.map((o) => Math.max(o.x1, o.x2)))).toBeCloseTo(Math.max(...xs) + 0.25, 3);
+    // The side borders and the shading stop at its foot rather than show below it.
+    const foot = thick[0].y1 + 2.25 / 2;
+    for (const o of sides) expect(Math.max(o.y1, o.y2)).toBeCloseTo(foot, 3);
+    for (const o of body) if (o.kind === 'rect' && o.fill) expect(o.y + o.h).toBeCloseTo(foot, 3);
+    expect(thick.every((o) => o.cap === 'butt') && sides.every((o) => o.cap === 'butt')).toBe(true);
   });
 
   it("adds the cells' top and bottom margins to a minimum row height", async () => {
@@ -1042,12 +1093,13 @@ describe('floating objects', () => {
       '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr><a:prstGeom prst="rect"/><a:ln><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></wps:spPr>' +
       `<wps:txbx><w:txbxContent>${p('Fit')}</w:txbxContent></wps:txbx><wps:bodyPr>${bodyPr}</wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
     const next = async (bodyPr: string) => lines((await layout(makeDocx({ styles: ARIAL_STYLES, body: box(bodyPr) + p('Next') }))).pages[0].body).find((l) => l.text === 'Next')!.y;
-    // Saved 110pt tall, the box shrinks to its line and the 3.6pt insets above and below it.
-    expect((await next('')) - (await next('<a:spAutoFit/>'))).toBeCloseTo(110 - (ARIAL_11 + 7.2), 1);
+    // Saved 110pt tall, the box shrinks to its line, the 3.6pt insets above and below it and its
+    // 0.75pt outline, which Word counts the insets from inside of.
+    expect((await next('')) - (await next('<a:spAutoFit/>'))).toBeCloseTo(110 - (ARIAL_11 + 7.2 + 0.75), 1);
   });
 
   it('fits a text box to its page count once the count is known', async () => {
-    // "Pages 1" (40.4pt in Arial 11) fits the 43pt text width; "Pages 12" (46.5pt) wraps.
+    // "Pages 1" (40.4pt in Arial 11) fits the 42.25pt text width; "Pages 12" (46.5pt) wraps.
     const text = '<w:p><w:r><w:t xml:space="preserve">Pages </w:t></w:r><w:fldSimple w:instr=" NUMPAGES "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p>';
     const box = '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="728980" cy="254000"/><a:graphic><a:graphicData>' +
       '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr><a:prstGeom prst="rect"/><a:ln><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></wps:spPr>' +
@@ -1057,7 +1109,54 @@ describe('floating objects', () => {
     expect(r.pages).toHaveLength(12);
     const outline = r.pages[0].body.find((o): o is PathOp => o.kind === 'path' && o.stroke === '000000')!;
     const ys = outline.segs.flatMap((s) => s.pts.filter((_, i) => i % 2 === 1));
-    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(2 * ARIAL_11 + 7.2, 1);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(2 * ARIAL_11 + 7.2 + 0.75, 1);
+  });
+
+  it('makes room for a character border around its text, beside and above and below it', async () => {
+    const bdr = '<w:bdr w:val="single" w:sz="4" w:space="0" w:color="FF0000"/>';
+    const run = (text: string, rPr = '') => `<w:r><w:rPr>${rPr}</w:rPr><w:t xml:space="preserve">${text}</w:t></w:r>`;
+    // "Bo" and "x" are runs in the same border: one box, with room for the 0.5pt border at its ends.
+    const page = async (border: string) =>
+      (await layout(makeDocx({ styles: ARIAL_STYLES, body: `<w:p>${run('Bo', border)}${run('x', border)}${run(' after')}</w:p>${p('Next')}` }))).pages[0].body;
+    const [boxed, plain] = [await page(bdr), await page('')];
+    const glyphX = (body: DrawOpLike[], text: string) => {
+      const op = glyphOps(body).find((o) => o.texts.join('').includes(text))!;
+      return op.x + op.xs[op.texts.indexOf(text)];
+    };
+    expect(glyphX(boxed, 'B') - glyphX(plain, 'B')).toBeCloseTo(0.5, 5);
+    expect(glyphX(boxed, 'x') - glyphX(plain, 'x')).toBeCloseTo(0.5, 5);
+    expect(glyphX(boxed, 'a') - glyphX(plain, 'a')).toBeCloseTo(1, 5);
+    // The line grows by the border's width above and below the text.
+    const next = (body: DrawOpLike[]) => lines(body).find((l) => l.text === 'Next')!.y;
+    expect(next(boxed) - next(plain)).toBeCloseTo(1, 5);
+    // One box: its two upright sides at its ends, none between the runs.
+    const sides = boxed.filter((o) => o.kind === 'line' && o.color === 'FF0000' && o.x1 === o.x2);
+    expect(sides).toHaveLength(2);
+  });
+
+  it("keeps a shape's text inside its themed outline and starts text too tall for the box at its top", async () => {
+    // Office 2007's line styles: a style's line reference 2 is 2pt wide.
+    const theme = '<a:fmtScheme name="T"><a:lnStyleLst><a:ln w="9525"/><a:ln w="25400"/><a:ln w="38100"/></a:lnStyleLst></a:fmtScheme>';
+    const black = '<a:srgbClr val="000000"/>';
+    const box = (ln: string, anchor: string, after: number) =>
+      '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1828800" cy="254000"/><a:graphic><a:graphicData>' +
+      `<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:spPr><a:prstGeom prst="rect"/>${ln}</wps:spPr>` +
+      `<wps:style><a:lnRef idx="2">${black}</a:lnRef><a:fillRef idx="0">${black}</a:fillRef><a:effectRef idx="0">${black}</a:effectRef><a:fontRef idx="minor">${black}</a:fontRef></wps:style>` +
+      `<wps:txbx><w:txbxContent><w:p><w:pPr><w:spacing w:after="${after}"/></w:pPr><w:r><w:t>Box</w:t></w:r></w:p></w:txbxContent></wps:txbx>` +
+      `<wps:bodyPr anchor="${anchor}"/></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+    const draw = async (ln: string, anchor = 't', after = 0) => {
+      const body = (await layout(makeDocx({ styles: ARIAL_STYLES, theme, body: box(ln, anchor, after) }))).pages[0].body;
+      return { text: lines(body).find((l) => l.text === 'Box')!, outline: body.find((o): o is PathOp => o.kind === 'path' && o.stroke === '000000') };
+    };
+    const themed = await draw(`<a:ln><a:solidFill>${black}</a:solidFill></a:ln>`);
+    const bare = await draw('<a:ln><a:noFill/></a:ln>');
+    // An outline that gives no width takes its style's, and the text keeps clear of half of it.
+    expect(themed.outline?.strokeWidth).toBeCloseTo(2, 5);
+    expect(bare.outline).toBeUndefined();
+    expect(themed.text.x - bare.text.x).toBeCloseTo(1, 5);
+    expect(themed.text.y - bare.text.y).toBeCloseTo(1, 5);
+    // A line and 20pt of space after it overflow the 20pt box: centred, it starts at the top all the same.
+    expect((await draw(`<a:ln><a:solidFill>${black}</a:solidFill></a:ln>`, 'ctr', 400)).text.y).toBeCloseTo(themed.text.y, 5);
   });
 
   it("draws a custom shape's quadratic curve as the same curve, skipping a malformed one", () => {

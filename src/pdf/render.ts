@@ -8,7 +8,7 @@ import { adjustImage, dibToPdf, solidToPdf, sniffImage, toPdfImage, type PdfImag
 import type { DrawOp, GlyphOp, Page, PathSeg, ShadeGeometry } from '../layout/types.js';
 import { ColorGlyphForms } from './color-glyph.js';
 import { latin1, num, PdfObjects, pdfName, textString } from './objects.js';
-import { SYNTHETIC_BOLD_STROKE } from '../profile.js';
+import { LINE_FILLS, SYNTHETIC_BOLD_STROKE } from '../profile.js';
 
 export interface PdfOptions {
   info?: DocumentInfo;
@@ -280,6 +280,17 @@ export async function renderPdf(pages: Page[], compression: Compression, opts: P
           break;
         }
         case 'line': {
+          const level = op.y1 === op.y2;
+          if (LINE_FILLS && !op.dash && op.cap !== 'round' && (level || op.x1 === op.x2)) {
+            // The rectangle the stroke would cover, square caps and all.
+            const end = op.cap === 'square' ? op.width / 2 : 0;
+            const x = level ? Math.min(op.x1, op.x2) - end : op.x1 - op.width / 2;
+            const y = level ? op.y1 - op.width / 2 : Math.min(op.y1, op.y2) - end;
+            const w = level ? Math.abs(op.x2 - op.x1) + 2 * end : op.width;
+            const h = level ? op.width : Math.abs(op.y2 - op.y1) + 2 * end;
+            out.push(`${color(op.color, false)} ${num(x)} ${num(Y(y + h))} ${num(w)} ${num(h)} re f`);
+            break;
+          }
           const cap = op.cap === 'round' ? 1 : op.cap === 'square' ? 2 : 0;
           const dash = op.dash ? `[${op.dash.map(num).join(' ')}] 0 d` : '[] 0 d';
           out.push(`${num(op.width)} w ${cap} J ${dash} ${color(op.color, true)} ${num(op.x1)} ${num(Y(op.y1))} m ${num(op.x2)} ${num(Y(op.y2))} l S`);

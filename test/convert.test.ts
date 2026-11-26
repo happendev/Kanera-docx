@@ -102,10 +102,12 @@ describe('convertDocx (node)', () => {
     expect(src).toContain('/URI (https://example.com/)');
     // Fonts are subset: the whole file stays small.
     expect(result.pdf.length).toBeLessThan(200_000);
-    // Table shading and the red underline are drawn.
+    // Table shading and the red underline are drawn, the underline as a filled rectangle as in
+    // Word's PDFs.
     const content = pdfStreams(result.pdf).join('\n');
     expect(content).toMatch(/0\.851 0\.886 0\.953 rg/);
-    expect(content).toMatch(/0\.753 0 0 RG/);
+    expect(content).toMatch(/0\.753 0 0 rg [\d. ]+ re f/);
+    expect(content).not.toMatch(/ l S/);
     if (ghostscript) {
       ghostscriptRenders(result.pdf);
       const [one, two] = pdfPagesText(result.pdf).map((t) => t.replace(/\s+/g, ' '));

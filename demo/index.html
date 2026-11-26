@@ -7,6 +7,7 @@
     <meta name="description" content="Convert Word documents to PDF, plain text, or Markdown in your browser with @kanera/docx2pdf. Compare benchmark PDFs with Microsoft Word's output." />
     <link rel="icon" href="kanera-icon.svg" type="image/svg+xml" />
     <meta name="theme-color" content="#0D1520" />
+    <link rel="stylesheet" href="github-markdown-dark.css" />
     <link rel="stylesheet" href="style.css" />
     <script type="module" src="assets/main.js"></script>
   </head>
@@ -75,7 +76,7 @@
 
         <section class="sample-picker" aria-labelledby="samples-title">
           <h2 id="samples-title">Benchmark documents</h2>
-          <p class="muted small">Each one comes with Word's own rendering to compare against.</p>
+          <p class="muted small">Each one comes with a reference rendering to compare against, from Word unless the document says otherwise.</p>
           <input id="search" type="search" placeholder="Seach" aria-label="Search benchmark documents" />
           <div id="samples" class="samples"></div>
         </section>
@@ -118,12 +119,12 @@
         <details id="warnings" class="warnings" hidden></details>
         <div id="pages" class="pages"></div>
         <pre id="text-preview" class="text-preview" tabindex="0" hidden></pre>
-        <article id="markdown-preview" class="markdown-preview" aria-label="Rendered Markdown" tabindex="0" hidden></article>
+        <article id="markdown-preview" class="markdown-preview markdown-body" aria-label="Rendered Markdown" tabindex="0" hidden></article>
       </main>
     </div>
 
     <footer class="site-footer">
-      <span>After the first npm release, <code>npm install @kanera/docx2pdf</code></span>
+      <span><code>npm install @kanera/docx2pdf</code></span>
       <span>Built by <a href="https://www.kanera.app/">Kanera</a> · Apache 2.0 · Bundled fonts keep their own licenses · Sample documents and Word references from the vendored <a href="https://github.com/happendev/kanera-docx/tree/main/benchmarks/word">benchmark</a></span>
     </footer>
   </body>

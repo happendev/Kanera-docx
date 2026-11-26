@@ -304,6 +304,12 @@ export class FontRegistry {
   private emojiCache = new Map<string, ResolvedFace | null>();
   readonly hints = new Map<string, FontTableHints>();
   readonly warnings = new Set<string>();
+  /**
+   * Whether the application has macOS's fonts: true for Word for Mac, false for Word on Windows,
+   * which draws a macOS font in the font table's alternate for it or else in the Windows font it
+   * matches (Avenir Next in Calibri). Unset, a macOS font takes its own substitutes.
+   */
+  macFonts?: boolean;
 
   /** Equations measure outline bounds during layout, before the PDF glyph set is known. */
   constructor(readonly needsGlyphBounds = false) {}
@@ -402,9 +408,12 @@ export class FontRegistry {
     const styleless = unstyledFamily(norm);
     if (styleless !== norm) out.push(styleless);
     const sub = substituteFamilies(norm);
-    if (sub) out.push(...sub.families);
-    // Word falls back to the font table's alternate name, so that font's substitutes stand in too.
+    // Word falls back to the font table's alternate name, so that font's substitutes stand in too,
+    // ahead of a macOS font's own where the application lacks macOS's fonts.
     const altSub = alt ? substituteFamilies(alt) : null;
+    const winAlt = sub?.mac && this.macFonts === false ? alt ?? sub.windows : undefined;
+    if (winAlt) out.push(winAlt, ...(substituteFamilies(winAlt)?.families ?? []));
+    if (sub) out.push(...sub.families);
     if (altSub) out.push(...altSub.families);
     const generic = this.generic(family);
     // A font with no rule is missing on the computer too: the application draws it in its own

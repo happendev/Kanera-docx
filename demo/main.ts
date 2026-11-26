@@ -38,6 +38,7 @@ const ui = {
   stats: $<HTMLUListElement>('#stats'),
   formats: $<HTMLDivElement>('#formats'),
   views: $<HTMLDivElement>('#views'),
+  sideBySide: $<HTMLButtonElement>('#views [data-view="side"]'),
   download: $<HTMLAnchorElement>('#download'),
   open: $<HTMLAnchorElement>('#open'),
   warnings: $<HTMLDetailsElement>('#warnings'),
@@ -299,7 +300,14 @@ async function run() {
   if (refDoc) renderStats(result, blob.size, refDoc.numPages);
   docs = loaded;
   ui.views.hidden = !sample;
+  ui.sideBySide.textContent = `Side by side with ${referenceName()}`;
   renderPages(ours, reference);
+}
+
+/** The application that made the current sample's reference rendering. */
+function referenceName(): string {
+  const app = current?.sample?.reference.app ?? '';
+  return /\bWord\b/.test(app) || !app ? 'Word' : app.replace(/\s.*$/, '');
 }
 
 function pdfjsOptions() {
@@ -320,7 +328,7 @@ function renderStats(r: Extract<ConvertResponse, { ok: true }>, size: number, re
   if (isPdf) {
     items.push([
       `${r.pageCount}${refPages != null ? ` / ${refPages}` : ''}`,
-      refPages != null ? 'pages (ours / Word)' : r.pageCount === 1 ? 'page' : 'pages',
+      refPages != null ? `pages (ours / ${referenceName()})` : r.pageCount === 1 ? 'page' : 'pages',
     ], [kb(size), 'PDF size']);
     if (r.fonts.length) {
       const total = r.fonts.reduce((n, f) => n + f.bytes, 0);
@@ -384,14 +392,14 @@ function renderPages(ours: PDFDocumentProxy, reference: PDFDocumentProxy | strin
 
   if (showRef) {
     const head = el('div', 'page-row heads');
-    head.append(el('div', 'col-head', 'Kanera DOCX (this library)'), el('div', 'col-head', current?.sample?.reference.app ?? 'Word'));
+    head.append(el('div', 'col-head', 'Kanera DOCX (this library)'), el('div', 'col-head', current?.sample?.reference.app ?? referenceName()));
     ui.pages.append(head);
   }
 
   for (let i = 0; i < count; i++) {
     const row = el('div', 'page-row');
     const oursSlot = pageSlot(i < ours.numPages ? `Page ${i + 1}` : undefined);
-    const refSlot = showRef ? pageSlot(i < refCount ? `Word page ${i + 1}` : undefined) : undefined;
+    const refSlot = showRef ? pageSlot(i < refCount ? `${referenceName()} page ${i + 1}` : undefined) : undefined;
     const sized = i < ours.numPages ? ours.getPage(i + 1) : undefined;
     row.append(oursSlot);
     if (refSlot) row.append(refSlot);
@@ -436,7 +444,7 @@ async function drawPdfPage(doc: PDFDocumentProxy, n: number, slot: HTMLElement) 
 async function drawReference(reference: PDFDocumentProxy | string[], i: number, slot: HTMLElement) {
   if (!Array.isArray(reference)) return drawPdfPage(reference, i + 1, slot);
   const img = el('img');
-  img.alt = `Word page ${i + 1}`;
+  img.alt = `${referenceName()} page ${i + 1}`;
   img.decoding = 'async';
   img.src = reference[i];
   await img.decode().catch(() => undefined);
