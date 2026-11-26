@@ -16,7 +16,7 @@ TypeScript library and CLI. No Word, no LibreOffice, no native add-ons or WebAss
 [![TypeScript](https://img.shields.io/badge/types-included-3178C6?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](https://github.com/happendev/kanera-docx/blob/main/LICENSE)
 
-[Quick start](#quick-start) · [Usage](#usage) · [Benchmarks](#benchmarks) · [Documentation](#documentation) · [Release notes](https://github.com/happendev/kanera-docx/blob/main/CHANGELOG.md) · [Report a conversion issue](https://github.com/happendev/Kanera-docx/issues/new?template=conversion-bug.yml)
+[Live demo](https://happendev.github.io/Kanera-docx/) · [Quick start](#quick-start) · [Usage](#usage) · [Benchmarks](#benchmarks) · [Documentation](#documentation) · [Release notes](https://github.com/happendev/kanera-docx/blob/main/CHANGELOG.md) · [Report a conversion issue](https://github.com/happendev/Kanera-docx/issues/new?template=conversion-bug.yml)
 
 > **Stable and in production use.** `@kanera/docx2pdf` has a stable 1.x API and is used in
 > production by [Kanera](https://github.com/happendev/Kanera) ([kanera.app](https://www.kanera.app)).

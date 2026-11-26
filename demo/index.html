@@ -76,7 +76,7 @@
         <section class="sample-picker" aria-labelledby="samples-title">
           <h2 id="samples-title">Benchmark documents</h2>
           <p class="muted small">Each one comes with Word's own rendering to compare against.</p>
-          <input id="search" type="search" placeholder="Filter samples" aria-label="Filter samples" />
+          <input id="search" type="search" placeholder="Seach" aria-label="Search benchmark documents" />
           <div id="samples" class="samples"></div>
         </section>
       </aside>
@@ -102,13 +102,7 @@
           <div id="views" class="segmented" role="group" aria-label="PDF view" hidden>
             <button type="button" data-view="pages" aria-pressed="true">Our PDF</button>
             <button type="button" data-view="side" aria-pressed="false">Side by side with Word</button>
-            <button type="button" data-view="overlay" aria-pressed="false">Overlay</button>
           </div>
-          <label id="overlay-control" class="overlay-control" hidden>
-            <span>Ours</span>
-            <input id="overlay" type="range" min="0" max="100" value="50" aria-label="Word overlay opacity" />
-            <span>Word</span>
-          </label>
         </div>
         <div id="status" class="status" role="status" hidden></div>
         <script>
@@ -124,6 +118,7 @@
         <details id="warnings" class="warnings" hidden></details>
         <div id="pages" class="pages"></div>
         <pre id="text-preview" class="text-preview" tabindex="0" hidden></pre>
+        <article id="markdown-preview" class="markdown-preview" aria-label="Rendered Markdown" tabindex="0" hidden></article>
       </main>
     </div>
 

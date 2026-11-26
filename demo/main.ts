@@ -1,9 +1,10 @@
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
 import type { ConvertRequest, ConvertResponse, OutputFormat } from './convert.worker.js';
+import { renderMarkdown } from './markdown.js';
 import { parseSamples, type Sample } from './samples.js';
 
-type View = 'pages' | 'side' | 'overlay';
+type View = 'pages' | 'side';
 
 const outputs = {
   pdf: { label: 'PDF', extension: 'pdf', mimeType: 'application/pdf' },
@@ -37,13 +38,12 @@ const ui = {
   stats: $<HTMLUListElement>('#stats'),
   formats: $<HTMLDivElement>('#formats'),
   views: $<HTMLDivElement>('#views'),
-  overlayControl: $<HTMLLabelElement>('#overlay-control'),
-  overlay: $<HTMLInputElement>('#overlay'),
   download: $<HTMLAnchorElement>('#download'),
   open: $<HTMLAnchorElement>('#open'),
   warnings: $<HTMLDetailsElement>('#warnings'),
   pages: $<HTMLDivElement>('#pages'),
   textPreview: $<HTMLPreElement>('#text-preview'),
+  markdownPreview: $<HTMLElement>('#markdown-preview'),
   status: $<HTMLDivElement>('#status'),
 };
 
@@ -89,6 +89,7 @@ interface Current {
 
 let samples: Sample[] = [];
 let samplesReady = false;
+const expandedSampleGroups = new Set<string>();
 let current: Current | undefined;
 let format: OutputFormat = 'pdf';
 let view: View = 'pages';
@@ -119,15 +120,22 @@ function renderSampleList() {
   ui.samples.replaceChildren();
   const groups: [string, Sample[]][] = [
     ['Featured', samples.filter((s) => s.featured)],
-    ['Real-world documents', samples.filter((s) => !s.featured && s.suite === 'issue')],
+    ['Issue report samples', samples.filter((s) => !s.featured && s.suite === 'issue')],
     ['Feature tests', samples.filter((s) => !s.featured && s.suite === 'classic')],
   ];
   let shown = 0;
   for (const [label, list] of groups) {
     const items = list.filter((s) => !q || s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q));
     if (!items.length) continue;
-    const group = el('div', 'sample-group');
-    group.append(el('h3', '', `${label} · ${items.length}`));
+    const group = el('details', 'sample-group');
+    group.open = q !== '' || expandedSampleGroups.has(label);
+    if (!q) {
+      group.addEventListener('toggle', () => {
+        if (group.open) expandedSampleGroups.add(label);
+        else expandedSampleGroups.delete(label);
+      });
+    }
+    group.append(el('summary', '', `${label} · ${items.length}`));
     const ul = el('ul');
     for (const s of items) {
       const li = el('li');
@@ -211,10 +219,11 @@ function clearOutput() {
   ui.download.removeAttribute('download');
   ui.stats.replaceChildren();
   ui.views.hidden = true;
-  ui.overlayControl.hidden = true;
   renderWarnings([]);
   ui.textPreview.hidden = true;
   ui.textPreview.textContent = '';
+  ui.markdownPreview.hidden = true;
+  ui.markdownPreview.replaceChildren();
   observer?.disconnect();
   observer = undefined;
   ui.pages.replaceChildren();
@@ -252,10 +261,16 @@ async function run() {
 
   if (result.format !== 'pdf') {
     renderStats(result, blob.size);
-    ui.textPreview.setAttribute('aria-label', `${output.label} output`);
-    ui.textPreview.textContent = result.text;
-    ui.textPreview.hidden = !result.text;
-    if (!result.text) setStatus('No text found in this document.');
+    if (!result.text) {
+      setStatus('No text found in this document.');
+    } else if (result.format === 'markdown') {
+      ui.markdownPreview.replaceChildren(renderMarkdown(result.text));
+      ui.markdownPreview.hidden = false;
+    } else {
+      ui.textPreview.setAttribute('aria-label', 'Plain text output');
+      ui.textPreview.textContent = result.text;
+      ui.textPreview.hidden = false;
+    }
     return;
   }
 
@@ -284,7 +299,6 @@ async function run() {
   if (refDoc) renderStats(result, blob.size, refDoc.numPages);
   docs = loaded;
   ui.views.hidden = !sample;
-  ui.overlayControl.hidden = !sample || view !== 'overlay';
   renderPages(ours, reference);
 }
 
@@ -363,12 +377,12 @@ function renderPages(ours: PDFDocumentProxy, reference: PDFDocumentProxy | strin
   observer = pageObserver;
 
   const refCount = !reference ? 0 : Array.isArray(reference) ? reference.length : reference.numPages;
-  const showRef = view !== 'pages' && refCount > 0;
+  const showRef = view === 'side' && refCount > 0;
   const count = showRef ? Math.max(ours.numPages, refCount) : ours.numPages;
   ui.pages.dataset.view = showRef ? view : 'pages';
   ui.pages.replaceChildren();
 
-  if (showRef && view === 'side') {
+  if (showRef) {
     const head = el('div', 'page-row heads');
     head.append(el('div', 'col-head', 'Kanera DOCX (this library)'), el('div', 'col-head', current?.sample?.reference.app ?? 'Word'));
     ui.pages.append(head);
@@ -379,15 +393,8 @@ function renderPages(ours: PDFDocumentProxy, reference: PDFDocumentProxy | strin
     const oursSlot = pageSlot(i < ours.numPages ? `Page ${i + 1}` : undefined);
     const refSlot = showRef ? pageSlot(i < refCount ? `Word page ${i + 1}` : undefined) : undefined;
     const sized = i < ours.numPages ? ours.getPage(i + 1) : undefined;
-    if (view === 'overlay' && showRef && refSlot) {
-      const stack = el('div', 'overlay-stack');
-      stack.append(oursSlot, refSlot);
-      refSlot.classList.add('top');
-      row.append(stack);
-    } else {
-      row.append(oursSlot);
-      if (refSlot) row.append(refSlot);
-    }
+    row.append(oursSlot);
+    if (refSlot) row.append(refSlot);
     ui.pages.append(row);
 
     // Size each slot before rendering so the scroll height is right from the start.
@@ -440,7 +447,6 @@ async function drawReference(reference: PDFDocumentProxy | string[], i: number, 
 function setView(next: View, rerender = true) {
   view = next;
   for (const b of ui.views.querySelectorAll<HTMLButtonElement>('button')) b.setAttribute('aria-pressed', String(b.dataset.view === next));
-  ui.overlayControl.hidden = ui.views.hidden || next !== 'overlay';
   try {
     localStorage.setItem('docx2pdf-demo-view', next);
   } catch {}
@@ -495,7 +501,6 @@ ui.views.addEventListener('click', (e) => {
   const b = (e.target as HTMLElement).closest('button');
   if (b?.dataset.view) setView(b.dataset.view as View);
 });
-ui.overlay.addEventListener('input', () => ui.pages.style.setProperty('--overlay', String(Number(ui.overlay.value) / 100)));
 for (const a of [ui.download, ui.open]) a.addEventListener('click', (e) => a.hasAttribute('aria-disabled') && e.preventDefault());
 
 let resizeTimer = 0;
@@ -519,10 +524,9 @@ window.addEventListener('hashchange', routeFromHash);
 async function init() {
   try {
     const saved = localStorage.getItem('docx2pdf-demo-view');
-    if (saved === 'pages' || saved === 'side' || saved === 'overlay') view = saved;
+    if (saved === 'pages' || saved === 'side') view = saved;
   } catch {}
   setView(view, false);
-  ui.pages.style.setProperty('--overlay', String(Number(ui.overlay.value) / 100));
   try {
     const res = await fetch('samples/samples.json');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

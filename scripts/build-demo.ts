@@ -81,6 +81,10 @@ async function copyStatic(): Promise<void> {
   await cp(join(root, 'demo', 'style.css'), join(out, 'style.css'));
   await cp(join(root, 'LICENSE'), join(out, 'LICENSE.txt'));
   await cp(join(root, 'NOTICE'), join(out, 'NOTICE.txt'));
+  await cp(join(root, 'demo', 'licenses'), join(out, 'licenses'), { recursive: true });
+  for (const name of ['dompurify', 'marked']) {
+    await cp(join(root, 'node_modules', name, 'LICENSE'), join(out, 'licenses', `${name}.txt`));
+  }
   for (const f of ['kanera-logo.svg', 'kanera-icon.svg']) await cp(join(root, 'demo', f), join(out, f));
   // Kanera's typefaces (OFL), self-hosted so the page loads nothing from third parties.
   const faces = [
