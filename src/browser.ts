@@ -1,9 +1,8 @@
 import { readInputBlob } from './util/input.js';
 import { convertDocx as convertCore, convertDocxToImages as imagesCore, extractText as extractCore } from './index.js';
-import type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontProvider, ImageOptions, ImagesResult, PageImage } from './core.js';
-import { BundledFontData, BundledFontPack } from './fonts/registry.js';
-import { isFontCollection } from './fonts/sfnt.js';
-import { COMMON_FONTS, FULL_FONTS } from './fonts/bundled.js';
+import type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, ImageOptions, ImagesResult, PageImage } from './core.js';
+import { COMMON_FONTS } from './fonts/bundled.js';
+import { fontProviders } from './browser-fonts.js';
 
 export type { ConvertOptions, ConvertResult, ExtractTextOptions, ExtractTextResult, FontSource, ImageFormat, ImageOptions, ImagesResult, LayoutStats, PageImage } from './core.js';
 export type { TextFormat } from './text/extract.js';
@@ -28,56 +27,6 @@ export interface BrowserFontOptions {
 export interface BrowserConvertOptions extends ConvertOptions, BrowserFontOptions {}
 
 export interface BrowserImageOptions extends ImageOptions, BrowserFontOptions {}
-
-interface BrowserFontCache {
-  fonts: Map<string, Promise<BundledFontData | Uint8Array>>;
-  pack: BundledFontPack;
-}
-
-const fontCaches = new WeakMap<typeof fetch, BrowserFontCache>();
-
-function defaultBase(): URL {
-  // Kept out of a literal `new URL('…', import.meta.url)` so bundlers don't try to inline a folder.
-  const rel = ['..', 'fonts', ''].join('/');
-  return new URL(rel, import.meta.url);
-}
-
-function fontProviders(options: BrowserFontOptions): FontProvider[] {
-  const providers: FontProvider[] = [];
-  if (options.fontBaseUrl !== false) {
-    const base = options.fontBaseUrl ? new URL(String(options.fontBaseUrl), globalThis.location?.href ?? import.meta.url) : defaultBase();
-    if (!base.pathname.endsWith('/')) base.pathname += '/';
-    const doFetch = options.fetch ?? fetch;
-    let cache = fontCaches.get(doFetch);
-    if (!cache) {
-      cache = { fonts: new Map(), pack: new BundledFontPack() };
-      fontCaches.set(doFetch, cache);
-    }
-    const { fonts, pack } = cache;
-    const faces = options.fontPack === 'common' ? COMMON_FONTS : FULL_FONTS;
-    providers.push({
-      register(registry) {
-        registry.addBundled(pack.sources(base.href, faces, file => {
-          const url = new URL(file, base).href;
-          return () => {
-            let pending = fonts.get(url);
-            if (!pending) {
-              pending = doFetch(url).then(async response => {
-                if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-                const bytes = new Uint8Array(await response.arrayBuffer());
-                return isFontCollection(bytes) ? bytes : new BundledFontData(bytes);
-              });
-              pending.catch(() => fonts.delete(url));
-              fonts.set(url, pending);
-            }
-            return pending;
-          };
-        }));
-      },
-    });
-  }
-  return providers;
-}
 
 /** Convert a .docx to PDF in the browser. Bundled fonts are fetched on demand. */
 export async function convertDocx(input: Uint8Array | ArrayBuffer | Blob, options: BrowserConvertOptions = {}): Promise<ConvertResult> {

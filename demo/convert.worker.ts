@@ -1,7 +1,10 @@
 /// <reference lib="webworker" />
 // Runs the converter off the main thread. Font faces are fetched on demand and stay cached in
 // this worker for the page's lifetime, so later conversions only download faces they haven't seen.
-import { convertDocx, extractText, type BrowserConvertOptions, type TextFormat } from '../src/browser.js';
+import { extractText, type BrowserConvertOptions, type TextFormat } from '../src/browser.js';
+import { fontProviders } from '../src/browser-fonts.js';
+import { convertWithCompression, prepareDocxWithCompression } from '../src/core.js';
+import { pakoCompression } from '../src/util/pako.js';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -32,16 +35,36 @@ export type ConvertResponse =
   | { id: number; ok: false; error: string };
 
 const fontBaseUrl = new URL('../fonts/', self.location.href);
+const fontBytes = new Map<string, Uint8Array>();
+let downloads = new Map<string, Promise<Uint8Array>>();
 let downloaded: { file: string; bytes: number }[] = [];
 
-const countingFetch: typeof fetch = async (input, init) => {
-  const res = await fetch(input, init);
-  if (!res.ok) return res;
-  const body = await res.arrayBuffer();
-  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-  downloaded.push({ file: decodeURIComponent(url.slice(url.lastIndexOf('/') + 1)), bytes: body.byteLength });
-  return new Response(body, { status: res.status, headers: res.headers });
-};
+async function readFontFromMemory(url: string): Promise<Uint8Array> {
+  const bytes = fontBytes.get(url);
+  if (bytes) return bytes;
+  const attempt = downloads.get(url);
+  if (attempt) return attempt;
+  throw new Error(`Font was not loaded before conversion: ${url}`);
+}
+
+async function downloadFont(url: string): Promise<Uint8Array> {
+  const bytes = fontBytes.get(url);
+  if (bytes) return bytes;
+  let attempt = downloads.get(url);
+  if (!attempt) {
+    const fonts = downloaded;
+    attempt = (async () => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+      const data = new Uint8Array(await response.arrayBuffer());
+      fontBytes.set(url, data);
+      fonts.push({ file: decodeURIComponent(url.slice(url.lastIndexOf('/') + 1)), bytes: data.byteLength });
+      return data;
+    })();
+    downloads.set(url, attempt);
+  }
+  return attempt;
+}
 
 // PDF requests share the font cache and download counter. Text extraction can run independently.
 let pdfQueue = Promise.resolve();
@@ -57,9 +80,9 @@ function reportResponseError(err: unknown) {
 
 async function convert(request: ConvertRequest) {
   const { id, docx, format } = request;
-  const start = performance.now();
   try {
     if (format !== 'pdf') {
+      const start = performance.now();
       const result = await extractText(docx, { format });
       const msg: ConvertResponse = { id, ok: true, format, ...result, ms: performance.now() - start };
       self.postMessage(msg);
@@ -67,7 +90,18 @@ async function convert(request: ConvertRequest) {
     }
 
     downloaded = [];
-    const result = await convertDocx(docx, { ...request.options, fontBaseUrl, fetch: countingFetch });
+    downloads = new Map();
+    const options = { ...request.options, fontBaseUrl };
+    // Resolve the font requests first, including any speculative reads, before timing a
+    // conversion that can only read font bytes already in memory.
+    try {
+      await prepareDocxWithCompression(docx, options, fontProviders(options, downloadFont), pakoCompression);
+    } finally {
+      await Promise.allSettled(downloads.values());
+    }
+
+    const start = performance.now();
+    const result = await convertWithCompression(docx, options, fontProviders(options, readFontFromMemory), pakoCompression);
     const ms = performance.now() - start;
     const bytes = result.pdf;
     const pdf = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes.buffer : bytes.slice().buffer;

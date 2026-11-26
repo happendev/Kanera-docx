@@ -323,7 +323,7 @@ function renderStats(r: Extract<ConvertResponse, { ok: true }>, size: number, re
   const isPdf = r.format === 'pdf';
   const time = r.ms < 1000 ? `${Math.round(r.ms)} ms` : `${(r.ms / 1000).toFixed(2)} s`;
   const items: [string, string, string?][] = [
-    [time, 'conversion time', isPdf ? 'Includes downloading any font faces this document needs for the first time.' : undefined],
+    [time, 'conversion time', isPdf ? 'Measured after the required font files are downloaded.' : undefined],
   ];
   if (isPdf) {
     items.push([

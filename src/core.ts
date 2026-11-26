@@ -95,7 +95,7 @@ export interface FontProvider {
   register(registry: FontRegistry): void | Promise<void>;
 }
 
-async function layOut(input: Uint8Array | ArrayBuffer, options: ConvertOptions, providers: FontProvider[], compression: Compression) {
+export async function prepareDocxWithCompression(input: Uint8Array | ArrayBuffer, options: ConvertOptions, providers: FontProvider[], compression: Compression) {
   const { signal } = options;
   signal?.throwIfAborted();
   const doc = parseDocx(inputBytes(input, options.maxInputBytes), compression.inflateRaw, options.archiveLimits, options.useEmbeddedFonts);
@@ -107,8 +107,14 @@ async function layOut(input: Uint8Array | ArrayBuffer, options: ConvertOptions, 
   for (const [family, hints] of doc.fontHints) fonts.setHints(family, hints);
   await fonts.prepare(doc.fontRequests, signal);
   signal?.throwIfAborted();
+  return { doc, fonts };
+}
+
+async function layOut(input: Uint8Array | ArrayBuffer, options: ConvertOptions, providers: FontProvider[], compression: Compression) {
+  const { doc, fonts } = await prepareDocxWithCompression(input, options, providers, compression);
+  options.signal?.throwIfAborted();
   const layout = layoutDocument(doc, fonts);
-  signal?.throwIfAborted();
+  options.signal?.throwIfAborted();
   const warnings = [...doc.warnings, ...layout.warnings];
   const paintGrid = options.wordPlatform === 'mac' ? MAC_PAINT_GRID : undefined;
   return { doc, fonts, layout, warnings, paintGrid };

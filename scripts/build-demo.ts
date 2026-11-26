@@ -148,7 +148,8 @@ async function main(): Promise<void> {
     entryPoints: { main: join(root, 'demo', 'main.ts'), 'convert.worker': join(root, 'demo', 'convert.worker.ts') },
     outdir: join(out, 'assets'),
     bundle: true,
-    splitting: true,
+    // Keep conversion modules in the worker bundle so their downloads finish before timing starts.
+    splitting: false,
     format: 'esm',
     platform: 'browser',
     target: 'es2022',
