@@ -1,6 +1,6 @@
 {
   "name": "@kanera/docx2pdf",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Convert Word documents to PDF, plain text, and Markdown in Node.js or the browser. A TypeScript library and CLI.",
   "type": "module",
   "license": "Apache-2.0",

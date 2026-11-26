@@ -1,6 +1,12 @@
 # Changelog
 
-## 1.0.0 (unreleased)
+## 1.0.1
+
+- Improved Word-to-PDF visual match from 92.6% to 92.7% across 278 benchmark documents and from 90.53% to 90.74%.
+- Matched Word more closely when balancing columns, handling page breaks, and positioning rotated inline pictures and text inside shapes.
+- Improved font substitution on Windows and the rendering of character borders, table border joins, and thin lines.
+
+## 1.0.0
 
 Initial release.
 

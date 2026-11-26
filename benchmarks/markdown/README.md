@@ -28,7 +28,7 @@ scorer. [DocFoundry Markdown benchmark](https://github.com/happendev/DocFoundry/
 <!-- markdown-accuracy:start -->
 | Converter | Markdown accuracy | Text | Order | Headings | Lists | Tables | Bold | Italic | Links | Images | Leaked syntax | Failed |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **98.5%** | **98.8%** | **97.6%** | **98.5%** | **99.0%** | **99.3%** | **94.1%** | **97.4%** | **100.0%** | **99.6%** | **1** | **0/278** |
+| @kanera/docx2pdf | **98.5%** | **98.8%** | **97.6%** | **98.5%** | **99.0%** | **99.3%** | **94.1%** | **97.4%** | **100.0%** | **99.6%** | **1** | **0/278** |
 | Pandoc 3.9 | 95.9% | 98.0% | 96.4% | 90.7% | 94.1% | **99.3%** | 90.2% | 90.7% | 99.1% | 84.8% | 182 | **0/278** |
 | MarkItDown 0.1.9 | 94.8% | 98.1% | 96.2% | 92.5% | 89.3% | 98.5% | 88.7% | 91.8% | 84.3% | 98.7% | 126 | **0/278** |
 | mammoth 1.13.0 + turndown 7.2.5 | 94.8% | 95.2% | 96.1% | 88.7% | 91.9% | 85.5% | 62.5% | 91.4% | 95.7% | 98.7% | 172 | **0/278** |
@@ -41,7 +41,7 @@ scorer. [DocFoundry Markdown benchmark](https://github.com/happendev/DocFoundry/
 <!-- markdown-speed:start -->
 | Converter | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **63.6 ms** | **1.9 ms** | **17.2 ms** | **241.3** | **70.3 MiB** | **94.8 MiB** |
+| @kanera/docx2pdf 1.0.1 | **63.6 ms** | **1.9 ms** | **17.2 ms** | **241.3** | **70.3 MiB** | **94.8 MiB** |
 | Pandoc 3.9 | 92.6 ms | 85.6 ms | 157.5 ms | 13.8 | 167.8 MiB | 173.1 MiB |
 | MarkItDown 0.1.9 | 685.8 ms | 155.2 ms | 309.9 ms | 6.5 | 157.0 MiB | 184.5 MiB |
 | mammoth 1.13.0 + turndown 7.2.5 | 159.1 ms | 26.0 ms | 52.3 ms | 40.5 | 98.7 MiB | 180.2 MiB |

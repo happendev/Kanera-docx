@@ -39,6 +39,6 @@ body:
     attributes:
       label: Version and environment
       description: Include the converter version (or commit), operating system, and Node or browser version. For accuracy issues, include the Word version used for comparison if known.
-      placeholder: '1.0.0, Node 24 CLI on Linux, reference PDF from Word for Mac'
+      placeholder: '1.0.1, Node 24 CLI on Linux, reference PDF from Word for Mac'
     validations:
       required: true

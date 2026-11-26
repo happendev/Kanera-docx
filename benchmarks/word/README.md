@@ -18,7 +18,7 @@ ran this repository's warm benchmark. [DocFoundry Word benchmark](https://github
 <!-- benchmark-results:start -->
 | Converter | Mean ink overlap | Matching page count | Failed conversions | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS | Total PDF size |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **92.7%** | **273/278** | **0/278** | **85.6 ms** | **3.9 ms** | **62.1 ms** | **77.8** | 80.9 MiB | **164.1 MiB** | **17.68 MiB** |
+| @kanera/docx2pdf | **92.7%** | **273/278** | **0/278** | **85.6 ms** | **3.9 ms** | **62.1 ms** | **77.8** | 80.9 MiB | **164.1 MiB** | **17.68 MiB** |
 | LibreOffice 26.8.3.1 | 80.3% | 256/278 | **0/278** | 791.6 ms | 59.6 ms | 248.2 ms | 10.3 | 252.7 MiB | 417.9 MiB | 44.46 MiB |
 | EigenPal 2.39.0 | 70.9% | 257/278 | 1/278 | 766.1 ms | 255.3 ms | 645.4 ms | 3.7 | 276.6 MiB | 576.1 MiB | 21.98 MiB |
 | Syncfusion DocIO (.NET) 28.2.4.0 | 56.8% | 246/278 | 1/278 | 589.2 ms | 60.7 ms | 2416.2 ms | 1.1 | 121.4 MiB | 1024.8 MiB | 18.91 MiB |

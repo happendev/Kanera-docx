@@ -24,7 +24,7 @@ it converts to Markdown in under a second.
 <!-- text-accuracy:start -->
 | Converter | Text accuracy | Words | Order | Paragraphs | Leaked markup | Failed |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **98.9%** | **98.8%** | **97.7%** | 99.1% | **0** | **0/278** |
+| @kanera/docx2pdf | **98.9%** | **98.8%** | **97.7%** | 99.1% | **0** | **0/278** |
 | Aspose.Words (.NET) 26.11.0.0 | 98.4% | **98.8%** | 97.0% | 97.3% | 2 | **0/278** |
 | Syncfusion DocIO (.NET) 28.2.4.0 | 97.9% | 98.6% | 96.2% | 99.3% | 2 | 1/278 |
 | mammoth 1.13.0 | 97.9% | 98.3% | 96.1% | **99.4%** | **0** | **0/278** |
@@ -35,7 +35,7 @@ it converts to Markdown in under a second.
 <!-- text-speed:start -->
 | Converter | Median cold time | Median warm time | Warm p95 latency | Warm docs/sec | Median cold peak RSS | Max cold peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| @kanera/docx2pdf 1.0.0 | **60.9 ms** | **1.6 ms** | **13.1 ms** | **288.7** | **70.3 MiB** | **93.2 MiB** |
+| @kanera/docx2pdf 1.0.1 | **60.9 ms** | **1.6 ms** | **13.1 ms** | **288.7** | **70.3 MiB** | **93.2 MiB** |
 | Aspose.Words (.NET) 26.11.0.0 | 714.8 ms | 26.6 ms | 62.0 ms | 31.7 | 91.0 MiB | 107.9 MiB |
 | Syncfusion DocIO (.NET) 28.2.4.0 | 215.6 ms | 29.1 ms | 50.0 ms | 35.2 | 73.8 MiB | 108.8 MiB |
 | mammoth 1.13.0 | 139.0 ms | 25.1 ms | 42.2 ms | 45.6 | 96.3 MiB | 148.8 MiB |
